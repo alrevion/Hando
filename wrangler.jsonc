@@ -1,11 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "sayn",
+  "name": "hando",
   "main": "src/index.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
   "routes": [
-    { "pattern": "sayn.alrevion.com", "custom_domain": true }
+    { "pattern": "hando.alrevion.com", "custom_domain": true }
   ],
   "assets": {
     "directory": "./frontend/dist",
@@ -14,9 +14,21 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "sayn-db",
-      "database_id": "826805fc-9268-4845-bf5d-74e00fae7cb2",
+      "database_name": "hando-db",
+      // ЗАПОЛНИТЬ перед первым деплоем:
+      //   wrangler d1 create hando-db
+      // и подставить сюда выданный id. Пока стоит заглушка -- деплой упадёт
+      // громко, и это намеренно: с id базы Sayn он писал бы в её прод.
+      "database_id": "REPLACE_ME_RUN_WRANGLER_D1_CREATE",
       "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      // ADR-4: долговечная копия вложений, ключ <org_id>/<attachment_id>.
+      // Создать: wrangler r2 bucket create hando-attachments
+      "binding": "ATTACHMENTS",
+      "bucket_name": "hando-attachments"
     }
   ],
   "triggers": {
@@ -24,11 +36,11 @@
   },
   "vars": {
     "AUTH_API_URL": "https://api.auth.alrevion.com",
-    // Dedicated bot-only Telegram group used as the attachment blob store across
-    // all projects. Create the group, add the bot, and replace the placeholder.
-    "TELEGRAM_STORAGE_CHAT_ID": "-5564197568",
-    // Sayn user id that every MCP-originated action is attributed to. Set this to
-    // the creator's own user id. (MCP_API_TOKEN is a secret: `wrangler secret put MCP_API_TOKEN`.)
-    "MCP_USER_ID": "078c67f9-225c-44fb-a0f9-26645db26544"
+    // Выделенная bot-only группа Telegram под вложения. Бот @hando_ai_bot
+    // уже добавлен в неё. Валидируется через resolveChatId при настройке.
+    "TELEGRAM_STORAGE_CHAT_ID": "-5572663778",
+    // Пусто до создания первого пользователя в базе Hando: id из базы Sayn
+    // здесь бессмысленен. MCP не заработает, пока не заполнено -- см. mcp.ts:64.
+    "MCP_USER_ID": ""
   }
 }

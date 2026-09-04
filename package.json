@@ -1,5 +1,5 @@
 {
-  "name": "sayn",
+  "name": "hando",
   "private": true,
   "type": "module",
   "scripts": {
@@ -7,9 +7,10 @@
     "deploy": "npm run build:frontend && wrangler deploy",
     "build:frontend": "cd frontend && npm run build",
     "typecheck": "tsc --noEmit",
+    "pretest": "mkdir -p frontend/dist",
     "test": "vitest run",
-    "db:migrate": "wrangler d1 migrations apply sayn-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply sayn-db --remote"
+    "db:migrate": "wrangler d1 migrations apply hando-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply hando-db --remote"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.6.4",
