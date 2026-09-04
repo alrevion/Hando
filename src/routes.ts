@@ -1,6 +1,6 @@
 // All /api routes. Access control is delegated to middleware.ts; handlers only
 // hold business rules. Every mutating action writes an events row (system of record).
-import { type Context, Hono } from 'hono';
+import { Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Env, Role, TaskStatus } from './types';
 import { logEvent, nowIso, uuid } from './db';
@@ -15,7 +15,9 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 // Fixed custom domain (wrangler.jsonc routes) -- used only to build deep links
 // in Telegram notifications, not worth an env var for a single stable value.
-const APP_URL = 'https://sayn.alrevion.com';
+// Хвост дословного форка: до 2026-09-04 здесь стоял домен Sayn, то есть каждое
+// уведомление Hando звало пользователя на чужую доску, где его ждал бы 403.
+const APP_URL = 'https://hando.alrevion.com';
 
 export const apiRoutes = new Hono<AppEnv>();
 
@@ -226,8 +228,24 @@ apiRoutes.get('/projects', async (c) => {
 
 // Registered before POST/DELETE below so the literal "archived" path can't be
 // swallowed by a later :projectId route (none currently overlaps, but keep it first).
+// Список ограничен ТЕМ ЖЕ предикатом членства, что и GET /projects выше -- иначе
+// super_admin видел бы в списке чужую доску, а на «Восстановить» получал 403 от
+// :projectId/restore. Показывать кнопку, которая заведомо не сработает, хуже, чем
+// не показывать строку. Ограничение по организации приезжает сюда на шаге 2a.
 apiRoutes.get('/projects/archived', requireRole('super_admin', 'creator'), async (c) => {
-  const { results } = await c.env.DB.prepare('SELECT * FROM projects WHERE archived_at IS NOT NULL ORDER BY archived_at DESC').all();
+  if (c.get('role') === 'creator') {
+    const { results } = await c.env.DB.prepare('SELECT * FROM projects WHERE archived_at IS NOT NULL ORDER BY archived_at DESC').all();
+    return c.json(results);
+  }
+  const userId = c.get('userId');
+  const { results } = await c.env.DB.prepare(
+    `SELECT DISTINCT p.* FROM projects p
+     LEFT JOIN project_memberships m ON m.project_id = p.id AND m.user_id = ?
+     WHERE p.archived_at IS NOT NULL AND (m.user_id IS NOT NULL OR p.created_by = ?)
+     ORDER BY p.archived_at DESC`,
+  )
+    .bind(userId, userId)
+    .all();
   return c.json(results);
 });
 
@@ -252,7 +270,7 @@ apiRoutes.post('/projects', requireRole('super_admin', 'creator'), async (c) => 
 
 // Soft-delete: sets archived_at. Tasks stay visible via the Archive tab; the
 // escalation sweep already excludes tasks whose project is archived.
-apiRoutes.delete('/projects/:projectId', requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.delete('/projects/:projectId', requireProjectAccess('project'), requireRole('super_admin', 'creator'), async (c) => {
   const id = c.req.param('projectId');
   const res = await c.env.DB.prepare('UPDATE projects SET archived_at = ? WHERE id = ? AND archived_at IS NULL').bind(nowIso(), id).run();
   if (!res.meta.changes) return c.json({ error: 'not found' }, 404);
@@ -260,7 +278,7 @@ apiRoutes.delete('/projects/:projectId', requireRole('super_admin', 'creator'), 
   return c.json({ success: true });
 });
 
-apiRoutes.post('/projects/:projectId/restore', requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.post('/projects/:projectId/restore', requireProjectAccess('project'), requireRole('super_admin', 'creator'), async (c) => {
   const id = c.req.param('projectId');
   const res = await c.env.DB.prepare('UPDATE projects SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL').bind(id).run();
   if (!res.meta.changes) return c.json({ error: 'not found' }, 404);
@@ -275,7 +293,7 @@ apiRoutes.post('/projects/:projectId/restore', requireRole('super_admin', 'creat
 // but otherwise have no UI, which is a real gap against "all destructive/admin
 // actions ... visible to creator". Scoped to status='archived' for tasks since
 // the UI offers a Restore action per entry, and only archived tasks are restorable.
-apiRoutes.get('/projects/:projectId/archive', requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.get('/projects/:projectId/archive', requireProjectAccess('project'), requireRole('super_admin', 'creator'), async (c) => {
   const projectId = c.req.param('projectId');
   const { results: tasks } = await c.env.DB.prepare(
     "SELECT * FROM tasks WHERE project_id = ? AND status = 'archived' ORDER BY updated_at DESC",
@@ -334,6 +352,13 @@ apiRoutes.post('/projects/:projectId/members', requireProjectAccess('project'), 
   const projectId = c.req.param('projectId');
   const { user_id } = await c.req.json<{ user_id?: string }>().catch(() => ({ user_id: undefined }));
   if (!user_id) return c.json({ error: 'user_id required' }, 400);
+  // Тело приходит от клиента, поэтому id проверяется до вставки. Раньше
+  // несуществующий id падал в общий catch ниже и отдавал 409 «already a member
+  // or invalid»: ошибка была, но неотличима от повторного добавления, и опечатка
+  // в id выглядела как «он уже в проекте». Ограничение «тот же арендатор» --
+  // шаг 2a через org_memberships, здесь его предмета ещё нет.
+  const exists = await c.env.DB.prepare('SELECT 1 FROM users WHERE id = ?').bind(user_id).first();
+  if (!exists) return c.json({ error: 'user_id not found' }, 400);
   const id = uuid();
   try {
     await c.env.DB.prepare('INSERT INTO project_memberships (id, project_id, user_id) VALUES (?, ?, ?)').bind(id, projectId, user_id).run();
@@ -590,42 +615,6 @@ apiRoutes.post('/tasks/:id/reject', requireProjectAccess('task'), requireRole('s
 
 // ------------------------------------------------------------------- attachments
 
-type AttachmentRow = {
-  id: string;
-  task_id: string;
-  telegram_file_id: string;
-  telegram_message_id: string;
-  filename: string;
-  mime_type: string;
-  uploaded_by: string;
-  project_id: string; // joined from tasks
-};
-
-// /attachments/:id/* routes key on the attachment id, so requireProjectAccess('task')
-// (which keys on a task id param) can't be used directly -- mirror it here. Loads
-// the attachment joined to its owning task and returns it only if the caller may
-// access that project. Same opaque null (caller returns 403, no existence leak).
-async function attachmentForAccess(c: Context<AppEnv>, attachmentId: string): Promise<AttachmentRow | null> {
-  const row = await c.env.DB.prepare(
-    `SELECT a.*, t.project_id AS project_id FROM attachments a
-     JOIN tasks t ON t.id = a.task_id WHERE a.id = ?`,
-  )
-    .bind(attachmentId)
-    .first<AttachmentRow>();
-  if (!row) return null;
-  const role = c.get('role');
-  if (role === 'creator') return row;
-  const member = await c.env.DB.prepare('SELECT 1 FROM project_memberships WHERE project_id = ? AND user_id = ?')
-    .bind(row.project_id, c.get('userId'))
-    .first();
-  if (member) return row;
-  if (role === 'super_admin') {
-    const project = await c.env.DB.prepare('SELECT created_by FROM projects WHERE id = ?').bind(row.project_id).first<{ created_by: string }>();
-    if (project?.created_by === c.get('userId')) return row;
-  }
-  return null;
-}
-
 // Upload: multipart file -> Telegram storage chat -> attachments row. No status
 // restriction (supporting reference material, not a scope-changing edit). Size is
 // checked BEFORE any Telegram call so an oversize file never leaves our Worker.
@@ -668,9 +657,8 @@ apiRoutes.get('/tasks/:id/attachments', requireProjectAccess('task'), async (c) 
 
 // Download: real proxy (never a redirect) so the browser never sees a Telegram
 // URL. Fetch the file server-side and stream the bytes back under our own headers.
-apiRoutes.get('/attachments/:id/download', async (c) => {
-  const att = await attachmentForAccess(c, c.req.param('id'));
-  if (!att) return c.json({ error: 'forbidden' }, 403);
+apiRoutes.get('/attachments/:id/download', requireProjectAccess('attachment'), async (c) => {
+  const att = c.get('attachment')!;
   const url = await getFileUrl(c.env, att.telegram_file_id);
   const upstream = await fetch(url);
   if (!upstream.ok || !upstream.body) return c.json({ error: 'file unavailable' }, 502);
@@ -689,9 +677,8 @@ apiRoutes.get('/attachments/:id/download', async (c) => {
 
 // Delete: uploader OR super_admin/creator. Also deletes the underlying Telegram
 // message (best-effort, reusing deleteMessage) so the storage chat stays bounded.
-apiRoutes.delete('/attachments/:id', async (c) => {
-  const att = await attachmentForAccess(c, c.req.param('id'));
-  if (!att) return c.json({ error: 'forbidden' }, 403);
+apiRoutes.delete('/attachments/:id', requireProjectAccess('attachment'), async (c) => {
+  const att = c.get('attachment')!;
   // Fresh DB read for the elevated bypass (not the token's role) -- same
   // de-provisioning/downgrade guard requireRole() applies everywhere else.
   const fresh = await verifySession(c.env.SESSION_SECRET, getCookie(c, SESSION_COOKIE), { db: c.env.DB, allowed: ['super_admin', 'creator'] });

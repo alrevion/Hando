@@ -2,6 +2,19 @@ export type Role = 'creator' | 'super_admin' | 'admin';
 export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'archived';
 export type Priority = 'urgent' | 'medium' | 'low';
 
+// Вложение вместе с project_id своей задачи: проект тут не колонка таблицы, а
+// результат JOIN -- он нужен загрузчику доступа, который ключуется на проекте.
+export type Attachment = {
+  id: string;
+  task_id: string;
+  telegram_file_id: string;
+  telegram_message_id: string;
+  filename: string;
+  mime_type: string;
+  uploaded_by: string;
+  project_id: string;
+};
+
 export interface User {
   id: string;
   phone: string;

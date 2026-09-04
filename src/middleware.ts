@@ -2,12 +2,12 @@
 // role-gated route goes through these three middlewares.
 import type { MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
-import type { Env, Role, Task } from './types';
+import type { Attachment, Env, Role, Task } from './types';
 import { SESSION_COOKIE, verifySession } from './auth';
 
 export type AppEnv = {
   Bindings: Env;
-  Variables: { userId: string; role: Role; task?: Task };
+  Variables: { userId: string; role: Role; task?: Task; attachment?: Attachment };
 };
 
 // Verifies the session cookie; attaches { userId, role }. 401 if missing/invalid/expired.
@@ -32,14 +32,40 @@ export const requireRole = (...roles: Role[]): MiddlewareHandler<AppEnv> => asyn
 // are an explicit project_memberships row OR (super_admin only) the project's
 // creator -- each board has its own people; a super_admin isn't automatically
 // in every project just by holding the role. Returns the SAME 403 whether the
-// project/task is missing or the user isn't a member (no existence leak). For
-// 'task' routes it also stashes the loaded task in context.
-export const requireProjectAccess =
-  (source: 'project' | 'task' = 'project'): MiddlewareHandler<AppEnv> =>
-  async (c, next) => {
+// project/task/attachment is missing or the user isn't a member (no existence
+// leak). For 'task'/'attachment' routes it also stashes the loaded row in context.
+//
+// Три источника projectId, один предикат. Раньше вложения имели собственную
+// копию предиката в routes.ts (attachmentForAccess) -- ручное зеркало этой
+// функции, и её комментарий сам это признавал. Копия предиката доступа означает
+// два места, где его надо чинить, и одно, про которое забудут: на шаге 2a сюда
+// приезжает org-условие, и зеркало разошлось бы молча.
+// Помечает мидлвару, чтобы структурный тест мог доказать инвариант «ни один
+// роут с параметром проекта не обходится без загрузчика доступа» перебором
+// apiRoutes.routes. Перечислять роуты в тесте руками бессмысленно: список
+// устаревает ровно тогда, когда кто-то добавляет тридцать первый роут -- то есть
+// в единственный момент, когда проверка и нужна.
+export type AccessLoader = MiddlewareHandler<AppEnv> & { accessSource: string };
+
+export const requireProjectAccess = (source: 'project' | 'task' | 'attachment' = 'project'): AccessLoader =>
+  Object.assign(
+    async (c: Parameters<MiddlewareHandler<AppEnv>>[0], next: Parameters<MiddlewareHandler<AppEnv>>[1]) => {
     let projectId: string | null | undefined;
 
-    if (source === 'task') {
+    if (source === 'attachment') {
+      const attachmentId = c.req.param('id');
+      const attachment = attachmentId
+        ? await c.env.DB.prepare(
+            `SELECT a.*, t.project_id AS project_id FROM attachments a
+             JOIN tasks t ON t.id = a.task_id WHERE a.id = ?`,
+          )
+            .bind(attachmentId)
+            .first<Attachment>()
+        : null;
+      if (!attachment) return c.json({ error: 'forbidden' }, 403);
+      c.set('attachment', attachment);
+      projectId = attachment.project_id;
+    } else if (source === 'task') {
       const taskId = c.req.param('id') ?? c.req.param('taskId');
       const task = taskId ? await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(taskId).first<Task>() : null;
       if (!task) return c.json({ error: 'forbidden' }, 403);
@@ -62,4 +88,6 @@ export const requireProjectAccess =
       if (project?.created_by === c.get('userId')) return next();
     }
     return c.json({ error: 'forbidden' }, 403);
-  };
+    },
+    { accessSource: source },
+  );

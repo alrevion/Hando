@@ -76,6 +76,14 @@ describe('регрессия шага -1: создание и редактиро
 
     const { results } = await events(id);
     expect(results).toEqual([{ action: 'created', actor_id: 's1', comment: null, overdue_by: null }]);
+
+    // Глубокая ссылка обязана вести в Hando. Форк принёс сюда домен Sayn, и
+    // уведомление уводило человека на чужую доску -- ошибка, невидимая в коде
+    // ответа: маршрут всё это время отвечал 201.
+    const calls = (restore as unknown as { mock: { calls: [string, { body?: string }][] } }).mock.calls;
+    const sent = JSON.parse(calls.at(-1)![1].body!).text as string;
+    expect(sent).toContain(`https://hando.alrevion.com/?task=${id}`);
+    expect(sent).not.toContain('sayn.alrevion.com');
   });
 
   it('2. edit-lock: в todo правка проходит и меняет поля, в done -- 409 и строка не тронута', async () => {

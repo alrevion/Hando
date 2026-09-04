@@ -174,7 +174,7 @@ async function createTask(
 // --- MCP server (built per request; stateless, so nothing is shared) --------
 
 function buildServer(env: Env): McpServer {
-  const server = new McpServer({ name: 'sayn', version: '1.0.0' });
+  const server = new McpServer({ name: 'hando', version: '1.0.0' });
 
   server.registerTool(
     'list_projects',

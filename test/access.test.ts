@@ -581,7 +581,7 @@ describe('access control', () => {
     expect(res.status).toBe(403);
   });
 
-  it('a plain admin is forbidden from listing or restoring archived projects; super_admin can', async () => {
+  it('a plain admin is forbidden from listing or restoring archived projects; a super_admin connected to the project can', async () => {
     const env = await envWith({
       users: [
         { id: 'a1', phone: '+1', name: 'A', role: 'admin' },
@@ -592,7 +592,8 @@ describe('access control', () => {
       // Проект ДОЛЖЕН быть архивирован: restore ищет archived_at IS NOT NULL.
       // Прежде тест проходил только потому, что фейковый run() всегда возвращал
       // changes: 1 -- то есть не проверял ничего.
-      projects: [{ id: 'p1', telegram_chat_id: '-100999', archived_at: '2026-01-01T00:00:00.000Z' }],
+      // created_by: 's1' -- с шага 0 роли самой по себе мало, нужна связь с доской.
+      projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 's1', archived_at: '2026-01-01T00:00:00.000Z' }],
     });
     const listForbidden = await apiRoutes.request('/projects/archived', { headers: { Cookie: await cookie('a1', 'admin') } }, env);
     expect(listForbidden.status).toBe(403);
