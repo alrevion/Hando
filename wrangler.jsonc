@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sayn",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "sayn.alrevion.com", "custom_domain": true }
+  ],
+  "assets": {
+    "directory": "./frontend/dist",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sayn-db",
+      "database_id": "826805fc-9268-4845-bf5d-74e00fae7cb2",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "vars": {
+    "AUTH_API_URL": "https://api.auth.alrevion.com",
+    // Dedicated bot-only Telegram group used as the attachment blob store across
+    // all projects. Create the group, add the bot, and replace the placeholder.
+    "TELEGRAM_STORAGE_CHAT_ID": "-5564197568",
+    // Sayn user id that every MCP-originated action is attributed to. Set this to
+    // the creator's own user id. (MCP_API_TOKEN is a secret: `wrangler secret put MCP_API_TOKEN`.)
+    "MCP_USER_ID": "078c67f9-225c-44fb-a0f9-26645db26544"
+  }
+}

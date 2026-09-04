@@ -1,0 +1,26 @@
+{
+  "name": "sayn",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "npm run build:frontend && wrangler deploy",
+    "build:frontend": "cd frontend && npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate": "wrangler d1 migrations apply sayn-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply sayn-db --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.6.4",
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8",
+    "wrangler": "^3.101.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "hono": "^4.6.16",
+    "zod": "^3.25.76"
+  }
+}

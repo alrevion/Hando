@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd frontend && npm run build 2>&1 | tail -30\"}",
+  "error": "Exit code 1\n(eval):cd:1: no such file or directory: frontend",
+  "timestamp": "2026-07-19T12:10:58.544Z",
+  "retry_count": 1
+}

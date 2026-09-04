@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-slate-100 text-slate-900 font-sans antialiased;
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Keep the default focus ring visible everywhere; never remove it without a replacement. */
+:focus-visible {
+  @apply outline outline-2 outline-offset-2 outline-blue-600;
+}

@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+frontend/dist/
+.DS_Store
+.claude-flow/
+.omc/state/
