@@ -1,6 +1,6 @@
 // All /api routes. Access control is delegated to middleware.ts; handlers only
 // hold business rules. Every mutating action writes an events row (system of record).
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Role, Task, TaskStatus } from './types';
 import { logEvent, nowIso, uuid } from './db';
@@ -8,6 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, getFileUrl, resolveChatId, sendDocument } from './telegram';
 import { applyTransition, buildNotification } from './transition';
+import { buildAssignees, myAssignee, transitionAssignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
@@ -524,27 +525,43 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
       title?: string;
       description?: string;
       responsible_user_id?: string;
+      assignee_ids?: string[];
+      kind?: string;
       deadline?: string;
       content_blocks?: string;
       priority?: string;
       depends_on_task_id?: string | null;
     }>()
     .catch(() => ({}) as Record<string, undefined>);
-  if (!b.title || !b.responsible_user_id) return c.json({ error: 'title and responsible_user_id required' }, 400);
   const orgId = c.get('orgId');
+
+  // Адресатов может быть много (R1-1: поручать можно в любую сторону и кому
+  // угодно). Старое тело с одним responsible_user_id продолжает работать -- фронт
+  // до шага 5 шлёт именно его.
+  const assignees = b.assignee_ids?.length ? b.assignee_ids : b.responsible_user_id ? [b.responsible_user_id] : [];
+  if (!b.title || assignees.length === 0) return c.json({ error: 'title and at least one assignee required' }, 400);
+  const kind = b.kind && ['single', 'each', 'any'].includes(b.kind) ? (b.kind as TaskKind) : assignees.length > 1 ? 'each' : 'single';
+  if (kind === 'single' && assignees.length > 1) return c.json({ error: 'kind=single takes exactly one assignee' }, 400);
   // Границу «поручает только директор» держала социальная норма; R1-1 её снял
   // (поручать может кто угодно кому угодно), а R1-2 сделал users глобальными.
-  // Значит произвольный id из тела мог бы стать ответственным -- и уведомление с
-  // заголовком задачи ушло бы человеку чужой организации.
-  if (!(await membershipRole(c.env.DB, orgId, b.responsible_user_id))) {
-    return c.json({ error: 'responsible_user_id is not a member of this organisation' }, 400);
+  // Значит произвольный id из тела мог бы стать адресатом -- и уведомление с
+  // заголовком задачи ушло бы человеку чужой организации. Проверяется КАЖДЫЙ.
+  for (const uid of assignees) {
+    if (!(await membershipRole(c.env.DB, orgId, uid))) {
+      return c.json({ error: 'assignee is not a member of this organisation' }, 400);
+    }
   }
   const priority = b.priority && PRIORITIES.includes(b.priority) ? b.priority : 'medium';
   const dependency = await resolveDependency(c.env.DB, c.get('orgId'), projectId, null, b.depends_on_task_id);
   if (!dependency.ok) return c.json({ error: 'depends_on_task_id must be another task in the same project' }, 400);
   const id = uuid();
   const created = {
-    id, org_id: orgId, project_id: projectId, title: b.title, responsible_user_id: b.responsible_user_id,
+    id, org_id: orgId, project_id: projectId, title: b.title,
+    // Колонка ещё NOT NULL до contract-релиза; правило заполнения -- ПЕРВЫЙ
+    // адресат списка. От него зависят инварианты бэкфилла и алиасный
+    // POST /tasks/:id/confirm для старого фронта.
+    responsible_user_id: assignees[0],
+    kind, author_id: c.get('userId'),
     deadline: b.deadline ?? null, telegram_message_id: null,
   } as Task;
   const now = nowIso();
@@ -553,9 +570,10 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
   // оставляло задачу, о которой исполнителю никто не сказал.
   await c.env.DB.batch([
     c.env.DB.prepare(
-      `INSERT INTO tasks (id, org_id, project_id, title, description, responsible_user_id, status, deadline, content_blocks, priority, depends_on_task_id)
-       VALUES (?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
-    ).bind(id, orgId, projectId, b.title, b.description ?? '', b.responsible_user_id, b.deadline ?? null, b.content_blocks ?? null, priority, dependency.value),
+      `INSERT INTO tasks (id, org_id, project_id, title, description, responsible_user_id, kind, author_id, source, status, deadline, content_blocks, priority, depends_on_task_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
+    ).bind(id, orgId, projectId, b.title, b.description ?? '', assignees[0], kind, c.get('userId'), 'ui', b.deadline ?? null, b.content_blocks ?? null, priority, dependency.value),
+    ...buildAssignees(c.env, created, assignees, b.deadline ?? null),
     // Форма и порядок бинда совпадают с logEvent (db.ts) намеренно: INSERT в
     // events существует в трёх местах, и расхождение здесь читалось бы как
     // «в этой таблице колонки означают разное в зависимости от вызывающего».
@@ -647,48 +665,86 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
   return c.json({ success: true });
 });
 
-// Valid transitions only: todo->in_progress, in_progress->done. Everything else 409
-// (incl. done->in_progress, which is the confirm/reject flow's job, not a move).
-const TRANSITIONS: Record<string, TaskStatus[]> = { todo: ['in_progress'], in_progress: ['done'] };
+// Кто принимает работу: автор задачи, а после R1-1 это может быть кто угодно --
+// включая рядового сотрудника, поручившего что-то директору. creator/super_admin
+// остаются запасным ключом на случай, когда автор уволился: иначе его задачи
+// нельзя закрыть никогда.
+function isReviewer(c: Context<AppEnv>, task: Task): boolean {
+  if (task.author_id && task.author_id === c.get('userId')) return true;
+  const role = c.get('role');
+  return role === 'creator' || role === 'super_admin';
+}
+
+// Таблица переходов задачи уехала в assignees.ts: движется теперь строка
+// адресата, а статус задачи -- её свёртка.
 
 apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
   const task = c.get('task')!;
-  // Whoever the task is assigned to is the one who does the work, so only
-  // they move it through the board -- no role-based override here, not even
-  // super_admin/creator (their own tasks are moved by them, same as anyone else).
-  if (task.responsible_user_id !== c.get('userId')) {
-    return c.json({ error: 'only the responsible person can move this task' }, 403);
-  }
+  const orgId = c.get('orgId');
+  // Правило «двигает только ответственный» стало «двигает СВОЮ строку каждый
+  // адресат»: у рассылки на 14 человек единственного ответственного нет.
+  const mine = await myAssignee(c.env, task.id, c.get('userId'), orgId);
+  if (!mine) return c.json({ error: 'only an assignee can move this task' }, 403);
+
   const { to } = await c.req.json<{ to?: TaskStatus }>().catch(() => ({ to: undefined }));
   if (!to) return c.json({ error: 'to required' }, 400);
-  if (!(TRANSITIONS[task.status] ?? []).includes(to)) return c.json({ error: `invalid transition ${task.status} -> ${to}` }, 409);
+  // Словарь фронта -- в состояния адресата: доска говорит статусами задачи,
+  // а движется теперь строка человека.
+  const target = to === 'in_progress' ? 'accepted' : to === 'done' ? 'done' : null;
+  if (!target) return c.json({ error: `invalid transition ${task.status} -> ${to}` }, 409);
 
   // "Draft the contract" must be done before "review the contract" can start --
   // a single predecessor task that has to reach done/archived first.
-  if (to === 'in_progress' && task.depends_on_task_id) {
-    const dep = await c.env.DB.prepare('SELECT title, status FROM tasks WHERE id = ?').bind(task.depends_on_task_id).first<{ title: string; status: TaskStatus }>();
+  if (target === 'accepted' && task.depends_on_task_id) {
+    const dep = await c.env.DB.prepare('SELECT title, status FROM tasks WHERE id = ? AND org_id = ?')
+      .bind(task.depends_on_task_id, orgId)
+      .first<{ title: string; status: TaskStatus }>();
     if (dep && dep.status !== 'done' && dep.status !== 'archived') {
       return c.json({ error: `blocked: "${dep.title}" must be finished first` }, 409);
     }
   }
 
-  if (to === 'in_progress') {
-    // Отслеживаемое стартовое сообщение: его id проставит проход отправки, а не
-    // переход -- сообщения на момент batch ещё не существует.
-    await applyTransition(c.env, {
-      task, to, actorId: c.get('userId'), action: 'moved_in_progress',
-      notify: { emoji: '🚀', label: 'В работе', track: true },
-    });
-  } else {
-    // Дошли до done: гасим живое сообщение эскалации и объявляем завершение.
-    await applyTransition(c.env, {
-      task, to, actorId: c.get('userId'), action: 'moved_done',
-      set: { done_at: nowIso(), telegram_message_id: null },
-      notify: { emoji: '✅', label: 'Готово', deletePrevious: true },
-    });
-  }
+  const res = await transitionAssignee(c.env, {
+    task, assignee: mine, to: target, actorId: c.get('userId'),
+    notify: target === 'accepted'
+      ? { emoji: '🚀', label: 'В работе', track: true }
+      : { emoji: '✅', label: 'Готово', deletePrevious: true },
+  });
+  if (!res.ok) return c.json({ error: res.error }, 409);
   await drainOutbox(c.env);
   return c.json({ success: true });
+});
+
+// Отказ адресата. Без этого маршрута состояние declined недостижимо, а автомат
+// ADR-3 существовал бы только на бумаге.
+//
+// Терминал -- уведомление АВТОРУ: спека требует «отказ возвращается автору», и
+// закрытие задачи в архив этому удовлетворяет только при таком уведомлении --
+// поднять из архива автор-сотрудник сам не может (роут под requireRole).
+apiRoutes.post('/tasks/:id/decline', requireProjectAccess('task'), async (c) => {
+  const task = c.get('task')!;
+  const mine = await myAssignee(c.env, task.id, c.get('userId'), c.get('orgId'));
+  if (!mine) return c.json({ error: 'only an assignee can decline' }, 403);
+  const { reason } = await c.req.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
+  if (!reason || !reason.trim()) return c.json({ error: 'reason required' }, 400);
+
+  const res = await transitionAssignee(c.env, {
+    task, assignee: mine, to: 'declined', actorId: c.get('userId'), reason: reason.trim(),
+    notify: { emoji: '🚫', label: 'Отказ от поручения', extraLine: `Причина: ${reason.trim()}` },
+  });
+  if (!res.ok) return c.json({ error: res.error }, 409);
+  await drainOutbox(c.env);
+  return c.json({ success: true });
+});
+
+// Список адресатов задачи с их состояниями -- то самое «кто на каком этапе».
+apiRoutes.get('/tasks/:id/assignees', requireProjectAccess('task'), async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT a.*, u.name AS user_name FROM task_assignees a
+     JOIN users u ON u.id = a.user_id
+     WHERE a.task_id = ? AND a.org_id = ? ORDER BY a.created_at`,
+  ).bind(c.get('task')!.id, c.get('orgId')).all();
+  return c.json(results);
 });
 
 // Delete = archive (never hard delete). super_admin/creator only.
@@ -721,8 +777,13 @@ apiRoutes.post('/tasks/:id/restore', requireProjectAccess('task'), requireRole('
 // Confirm completion. Computes overdue_by vs deadline (0 if on time, null if no deadline).
 // confirmed_at guards against re-confirming and lets the board hide Confirm/Reject
 // once done (a Done card otherwise looks identical whether confirmed or not).
-apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), async (c) => {
   const task = c.get('task')!;
+  // Гейт -- АВТОРСТВО, а не роль (ADR-3 после R1-1). Поручения идут в любую
+  // сторону: сотрудник, попросивший директора, обязан иметь право принять
+  // работу, а посторонний super_admin -- нет. Роль остаётся запасным ключом для
+  // владельца организации: без неё некому закрыть задачу уволившегося автора.
+  if (!isReviewer(c, task)) return c.json({ error: 'only the author can confirm' }, 403);
   if (task.status !== 'done') return c.json({ error: 'task is not in done' }, 409);
   if (task.confirmed_at) return c.json({ error: 'task already confirmed' }, 409);
   let overdueBy: number | null = null;
@@ -744,8 +805,9 @@ apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), requireRole('
 
 // Reject: back to in_progress, with a reason and a fresh deadline (now + extra_days).
 // Escalation timers reset so the new deadline gets its own overdue/reminder cycle.
-apiRoutes.post('/tasks/:id/reject', requireProjectAccess('task'), requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.post('/tasks/:id/reject', requireProjectAccess('task'), async (c) => {
   const task = c.get('task')!;
+  if (!isReviewer(c, task)) return c.json({ error: 'only the author can reject' }, 403);
   if (task.status !== 'done') return c.json({ error: 'task is not in done' }, 409);
   const { comment, extra_days } = await c.req.json<{ comment?: string; extra_days?: number }>().catch(() => ({}) as Record<string, undefined>);
   if (!comment || !comment.trim()) return c.json({ error: 'comment required' }, 400);

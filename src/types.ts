@@ -79,7 +79,25 @@ export interface Task {
   // JSON array of {type:'text',text} / {type:'image',attachment_id} blocks --
   // the canvas editor's content. NULL for tasks created before this existed.
   content_blocks: string | null;
+  // ОТМИРАЮЩАЯ КОЛОНКА: адресаты живут в task_assignees с шага 3. Здесь она
+  // остаётся до contract-релиза, который пересобирает tasks (удалить её раньше
+  // нельзя: она NOT NULL и под индексом idx_tasks_responsible). Значение --
+  // первый адресат списка.
   responsible_user_id: string;
+  // Вид поручения: single (один), each (каждый делает своё), any (достаточно
+  // одного). От него зависит свёртка состояний адресатов в статус задачи.
+  kind: 'single' | 'each' | 'any';
+  // ПРЕДИКАТ АВТОРИЗАЦИИ, а не поле отчётности: после R1-1 поручения идут в
+  // любую сторону, поэтому принимает работу автор, а не «начальник».
+  author_id: string | null;
+  closed_by_author_at: string | null;
+  remind_at: string | null;
+  source: string;
+  origin_audio_id: string | null;
+  declined_reason: string | null;
+  entity_ref: string | null;
+  // Статус -- СВЁРТКА состояний адресатов (assignees.rollup), а не независимое
+  // поле. Пишется только через applyTransition.
   status: TaskStatus;
   priority: Priority;
   deadline: string | null;

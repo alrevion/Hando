@@ -104,11 +104,15 @@ export async function envWith(data: FakeData): Promise<Env> {
     const resp = (t.responsible_user_id as string) ?? '__seed';
     stmts.push(
       db.prepare(
-        `INSERT INTO tasks (id, org_id, project_id, title, description, responsible_user_id, status, deadline, done_at, confirmed_at, telegram_message_id, priority, depends_on_task_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        // author_id: гейт confirm/reject с шага 3 -- авторство, а не роль.
+        // По умолчанию автор = ответственный (как в бэкфилле 0012 для задач без
+        // события создания), чтобы задача была подтверждаемой.
+        `INSERT INTO tasks (id, org_id, project_id, title, description, responsible_user_id, author_id, kind, status, deadline, done_at, confirmed_at, telegram_message_id, priority, depends_on_task_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).bind(
         t.id, (t.org_id as string) ?? projects.get(t.project_id as string)?.org ?? ORG_A,
         t.project_id, (t.title as string) ?? 'T', (t.description as string) ?? '', resp,
+        (t.author_id as string) ?? resp, (t.kind as string) ?? 'single',
         (t.status as string) ?? 'todo', (t.deadline as string) ?? null, (t.done_at as string) ?? null,
         (t.confirmed_at as string) ?? null, (t.telegram_message_id as string) ?? null,
         (t.priority as string) ?? 'medium', (t.depends_on_task_id as string) ?? null,
@@ -120,6 +124,28 @@ export async function envWith(data: FakeData): Promise<Env> {
       db.prepare(
         'INSERT INTO attachments (id, org_id, task_id, telegram_file_id, telegram_message_id, filename, mime_type, size_bytes, uploaded_by) VALUES (?,?,?,?,?,?,?,?,?)',
       ).bind(a.id, a.org_id ?? ORG_A, a.task_id, a.telegram_file_id, a.telegram_message_id, a.filename, a.mime_type, a.size_bytes, a.uploaded_by),
+    );
+  }
+
+  // Строка адресата на каждую задачу: с шага 3 «кто делает» живёт в
+  // task_assignees, и без неё move/decline/confirm упрутся в «ты не адресат».
+  // Состояние выводится из статуса задачи -- ровно как в бэкфилле миграции 0012,
+  // иначе фикстура и прод разошлись бы в смысле одних и тех же данных.
+  for (const t of data.tasks) {
+    const st = (t.status as string) ?? 'todo';
+    const state = t.confirmed_at ? 'confirmed'
+      : st === 'done' ? 'done'
+      : st === 'in_progress' ? 'accepted'
+      : st === 'archived' && t.done_at ? 'done'
+      : 'pending';
+    stmts.push(
+      db.prepare(
+        'INSERT INTO task_assignees (id, task_id, user_id, org_id, state, done_at, due_at) VALUES (?,?,?,?,?,?,?)',
+      ).bind(
+        `as-${t.id}`, t.id, (t.responsible_user_id as string) ?? '__seed',
+        (t.org_id as string) ?? projects.get(t.project_id as string)?.org ?? ORG_A,
+        state, (t.done_at as string) ?? null, (t.deadline as string) ?? null,
+      ),
     );
   }
 

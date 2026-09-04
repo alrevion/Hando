@@ -35,77 +35,91 @@ async function autoArchive(env: Env): Promise<void> {
   }
 }
 
-// (b) todo/in_progress + passed deadline + not yet escalated + project NOT soft-deleted
-// -> send once. last_escalated_at IS NULL is the "not sent yet" gate, so a task is only
-// ever notified a single time (no repeat every Cron tick).
+// (b) У КАЖДОГО адресата свой срок и свой флаг эскалации.
+//
+// До шага 3 это были по-задачные флаги, и при рассылке на 14 человек первая же
+// отправка гасила флаг -- остальные 13 не получали ничего никогда. Именно поэтому
+// таймеры переехали на строку адресата, а не «заодно с состояниями».
+//
+// last_escalated_at IS NULL -- гейт «ещё не слали»: каждая строка получает ровно
+// одно предупреждение о просрочке, а не по одному на каждый тик cron.
 async function escalateOverdue(env: Env): Promise<void> {
   const { results } = await env.DB.prepare(
-    `SELECT t.*, u.name AS responsible_name, p.telegram_chat_id AS project_chat_id FROM tasks t
-     JOIN users u ON u.id = t.responsible_user_id
+    `SELECT a.id, a.due_at, a.user_id, t.id AS task_id, t.title, t.telegram_message_id, t.org_id,
+            u.name AS responsible_name, p.telegram_chat_id AS project_chat_id
+     FROM task_assignees a
+     JOIN tasks t ON t.id = a.task_id
+     JOIN users u ON u.id = a.user_id
      JOIN projects p ON p.id = t.project_id
-     WHERE t.status IN ('todo', 'in_progress') AND t.deadline IS NOT NULL AND t.last_escalated_at IS NULL AND p.archived_at IS NULL`,
-  ).all<Task & { responsible_name: string; project_chat_id: string }>();
+     WHERE a.state IN ('pending','accepted','rejected') AND a.due_at IS NOT NULL
+       AND a.last_escalated_at IS NULL AND p.archived_at IS NULL
+       -- Статус задачи гасит её строки: архивную задачу никто не делает, и
+       -- напоминать по ней -- шум. Проверка по t.status, а не только по
+       -- состоянию строки: архив ставит автор, состояния адресатов он не трогает.
+       AND t.status <> 'archived'`,
+  ).all<{ id: string; due_at: string; task_id: string; title: string; telegram_message_id: string | null; org_id: string; responsible_name: string; project_chat_id: string }>();
 
   const now = Date.now();
-  for (const t of results) {
-    const deadlineMs = Date.parse(t.deadline as string);
-    if (!(deadlineMs < now)) continue; // not overdue yet
+  for (const r of results) {
+    const deadlineMs = Date.parse(r.due_at);
+    if (!(deadlineMs < now)) continue; // ещё не просрочено
 
-    const text = `⚠️ ВЫ ПРОСРОЧИЛИ ДЕДЛАЙН\n${t.responsible_name}, задача "${t.title}" просрочена на ${formatOverdue(now - deadlineMs)}.`;
-    const newId = await sendMessage(env, t.project_chat_id, text);
-    if (!newId) continue; // send failed: last_escalated_at stays null, retry next tick
+    const text = `⚠️ ВЫ ПРОСРОЧИЛИ ДЕДЛАЙН\n${r.responsible_name}, задача "${r.title}" просрочена на ${formatOverdue(now - deadlineMs)}.`;
+    const newId = await sendMessage(env, r.project_chat_id, text);
+    if (!newId) continue; // не ушло: флаг не ставим, следующий тик попробует снова
 
-    // Drop the previous tracked message (e.g. the "🚀 В работе" notice), then track this one.
-    if (t.telegram_message_id) await deleteMessage(env, t.project_chat_id, t.telegram_message_id);
-    await env.DB.prepare('UPDATE tasks SET telegram_message_id = ?, last_escalated_at = ? WHERE id = ?')
-      .bind(newId, nowIso(), t.id)
-      .run();
+    // Прежнее отслеживаемое сообщение гасим только у single: у рассылки оно
+    // общее на задачу, и удалять его на первой же эскалации значило бы стирать
+    // след для остальных тринадцати.
+    if (r.telegram_message_id) await deleteMessage(env, r.project_chat_id, r.telegram_message_id);
+    await env.DB.prepare('UPDATE task_assignees SET last_escalated_at = ? WHERE id = ?').bind(nowIso(), r.id).run();
   }
 }
 
-// (c) todo/in_progress + deadline within the next 24h + not yet overdue + not
-// yet reminded -> a single heads-up (separate from the overdue escalation,
-// which only fires once the deadline has actually passed).
+// (c) Срок наступает в ближайшие сутки и ещё не наступил -- разовое
+// предупреждение, отдельно от эскалации (та стреляет уже ПОСЛЕ срока).
 async function remindApproachingDeadline(env: Env): Promise<void> {
   const { results } = await env.DB.prepare(
-    `SELECT t.*, u.name AS responsible_name, p.telegram_chat_id AS project_chat_id FROM tasks t
-     JOIN users u ON u.id = t.responsible_user_id
+    `SELECT a.id, a.due_at, t.title, u.name AS responsible_name, p.telegram_chat_id AS project_chat_id
+     FROM task_assignees a
+     JOIN tasks t ON t.id = a.task_id
+     JOIN users u ON u.id = a.user_id
      JOIN projects p ON p.id = t.project_id
-     WHERE t.status IN ('todo', 'in_progress') AND t.deadline IS NOT NULL AND t.reminder_sent_at IS NULL AND p.archived_at IS NULL`,
-  ).all<Task & { responsible_name: string; project_chat_id: string }>();
+     WHERE a.state IN ('pending','accepted','rejected') AND a.due_at IS NOT NULL
+       AND a.reminder_sent_at IS NULL AND p.archived_at IS NULL
+       AND t.status <> 'archived'`,
+  ).all<{ id: string; due_at: string; title: string; responsible_name: string; project_chat_id: string }>();
 
   const now = Date.now();
-  for (const t of results) {
-    const deadlineMs = Date.parse(t.deadline as string);
-    if (deadlineMs < now || deadlineMs - now > ONE_DAY_MS) continue; // already overdue, or more than a day away
-
-    const text = `⏰ Дедлайн приближается\nЗадача "${t.title}" (${t.responsible_name}) должна быть готова менее чем через день.`;
-    const sent = await sendMessage(env, t.project_chat_id, text);
-    if (!sent) continue; // send failed: reminder_sent_at stays null, retry next tick
-    await env.DB.prepare('UPDATE tasks SET reminder_sent_at = ? WHERE id = ?').bind(nowIso(), t.id).run();
+  for (const r of results) {
+    const deadlineMs = Date.parse(r.due_at);
+    if (deadlineMs < now || deadlineMs - now > ONE_DAY_MS) continue;
+    const text = `⏰ Дедлайн приближается\nЗадача "${r.title}" (${r.responsible_name}) должна быть готова менее чем через день.`;
+    if (!(await sendMessage(env, r.project_chat_id, text))) continue;
+    await env.DB.prepare('UPDATE task_assignees SET reminder_sent_at = ? WHERE id = ?').bind(nowIso(), r.id).run();
   }
 }
 
-// (d) done + unconfirmed + sitting for 2+ days -> a single nudge that review is
-// overdue. This is on the reviewer, not the worker -- the worker's own lateness
-// is already judged against done_at vs deadline (see POST /tasks/:id/confirm).
+// (d) Сделано, но не проверено 2+ дня. Это упрёк ПРОВЕРЯЮЩЕМУ, не исполнителю:
+// опоздание исполнителя судится по done_at против срока при подтверждении.
 async function remindStaleReview(env: Env): Promise<void> {
   const { results } = await env.DB.prepare(
-    `SELECT t.*, u.name AS responsible_name, p.telegram_chat_id AS project_chat_id FROM tasks t
-     JOIN users u ON u.id = t.responsible_user_id
+    `SELECT a.id, a.done_at, t.title, u.name AS responsible_name, p.telegram_chat_id AS project_chat_id
+     FROM task_assignees a
+     JOIN tasks t ON t.id = a.task_id
+     JOIN users u ON u.id = a.user_id
      JOIN projects p ON p.id = t.project_id
-     WHERE t.status = 'done' AND t.confirmed_at IS NULL AND t.done_at IS NOT NULL
-       AND t.review_reminded_at IS NULL AND p.archived_at IS NULL`,
-  ).all<Task & { responsible_name: string; project_chat_id: string }>();
+     WHERE a.state = 'done' AND a.done_at IS NOT NULL
+       AND a.review_reminded_at IS NULL AND p.archived_at IS NULL
+       AND t.status <> 'archived'`,
+  ).all<{ id: string; done_at: string; title: string; responsible_name: string; project_chat_id: string }>();
 
   const now = Date.now();
-  for (const t of results) {
-    if (now - Date.parse(t.done_at as string) < REVIEW_WINDOW_MS) continue; // not yet 2 days
-
-    const text = `🔔 Пора проверить задачу\n"${t.title}" (${t.responsible_name}) выполнена более 2 дней назад и всё ещё не проверена.`;
-    const sent = await sendMessage(env, t.project_chat_id, text);
-    if (!sent) continue; // send failed: review_reminded_at stays null, retry next tick
-    await env.DB.prepare('UPDATE tasks SET review_reminded_at = ? WHERE id = ?').bind(nowIso(), t.id).run();
+  for (const r of results) {
+    if (now - Date.parse(r.done_at) < REVIEW_WINDOW_MS) continue;
+    const text = `🔔 Пора проверить задачу\n"${r.title}" (${r.responsible_name}) выполнена более 2 дней назад и всё ещё не проверена.`;
+    if (!(await sendMessage(env, r.project_chat_id, text))) continue;
+    await env.DB.prepare('UPDATE task_assignees SET review_reminded_at = ? WHERE id = ?').bind(nowIso(), r.id).run();
   }
 }
 

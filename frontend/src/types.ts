@@ -1,7 +1,10 @@
 // Mirrors the backend's shared types (repo root src/types.ts). Duplicated here
 // rather than imported across the Vite/Worker build boundary.
 
-export type Role = 'creator' | 'super_admin' | 'admin';
+// member -- рядовой сотрудник (ADR-5 в ядре, src/types.ts). Прав на справочник
+// организации у него нет: GET /api/users отвечает ему 403, и экраны, которым
+// нужны чужие имена, обязаны это переживать, а не падать.
+export type Role = 'creator' | 'super_admin' | 'admin' | 'member';
 export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'archived';
 export type Priority = 'urgent' | 'medium' | 'low';
 
@@ -14,6 +17,12 @@ export interface User {
   // this person instead of just naming them. NULL if never set.
   telegram_username: string | null;
   created_at: string;
+  // Ниже -- поля, которые отдаёт ТОЛЬКО GET /api/me (роль и организация берутся
+  // из членства, а не из строки users). В списке GET /api/users их нет, поэтому
+  // они опциональны: один тип обслуживает оба ответа, а не два почти одинаковых.
+  position?: string | null;
+  org_id?: string;
+  org_name?: string;
 }
 
 export interface Project {

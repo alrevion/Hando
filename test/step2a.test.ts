@@ -125,6 +125,8 @@ const FIXTURES: Record<string, Probe> = {
   'POST /tasks/:id/restore': { path: '/tasks/tb/restore', method: 'POST', body: { comment: 'x' } },
   'POST /tasks/:id/confirm': { path: '/tasks/tb/confirm', method: 'POST', body: {} },
   'POST /tasks/:id/reject': { path: '/tasks/tb/reject', method: 'POST', body: { comment: 'x', extra_days: 1 } },
+  'POST /tasks/:id/decline': { path: '/tasks/tb/decline', method: 'POST', body: { reason: 'не буду' } },
+  'GET /tasks/:id/assignees': { path: '/tasks/tb/assignees' },
   'POST /tasks/:id/attachments': { path: '/tasks/tb/attachments', method: 'POST' },
   'GET /tasks/:id/attachments': { path: '/tasks/tb/attachments' },
   'GET /attachments/:id/download': { path: '/attachments/ab/download' },

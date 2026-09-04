@@ -55,13 +55,17 @@ describe('шаг 1: единственный писатель tasks.status', () 
     expect(read('transition.ts')).toContain("columns: string[] = ['status = ?'");
   });
 
-  it('scheduled.ts не отправляет сообщений в обход outbox по закрытым задачам', () => {
+  it('каждый проход cron фильтрует и по состоянию строки, и по статусу задачи', () => {
     const code = stripComments(read('scheduled.ts'));
-    // Три оставшихся прохода cron пишут только таймеры и шлют напоминания -- но
-    // все три обязаны фильтровать по статусу, иначе архивная задача продолжит
-    // получать напоминания. Это и есть «после закрытия cron молчит».
-    const selects = [...code.matchAll(/FROM tasks t[\s\S]*?WHERE([\s\S]*?)`/g)].map((m) => m[1]);
+    // Три прохода напоминаний с шага 3 ходят по task_assignees: у каждого
+    // адресата свои таймеры. Но фильтра по СОСТОЯНИЮ СТРОКИ мало -- архив
+    // ставит автор задачи и состояний адресатов не трогает, поэтому архивная
+    // задача продолжала бы слать напоминания. Нужны оба условия.
+    const selects = [...code.matchAll(/FROM task_assignees a[\s\S]*?WHERE([\s\S]*?)`/g)].map((m) => m[1]);
     expect(selects.length).toBeGreaterThanOrEqual(3);
-    for (const where of selects) expect(where).toMatch(/t\.status\s*(=|IN)/);
+    for (const where of selects) {
+      expect(where).toMatch(/a\.state\s*(=|IN)/);
+      expect(where).toMatch(/t\.status\s*<>\s*'archived'/);
+    }
   });
 });
