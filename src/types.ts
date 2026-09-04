@@ -1,4 +1,9 @@
-export type Role = 'creator' | 'super_admin' | 'admin';
+// member -- четвёртая роль (ADR-5, отклонение от spec:85, решение 2026-09-04).
+// Рядовой сотрудник: ведёт свои задачи, но не заводит людей и не видит
+// справочник организации. Без неё учитель обязан был бы стать admin.
+// Права -- здесь, в ядре. Должность -- в org_memberships.position из пакета
+// отрасли; ни одна ветка кода по position не ветвится.
+export type Role = 'creator' | 'super_admin' | 'admin' | 'member';
 export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'archived';
 export type Priority = 'urgent' | 'medium' | 'low';
 
@@ -35,12 +40,13 @@ export interface OrgMembership {
 
 export interface User {
   id: string;
-  phone: string;
+  // Nullable с шага 2b: сотрудник подключается по invite_token через Telegram, и
+  // телефон у него может не спрашиваться вовсе. UNIQUE остался ГЛОБАЛЬНЫМ --
+  // человек один, организаций у него несколько.
+  phone: string | null;
   name: string;
-  // МЁРТВАЯ КОЛОНКА с шага 2a: роль читается из org_memberships. Осталась,
-  // потому что 0001_init объявил её NOT NULL CHECK, а снять это можно только
-  // пересборкой таблицы -- то есть в 2b.
-  role: Role;
+  // Роли здесь БОЛЬШЕ НЕТ: она в org_memberships. Один человек бывает creator
+  // семейной группы и member школы одновременно.
   // Липкий контекст: организация, в которой человек работает сейчас. NULL
   // возможен после отзыва последнего членства.
   current_org_id: string | null;

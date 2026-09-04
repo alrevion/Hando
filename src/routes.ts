@@ -78,7 +78,7 @@ apiRoutes.post('/auth/verify', async (c) => {
   if (!role) return c.json({ error: 'no active organisation for this account' }, 403);
   const token = await mintSession(c.env.SESSION_SECRET, { sub: user.id, role, org_id: orgId });
   setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
-  return c.json({ user: { id: user.id, name: user.name, role: user.role } });
+  return c.json({ user: { id: user.id, name: user.name, role, org_id: orgId } });
 });
 
 apiRoutes.post('/auth/logout', (c) => {
@@ -123,6 +123,7 @@ apiRoutes.post('/users', requireRole('super_admin', 'creator'), async (c) => {
     .catch(() => ({}) as Record<string, undefined>);
   if (!phone || !name || !role) return c.json({ error: 'phone, name, role required' }, 400);
   if (role === 'creator') return c.json({ error: 'cannot create creator via API' }, 400);
+  if (!['super_admin', 'admin', 'member'].includes(role)) return c.json({ error: 'unknown role' }, 400);
   if (role === 'super_admin' && c.get('role') !== 'creator') return c.json({ error: 'only creator can create super_admin' }, 403);
 
   const orgId = c.get('orgId');
@@ -158,7 +159,8 @@ apiRoutes.post('/users', requireRole('super_admin', 'creator'), async (c) => {
   // принадлежал бы никому и не смог бы войти.
   try {
     await c.env.DB.batch([
-      c.env.DB.prepare('INSERT INTO users (id, phone, name, role, telegram_username, current_org_id) VALUES (?, ?, ?, ?, ?, ?)').bind(id, trimmed, name, role, username, orgId),
+      // users.role снята пересборкой 2b: роль живёт только в членстве.
+      c.env.DB.prepare('INSERT INTO users (id, phone, name, telegram_username, current_org_id) VALUES (?, ?, ?, ?, ?)').bind(id, trimmed, name, username, orgId),
       c.env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role) VALUES (?, ?, ?, ?)').bind(uuid(), orgId, id, role),
     ]);
   } catch {
@@ -206,18 +208,16 @@ apiRoutes.patch('/users/:id', requireRole('super_admin', 'creator'), async (c) =
     sets.push('telegram_username = ?');
     binds.push(normalizeUsername(body.telegram_username));
   }
-  // Роль пишется в ЧЛЕНСТВО, а не в users.role, и переключение сделано здесь, а
-  // не в 2b: иначе между двумя релизами понижение писалось бы в колонку, которую
-  // никто не читает, и разжалованный super_admin оставался бы super_admin.
-  // users.role синхронизируется только ради NOT NULL CHECK -- уйдёт в 2b.
-  if (body.role !== undefined) {
-    sets.push('role = ?');
-    binds.push(body.role);
-  }
-  if (sets.length === 0) return c.json({ error: 'nothing to update' }, 400);
-  binds.push(targetId);
+  // Роль пишется ТОЛЬКО в членство: колонка users.role снята пересборкой 2b.
+  // Правка идентичности (имя/телефон/username) и правка роли -- две разные
+  // записи, и вторая может быть единственной.
+  if (sets.length === 0 && body.role === undefined) return c.json({ error: 'nothing to update' }, 400);
   try {
-    const writes = [c.env.DB.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).bind(...binds)];
+    const writes = [];
+    if (sets.length > 0) {
+      binds.push(targetId);
+      writes.push(c.env.DB.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).bind(...binds));
+    }
     if (body.role !== undefined) {
       writes.push(c.env.DB.prepare('UPDATE org_memberships SET role = ? WHERE org_id = ? AND user_id = ?').bind(body.role, orgId, targetId));
     }
@@ -231,7 +231,13 @@ apiRoutes.patch('/users/:id', requireRole('super_admin', 'creator'), async (c) =
 });
 
 // Assignment dropdowns: id/name/role/telegram_username (no phone exposure).
-apiRoutes.get('/users', async (c) => {
+//
+// member сюда НЕ допускается -- это и есть смысл четвёртой роли (ADR-5).
+// Справочник ВСЕЙ организации рядовому сотруднику не нужен: людей своих досок он
+// видит через /projects/:id/members, который и так ограничен доской и не отдаёт
+// телефонов никому кроме super_admin/creator. Поручать он по-прежнему может
+// (R1-1), просто в пределах досок, где состоит.
+apiRoutes.get('/users', requireRole('admin', 'super_admin', 'creator'), async (c) => {
   // phone was deliberately withheld here (any project member can hit this to
   // populate a responsible-person picker) -- but super_admin/creator need it
   // back for the Edit person modal, so send it only to them.

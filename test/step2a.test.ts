@@ -462,7 +462,7 @@ describe('шаг 2a: предикаты, до которых загрузчик 
     // both -- creator в обеих. Понижаем его в А от лица creator'а Б? Нет:
     // роль правит creator организации А, а цель -- человек с двумя членствами.
     // Для этого нужен второй creator в А.
-    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, role, current_org_id) VALUES ('boss','+9','Босс А','creator',?)").bind(ORG_A).run();
+    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, current_org_id) VALUES ('boss','+9','Босс А',?)").bind(ORG_A).run();
     await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role) VALUES ('m-boss',?, 'boss','creator')").bind(ORG_A).run();
 
     const res = await apiRoutes.request('/users/a1', {
@@ -527,7 +527,7 @@ describe('шаг 2a: ветка «участник» и записи по чле
 
   it('понижение роли человека двух организаций не трогает вторую', async () => {
     const env = await world();
-    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, role, current_org_id) VALUES ('boss2','+91','Босс','creator',?)").bind(ORG_A).run();
+    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, current_org_id) VALUES ('boss2','+91','Босс',?)").bind(ORG_A).run();
     await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role) VALUES ('m-boss2',?,'boss2','creator')").bind(ORG_A).run();
 
     const res = await apiRoutes.request('/users/w', {

@@ -54,8 +54,9 @@ export async function envWith(data: FakeData): Promise<Env> {
     stmts.push(
       // current_org_id -- первая из перечисленных: у человека с двумя членствами
       // без него resolveOrgId вернул бы null и он бы просто не вошёл.
-      db.prepare('INSERT INTO users (id, phone, name, role, telegram_username, current_org_id) VALUES (?,?,?,?,?,?)')
-        .bind(u.id, u.phone, u.name, u.role, u.telegram_username ?? null, orgs[0]),
+      // users.role снята пересборкой 2b: роль живёт в членстве.
+      db.prepare('INSERT INTO users (id, phone, name, telegram_username, current_org_id) VALUES (?,?,?,?,?)')
+        .bind(u.id, u.phone, u.name, u.telegram_username ?? null, orgs[0]),
     );
     for (const org of orgs) {
       stmts.push(
@@ -89,7 +90,7 @@ export async function envWith(data: FakeData): Promise<Env> {
     // Досозданный человек получает членство в ORG_A: иначе строка, на которую
     // ссылается задача, принадлежала бы никому и org-предикаты вели бы себя
     // непредсказуемо.
-    stmts.push(db.prepare('INSERT INTO users (id, phone, name, role, current_org_id) VALUES (?,?,?,?,?)').bind(id, `+00${phone++}`, id, 'admin', ORG_A));
+    stmts.push(db.prepare('INSERT INTO users (id, phone, name, current_org_id) VALUES (?,?,?,?)').bind(id, `+00${phone++}`, id, ORG_A));
     stmts.push(db.prepare('INSERT INTO org_memberships (id, org_id, user_id, role) VALUES (?,?,?,?)').bind(`${ORG_A}:${id}`, ORG_A, id, 'admin'));
   }
   for (const p of projects.values()) {
