@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './components/LoginPage';
-import { Sidebar } from './components/Sidebar';
+import { Sidebar, type NavView } from './components/Sidebar';
+import { MyTasksView } from './components/MyTasksView';
+import { PeopleView } from './components/PeopleView';
+import { CalendarView } from './components/CalendarView';
 import { BoardView } from './components/BoardView';
 import { ArchiveTab } from './components/ArchiveTab';
 import { PersonalArchiveTab } from './components/PersonalArchiveTab';
@@ -16,8 +19,10 @@ function AuthenticatedApp() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectTab, setProjectTab] = useState<'board' | 'archive' | 'access'>('board');
-  const [showPersonalArchive, setShowPersonalArchive] = useState(false);
-  const [showArchivedProjects, setShowArchivedProjects] = useState(false);
+  // Один экран за раз вместо четырёх независимых булевых флагов: с флагами
+  // «открыто ли что-то ещё» надо было гасить вручную в каждом обработчике, и
+  // забытое гашение давало два экрана одновременно.
+  const [view, setView] = useState<NavView>('board');
   const [deepLinkTask, setDeepLinkTask] = useState<Task | null>(null);
 
   function loadProjects(selectId?: string) {
@@ -44,7 +49,7 @@ function AuthenticatedApp() {
         setDeepLinkTask(task);
         setSelectedProjectId(task.project_id);
         setProjectTab('board');
-        setShowPersonalArchive(false);
+        setView('board');
       })
       .catch(() => {});
   }, []);
@@ -60,26 +65,16 @@ function AuthenticatedApp() {
         user={user}
         projects={projects}
         selectedProjectId={selectedProjectId}
+        view={view}
+        onSelectView={setView}
         onSelectProject={(id) => {
           setSelectedProjectId(id);
           setProjectTab('board');
-          setShowPersonalArchive(false);
-          setShowArchivedProjects(false);
-        }}
-        personalArchiveActive={showPersonalArchive}
-        onSelectPersonalArchive={() => {
-          setShowPersonalArchive(true);
-          setShowArchivedProjects(false);
-        }}
-        archivedProjectsActive={showArchivedProjects}
-        onSelectArchivedProjects={() => {
-          setShowArchivedProjects(true);
-          setShowPersonalArchive(false);
+          setView('board');
         }}
         onProjectCreated={(project) => {
           loadProjects(project.id);
-          setShowPersonalArchive(false);
-          setShowArchivedProjects(false);
+          setView('board');
         }}
         onProjectDeleted={(projectId) => {
           setProjects((prev) => prev.filter((p) => p.id !== projectId));
@@ -95,9 +90,15 @@ function AuthenticatedApp() {
           </div>
         ) : null}
 
-        {showPersonalArchive ? (
+        {view === 'my-tasks' ? (
+          <MyTasksView user={user} />
+        ) : view === 'people' ? (
+          <PeopleView />
+        ) : view === 'calendar' ? (
+          <CalendarView currentUser={user} />
+        ) : view === 'personal-archive' ? (
           <PersonalArchiveTab />
-        ) : showArchivedProjects ? (
+        ) : view === 'archived-projects' ? (
           <ArchivedProjectsView onRestored={() => loadProjects()} />
         ) : selectedProject ? (
           <>

@@ -1,31 +1,43 @@
 import { useState, type FormEvent } from 'react';
-import { LogOut, Plus, FolderKanban, ClipboardCheck, Archive, ArchiveRestore, Loader2 } from 'lucide-react';
+import { LogOut, Plus, FolderKanban, ClipboardCheck, Archive, ArchiveRestore, Loader2, CalendarDays, ListChecks, Users } from 'lucide-react';
 import type { Project, User } from '../types';
 import { ApiError, createProject, deleteProject } from '../lib/api';
+import { OrgSwitcher } from './OrgSwitcher';
+
+// Что показано справа. Одно значение вместо набора взаимоисключающих флагов:
+// экранов стало шесть, и каждый новый флаг требовал бы гасить все остальные
+// в каждом обработчике -- ровно там и заводятся состояния «открыто два экрана».
+export type NavView = 'board' | 'my-tasks' | 'people' | 'calendar' | 'personal-archive' | 'archived-projects';
 
 interface SidebarProps {
   user: User;
   projects: Project[];
   selectedProjectId: string | null;
+  view: NavView;
+  onSelectView: (view: NavView) => void;
   onSelectProject: (id: string) => void;
-  personalArchiveActive: boolean;
-  onSelectPersonalArchive: () => void;
-  archivedProjectsActive: boolean;
-  onSelectArchivedProjects: () => void;
   onProjectCreated: (project: { id: string; name: string }) => void;
   onProjectDeleted: (projectId: string) => void;
   onLogout: () => void;
 }
 
+// Сквозные экраны -- они же порядок в меню: сотрудник заходит ради «Мои задачи»,
+// поэтому она первая, а не после списка досок.
+const CROSS_VIEWS: { view: NavView; label: string; icon: typeof ListChecks; managersOnly: boolean }[] = [
+  { view: 'my-tasks', label: 'Мои задачи', icon: ListChecks, managersOnly: false },
+  // «Люди» держится на GET /api/users, который роли member отвечает 403 --
+  // пункт меню, ведущий в гарантированную ошибку, ей не показываем.
+  { view: 'people', label: 'Люди', icon: Users, managersOnly: true },
+  { view: 'calendar', label: 'Календарь', icon: CalendarDays, managersOnly: false },
+];
+
 export function Sidebar({
   user,
   projects,
   selectedProjectId,
+  view,
+  onSelectView,
   onSelectProject,
-  personalArchiveActive,
-  onSelectPersonalArchive,
-  archivedProjectsActive,
-  onSelectArchivedProjects,
   onProjectCreated,
   onProjectDeleted,
   onLogout,
@@ -83,12 +95,32 @@ export function Sidebar({
       aria-label="Projects"
       className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white"
     >
+      <OrgSwitcher user={user} />
+
       <div className="border-b border-slate-200 p-4">
         <p className="truncate text-sm font-medium text-slate-900">{user.name}</p>
-        <p className="text-xs text-slate-500">{user.role.replace('_', ' ')}</p>
+        <p className="text-xs text-slate-500">{user.position || user.role.replace('_', ' ')}</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
+        <ul className="mb-4 space-y-0.5">
+          {CROSS_VIEWS.filter((item) => !item.managersOnly || user.role !== 'member').map((item) => (
+            <li key={item.view}>
+              <button
+                type="button"
+                onClick={() => onSelectView(item.view)}
+                aria-current={view === item.view ? 'page' : undefined}
+                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
+                  view === item.view ? 'bg-blue-50 font-medium text-blue-700' : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                {item.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+
         <div className="mb-2 flex items-center justify-between px-1">
           <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Projects
@@ -151,11 +183,9 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => onSelectProject(project.id)}
-                aria-current={
-                  !personalArchiveActive && !archivedProjectsActive && selectedProjectId === project.id ? 'page' : undefined
-                }
+                aria-current={view === 'board' && selectedProjectId === project.id ? 'page' : undefined}
                 className={`flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
-                  !personalArchiveActive && !archivedProjectsActive && selectedProjectId === project.id
+                  view === 'board' && selectedProjectId === project.id
                     ? 'bg-blue-50 font-medium text-blue-700'
                     : 'text-slate-700 hover:bg-slate-100'
                 }`}
@@ -186,14 +216,16 @@ export function Sidebar({
           ) : null}
         </ul>
 
-        {user.role === 'admin' ? (
+        {/* GET /api/archive/mine ролью не ограничен, и member -- такой же
+            исполнитель, как admin: свой закрытый список нужен обоим. */}
+        {user.role === 'admin' || user.role === 'member' ? (
           <div className="mt-4 border-t border-slate-200 pt-3">
             <button
               type="button"
-              onClick={onSelectPersonalArchive}
-              aria-current={personalArchiveActive ? 'page' : undefined}
+              onClick={() => onSelectView('personal-archive')}
+              aria-current={view === 'personal-archive' ? 'page' : undefined}
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
-                personalArchiveActive
+                view === 'personal-archive'
                   ? 'bg-blue-50 font-medium text-blue-700'
                   : 'text-slate-700 hover:bg-slate-100'
               }`}
@@ -208,10 +240,10 @@ export function Sidebar({
           <div className="mt-4 border-t border-slate-200 pt-3">
             <button
               type="button"
-              onClick={onSelectArchivedProjects}
-              aria-current={archivedProjectsActive ? 'page' : undefined}
+              onClick={() => onSelectView('archived-projects')}
+              aria-current={view === 'archived-projects' ? 'page' : undefined}
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
-                archivedProjectsActive
+                view === 'archived-projects'
                   ? 'bg-blue-50 font-medium text-blue-700'
                   : 'text-slate-700 hover:bg-slate-100'
               }`}
