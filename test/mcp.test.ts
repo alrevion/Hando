@@ -1,3 +1,15 @@
+// ИСКЛЮЧЕНИЕ из правила шага -1 «ни один тест не идёт против подделки D1».
+//
+// Этот файл — единственный, который не может выполняться в workerd:
+// src/index -> src/mcp -> @modelcontextprotocol/sdk -> ajv, а ajv грузит
+// ./refs/data.json как модуль, чего workerd не умеет. Поэтому он идёт в
+// node-пуле (vitest.node.config.ts) и сохраняет собственную мини-подделку базы.
+//
+// Что это стоит, названо честно: тест «create_task пишет задачу» доказывает,
+// что MCP дёргает тот же роут с минченной сессией и атрибутирует событие на
+// MCP_USER_ID, но НЕ доказывает, что запись доходит до настоящей таблицы.
+// Контроль доступа и схема покрыты access.test.ts и schema.test.ts против
+// настоящей D1; здесь проверяется плумбинг MCP, а не база.
 // Locks down the two things that actually matter for the MCP surface: the bearer
 // gate on /mcp, and that a create_task tool call reaches the REAL apiRoutes and
 // writes a task attributed to MCP_USER_ID (not a stub). Drives the real Worker

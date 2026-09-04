@@ -8,7 +8,7 @@ describe('тестовая база — настоящая D1', () => {
     const { results } = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'd1_%' ORDER BY name",
     ).all<{ name: string }>();
-    expect(results.map((r) => r.name)).toEqual([
+    expect(results.map((r: { name: string }) => r.name)).toEqual([
       'attachments',
       'events',
       'project_memberships',
@@ -20,7 +20,7 @@ describe('тестовая база — настоящая D1', () => {
 
   it('колонки поздних миграций на месте', async () => {
     const { results } = await env.DB.prepare('PRAGMA table_info(tasks)').all<{ name: string }>();
-    const cols = results.map((r) => r.name);
+    const cols = results.map((r: { name: string }) => r.name);
     for (const c of ['priority', 'depends_on_task_id', 'reminder_sent_at', 'review_reminded_at', 'confirmed_at', 'content_blocks']) {
       expect(cols).toContain(c);
     }

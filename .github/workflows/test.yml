@@ -1,0 +1,20 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # pretest создаёт frontend/dist: wrangler требует существования
+      # assets.directory даже для бэкенд-тестов, собирать фронт ради них не нужно.
+      - run: npm test
