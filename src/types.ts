@@ -143,6 +143,9 @@ export interface Env {
   // mcp_tokens(org_id, user_id, token_hash) появится, когда MCP реально
   // понадобится второму арендатору; сейчас им не пользуется никто.
   MCP_ORG_ID: string;
+  // Секрет вебхука Telegram. Пустой = дверь закрыта: незаданная переменная не
+  // должна означать «пускаем всех».
+  TELEGRAM_WEBHOOK_SECRET: string;
 }
 
 export interface SessionPayload {

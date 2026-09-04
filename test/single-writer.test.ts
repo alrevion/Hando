@@ -55,6 +55,17 @@ describe('шаг 1: единственный писатель tasks.status', () 
     expect(read('transition.ts')).toContain("columns: string[] = ['status = ?'");
   });
 
+  it('вебхук Telegram смонтирован ВНЕ /api -- иначе его накрыл бы requireAuth', () => {
+    const code = stripComments(read('index.ts'));
+    // Не стилистика: apiRoutes.use('*', requireAuth) накрывает всё
+    // зарегистрированное ниже. Внутри /api вебхук получал бы 401, Telegram
+    // отретраил бы и отключил его -- отказ тихий, обнаруживается через сутки
+    // молчания бота. Поведенческим тестом это не поймать: он бы просто дёргал
+    // botApp напрямую и был бы зелёным при любом монтировании.
+    expect(code).toMatch(/app\.route\(\s*'\/tg'\s*,\s*botApp\s*\)/);
+    expect(code).not.toMatch(/apiRoutes\.route\(\s*'[^']*'\s*,\s*botApp/);
+  });
+
   it('каждый проход cron фильтрует и по состоянию строки, и по статусу задачи', () => {
     const code = stripComments(read('scheduled.ts'));
     // Три прохода напоминаний с шага 3 ходят по task_assignees: у каждого

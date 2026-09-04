@@ -107,6 +107,7 @@ function envWith(data: FakeData): Env {
     MCP_API_TOKEN: TOKEN,
     MCP_USER_ID: OWNER,
     MCP_ORG_ID: 'org-a',
+    TELEGRAM_WEBHOOK_SECRET: 'tg-secret',
   };
 }
 

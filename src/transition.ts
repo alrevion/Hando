@@ -43,6 +43,8 @@ export type TransitionInput = {
     track?: boolean;
     // Погасить прежнее отслеживаемое сообщение перед отправкой нового.
     deletePrevious?: boolean;
+    // Инлайновые кнопки: callback_data вида "<действие>:<taskId>".
+    buttons?: { text: string; callback_data: string }[][];
   };
 };
 
@@ -121,17 +123,32 @@ export async function buildNotification(
   notify: NonNullable<TransitionInput['notify']>,
   deadline: string | null,
 ): Promise<D1PreparedStatement> {
-  const chat = await env.DB.prepare('SELECT telegram_chat_id FROM projects WHERE id = ?')
-    .bind(task.project_id)
-    .first<{ telegram_chat_id: string }>();
+  // ADR-4: ЗАГОЛОВОК ЗАДАЧИ УХОДИТ В ЛИЧКУ, а не в групповой чат. Группа --
+  // общий канал доски, и содержание поручения там видят все участники, включая
+  // тех, кого оно не касается. В группу остаются только сводки со счётчиками
+  // (см. groupDigest ниже).
+  //
+  // ТЕКСТ замораживается здесь, АДРЕС -- нет.
+  //
+  // Текст обязан быть снимком: повторная отправка через сутки взяла бы уже
+  // изменённые имя и срок, и человек получил бы сообщение о состоянии, которого
+  // не было. Адрес -- наоборот: это маршрутизация, а не содержание. Если
+  // заморозить и его, человек, подключивший бота ПОСЛЕ постановки задачи,
+  // навсегда остался бы с пустым адресом и не получил бы накопленное -- ровно
+  // то, что ADR-4 обещает доставить. Поэтому в payload едет recipient_user_id, а
+  // telegram_user_id резолвится проходом отправки.
   const payload = {
-    chat_id: chat?.telegram_chat_id ?? '',
+    recipient_user_id: task.responsible_user_id,
     text: await composeText(env, task, notify, deadline),
     // Гасим прежнее отслеживаемое сообщение (например «🚀 В работе») тем же
     // проходом отправки, чтобы порядок «удалить старое, отправить новое» не
     // зависел от того, чем закончился запрос.
     delete_message_id: notify.deletePrevious ? (task.telegram_message_id ?? null) : null,
     track: notify.track === true,
+    // Кнопки прикрепляются ТОЛЬКО с шага 4a: до появления входящего канала
+    // нажатие крутило бы спиннер до таймаута. Предлагаем следующий шаг автомата,
+    // а не все сразу -- «Принял» на уже принятой задаче ничего не значит.
+    keyboard: notify.buttons ?? null,
   };
   return env.DB.prepare(
     `INSERT INTO notifications (id, task_id, assignee_id, org_id, kind, payload, scheduled_at)

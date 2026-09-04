@@ -581,7 +581,12 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(uuid(), c.get('userId'), orgId, 'task', id, 'created', null, null, now),
-    await buildNotification(c.env, created, 'created', { emoji: '📌', label: 'Новая задача' }, b.deadline ?? null),
+    await buildNotification(c.env, created, 'created', {
+      emoji: '📌', label: 'Новая задача',
+      // «Принял» -- ключевая кнопка продукта: она превращает уведомление в
+      // подтверждаемое поручение вместо объявления в чате.
+      buttons: [[{ text: '✅ Принял', callback_data: `accept:${id}` }]],
+    }, b.deadline ?? null),
   ]);
   await drainOutbox(c.env);
   return c.json({ id }, 201);

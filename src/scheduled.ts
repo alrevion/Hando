@@ -1,9 +1,12 @@
 // Cron (*/5 * * * *): auto-archive stale Done tasks, then escalate overdue ones.
 import type { Env, Task } from './types';
 import { nowIso } from './db';
-import { deleteMessage, sendMessage } from './telegram';
+import { deleteMessage, reconcileWebhook, sendMessage } from './telegram';
 import { applyTransition } from './transition';
 import { drainOutbox } from './outbox';
+
+// Тот же домен, что в transition.ts: адрес воркера один.
+const APP_URL = 'https://hando.alrevion.com';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -17,6 +20,9 @@ export async function scheduled(_controller: ScheduledController, env: Env, _ctx
   // Страховка за отправку: роуты сливают outbox сразу после ответа, но если тот
   // вызов не дошёл, строка так и лежит с sent_at IS NULL -- здесь она уедет.
   await drainOutbox(env);
+  // Самопочинка вебхука: без неё регистрация была бы ручным шагом с токеном
+  // бота, а сбившийся вебхук пришлось бы замечать по молчанию бота.
+  await reconcileWebhook(env, APP_URL);
 }
 
 // (a) status='done' + done_at older than 7 days -> archived (system-generated event).

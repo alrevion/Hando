@@ -44,6 +44,20 @@ export async function editMessageReplyMarkup(env: Env, chatId: string, messageId
   }
 }
 
+// Гасит спиннер у нажавшего. Обязателен на КАЖДОЕ нажатие, включая отвергнутые:
+// без ответа Telegram крутит его до таймаута, и человек считает бота сломанным.
+export async function answerCallbackQuery(env: Env, callbackQueryId: string, text?: string): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(text ? { callback_query_id: callbackQueryId, text } : { callback_query_id: callbackQueryId }),
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
 export async function deleteMessage(env: Env, chatId: string, messageId: string): Promise<void> {
   try {
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/deleteMessage`, {
@@ -87,6 +101,34 @@ export async function getFileUrl(env: Env, fileId: string): Promise<string> {
   const filePath = data.result?.file_path;
   if (!res.ok || !data.ok || !filePath) throw new Error('telegram getFile failed');
   return `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`;
+}
+
+/**
+ * Переустанавливает вебхук на каждом тике cron.
+ *
+ * Всегда переустанавливаем, а не «только если URL отличается»: при совпадении
+ * URL пропуск шага оставлял бы у Telegram СТАРЫЙ secret_token, если секрет
+ * ротировали, -- и бот молча замолкал бы с 403 на каждом апдейте. Тот же
+ * дефект уже ловили в telegram-otp.
+ *
+ * Секрета нет -- не регистрируем вовсе: вебхук без проверки секрета это
+ * открытая дверь для любого, кто знает адрес воркера.
+ */
+export async function reconcileWebhook(env: Env, publicBaseUrl: string): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: `${publicBaseUrl}/tg/webhook`,
+        secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+        allowed_updates: ['message', 'callback_query'],
+      }),
+    });
+  } catch {
+    /* best-effort: лежащий Telegram не должен ронять тик cron */
+  }
 }
 
 async function chatExists(env: Env, chatId: string): Promise<boolean> {
