@@ -15,29 +15,22 @@
     {
       "binding": "DB",
       "database_name": "hando-db",
-      // ЗАПОЛНИТЬ перед первым деплоем:
-      //   wrangler d1 create hando-db
-      // и подставить сюда выданный id. Пока стоит заглушка -- деплой упадёт
-      // громко, и это намеренно: с id базы Sayn он писал бы в её прод.
-      "database_id": "REPLACE_ME_RUN_WRANGLER_D1_CREATE",
+      // Своя база Hando (регион EEUR), создана 2026-09-04. НЕ база Sayn:
+      // с её id деплой отсюда писал бы в чужой прод.
+      "database_id": "012f0c7a-2852-448c-a7dc-f615000e556d",
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [
-    {
-      // ADR-4: долговечная копия вложений, ключ <org_id>/<attachment_id>.
-      // Создать: wrangler r2 bucket create hando-attachments
-      "binding": "ATTACHMENTS",
-      "bucket_name": "hando-attachments"
-    }
-  ],
-  "triggers": {
-    "crons": ["*/5 * * * *"]
-  },
+  // Cron ОТКЛЮЧЁН не по замыслу, а по лимиту: на аккаунте исчерпаны 5 бесплатных
+  // cron-триггеров Workers Free (ошибка 10072). Без него не работают автоархив,
+  // эскалация просрочек и напоминания -- то есть весь scheduled.ts. Нужен
+  // начиная с шага 4c плана. Вернуть, освободив слот или перейдя на Workers Paid:
+  //   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "AUTH_API_URL": "https://api.auth.alrevion.com",
-    // Выделенная bot-only группа Telegram под вложения. Бот @hando_ai_bot
-    // уже добавлен в неё. Валидируется через resolveChatId при настройке.
+    // Выделенная bot-only группа Telegram под вложения -- единственное
+    // хранилище медиа (ADR-4). Бот @hando_ai_bot уже добавлен в неё.
+    // Валидируется через resolveChatId при настройке.
     "TELEGRAM_STORAGE_CHAT_ID": "-5572663778",
     // Пусто до создания первого пользователя в базе Hando: id из базы Sayn
     // здесь бессмысленен. MCP не заработает, пока не заполнено -- см. mcp.ts:64.

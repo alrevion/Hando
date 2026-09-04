@@ -31,7 +31,6 @@ export default defineWorkersConfig(async () => {
             compatibilityDate: '2025-01-01',
             compatibilityFlags: ['nodejs_compat'],
             d1Databases: ['DB'],
-            r2Buckets: ['ATTACHMENTS'],
             // Список миграций уезжает в изолят биндингом; применяет их
             // setupFile перед каждым файлом тестов.
             bindings: { TEST_MIGRATIONS: migrations },
