@@ -65,7 +65,64 @@ export function safeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return r === 0;
 }
 
-export async function mintSession(secret: string, claims: { sub: string; role: Role }): Promise<string> {
+/**
+ * Организация, в контексте которой человек работает сейчас. Порядок: липкий
+ * current_org_id, затем единственное действующее членство. Если членств
+ * несколько, а current не выставлен -- выбирать за человека нельзя, возвращаем
+ * null и вызывающий требует выбора.
+ */
+export async function resolveOrgId(db: Env['DB'], userId: string): Promise<string | null> {
+  const u = await db.prepare('SELECT current_org_id FROM users WHERE id = ?').bind(userId).first<{ current_org_id: string | null }>();
+  if (u?.current_org_id) {
+    // current мог указывать на организацию, из которой человека уже отозвали.
+    const still = await db
+      .prepare('SELECT 1 FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL')
+      .bind(u.current_org_id, userId)
+      .first();
+    if (still) return u.current_org_id;
+  }
+  const { results } = await db
+    .prepare('SELECT org_id FROM org_memberships WHERE user_id = ? AND left_at IS NULL')
+    .bind(userId)
+    .all<{ org_id: string }>();
+  return results.length === 1 ? results[0].org_id : null;
+}
+
+/** Роль человека В ЗАДАННОЙ организации. null -- членства нет или оно отозвано. */
+export async function membershipRole(db: Env['DB'], orgId: string, userId: string): Promise<Role | null> {
+  const row = await db
+    .prepare('SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL')
+    .bind(orgId, userId)
+    .first<{ role: Role }>();
+  return row?.role ?? null;
+}
+
+/**
+ * Claims для сессии MCP, ЗАПЕРТОЙ на пилотную организацию (решение шага 2a).
+ *
+ * Живёт здесь, а не в mcp.ts, по одной причине: mcp.ts тянет
+ * @modelcontextprotocol/sdk -> ajv, а ajv грузит .json как модуль, чего workerd
+ * не умеет -- значит всё, что импортирует mcp.ts, тестируется только на
+ * ПОДДЕЛКЕ базы. Подделка соврала трижды за три шага. Замок арендатора --
+ * последнее, что можно доверить подделке, поэтому он вынесен туда, где его
+ * проверяет настоящая D1.
+ */
+export async function mcpSessionClaims(
+  env: Env,
+  userId: string,
+): Promise<{ sub: string; role: Role; org_id: string } | null> {
+  if (!userId) return null;
+  const orgId = await resolveOrgId(env.DB, userId);
+  if (!orgId) return null;
+  // Пустой MCP_ORG_ID -- отказ, а не «пропускаем всё»: незаданная переменная не
+  // должна означать открытую дверь.
+  if (!env.MCP_ORG_ID || orgId !== env.MCP_ORG_ID) return null;
+  const role = await membershipRole(env.DB, orgId, userId);
+  if (!role) return null;
+  return { sub: userId, role, org_id: orgId };
+}
+
+export async function mintSession(secret: string, claims: { sub: string; role: Role; org_id: string }): Promise<string> {
   const payload: SessionPayload = { ...claims, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS };
   const body = b64url(enc.encode(JSON.stringify(payload)));
   const sig = b64url(await hmac(secret, body));
@@ -73,12 +130,18 @@ export async function mintSession(secret: string, claims: { sub: string; role: R
 }
 
 // Verifies HMAC + expiry. When `fresh` is passed (role-elevated routes), also
-// re-fetches the user row from D1 to confirm the account still exists and the
-// current role is still allowed — closes the de-provisioning / role-downgrade gap.
+// re-fetches the membership from D1 to confirm the account still belongs to the
+// organisation and the current role is still allowed — closes the
+// de-provisioning / role-downgrade gap.
+//
+// orgId в `fresh` -- ОБЯЗАТЕЛЬНЫЙ аргумент, и это не педантизм. requireRole
+// контекстом не пользуется: он сам заново разбирает токен и вызывает эту
+// функцию. Без явной организации пришлось бы читать «какое-нибудь подходящее по
+// роли членство» -- то есть creator семейной группы прошёл бы гейт школы.
 export async function verifySession(
   secret: string,
   token: string | undefined,
-  fresh?: { db: Env['DB']; allowed: Role[] },
+  fresh?: { db: Env['DB']; allowed: Role[]; orgId: string | null },
 ): Promise<SessionPayload | null> {
   if (!token) return null;
   const [body, sig] = token.split('.');
@@ -100,7 +163,13 @@ export async function verifySession(
   if (typeof payload.exp !== 'number' || payload.exp * 1000 <= Date.now()) return null;
   if (!fresh) return payload;
 
-  const user = await fresh.db.prepare('SELECT id, role FROM users WHERE id = ?').bind(payload.sub).first<{ id: string; role: Role }>();
-  if (!user || !fresh.allowed.includes(user.role)) return null;
-  return { ...payload, role: user.role };
+  // Организация берётся из claim, а при его отсутствии (токен, выпущенный до
+  // деплоя 2a) резолвится по БД. Не резолвится вовсе -- гейт закрыт: лучше
+  // принудительный релогин, чем угадывание арендатора.
+  const orgId = fresh.orgId ?? payload.org_id ?? (await resolveOrgId(fresh.db, payload.sub));
+  if (!orgId) return null;
+
+  const role = await membershipRole(fresh.db, orgId, payload.sub);
+  if (!role || !fresh.allowed.includes(role)) return null;
+  return { ...payload, role, org_id: orgId };
 }

@@ -17,7 +17,7 @@ import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Env, Role } from './types';
 import { apiRoutes } from './routes';
-import { mintSession, safeEqual, SESSION_COOKIE } from './auth';
+import { mcpSessionClaims, mintSession, safeEqual, SESSION_COOKIE } from './auth';
 
 const enc = new TextEncoder();
 
@@ -38,11 +38,18 @@ function bearerOk(header: string | undefined, queryToken: string | undefined, se
 
 // Mint a session cookie for the configured user using their REAL role from the
 // DB (so visibility/access match what that user would see logging in).
+//
+// ЗАПЕРТО НА ПИЛОТНУЮ ОРГАНИЗАЦИЮ (решение шага 2a). Второе место выдачи сессии
+// -- ровно тот компонент, в котором мультитенантная дыра была бы незаметна:
+// сессия без org_id читала бы данные любого арендатора. Полноценная
+// mcp_tokens(org_id, user_id, token_hash) появится, когда MCP реально
+// понадобится второму арендатору; сейчас им не пользуется никто.
 async function mintUserCookie(env: Env, userId: string): Promise<string | null> {
-  const user = await env.DB.prepare('SELECT id, role FROM users WHERE id = ?').bind(userId).first<{ id: string; role: Role }>();
-  if (!user) return null;
-  const token = await mintSession(env.SESSION_SECRET, { sub: user.id, role: user.role });
-  return `${SESSION_COOKIE}=${token}`;
+  // Сам замок -- в auth.ts (mcpSessionClaims): здесь он был бы проверяем только
+  // подделкой базы, потому что этот файл тянет ajv и в workerd не грузится.
+  const claims = await mcpSessionClaims(env, userId);
+  if (!claims) return null;
+  return `${SESSION_COOKIE}=${await mintSession(env.SESSION_SECRET, claims)}`;
 }
 
 async function callApi(env: Env, cookie: string, path: string, init: RequestInit = {}): Promise<Response> {
@@ -63,7 +70,7 @@ const toResult = (o: ToolOut): CallToolResult => ({ content: [{ type: 'text', te
 async function authCookie(env: Env): Promise<{ cookie: string } | ToolOut> {
   if (!env.MCP_USER_ID) return fail('MCP_USER_ID is not configured on the server');
   const cookie = await mintUserCookie(env, env.MCP_USER_ID);
-  return cookie ? { cookie } : fail(`MCP_USER_ID "${env.MCP_USER_ID}" is not a Sayn user`);
+  return cookie ? { cookie } : fail(`MCP_USER_ID "${env.MCP_USER_ID}" is not a member of the MCP organisation`);
 }
 
 // --- name/id resolution ----------------------------------------------------

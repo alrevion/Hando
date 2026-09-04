@@ -12,12 +12,22 @@ import type { Env } from '../src/types';
 
 export const SECRET = 'test-secret';
 
+// Организация по умолчанию. Тесты, которым мультитенантность не интересна,
+// живут целиком в ней и про org не знают вовсе.
+export const ORG_A = 'org-a';
+export const ORG_B = 'org-b';
+
 type FakeData = {
-  users: Array<{ id: string; phone: string; name: string; role: string; telegram_username?: string }>;
-  memberships: Array<{ project_id: string; user_id: string }>;
+  // orgs у пользователя -- список организаций, в которых он состоит. По
+  // умолчанию только ORG_A. Пользователь с ['org-a','org-b'] -- та самая
+  // фикстура двойного членства, без которой тест изоляции обесценен: код вида
+  // EXISTS(... WHERE user_id = ?) без AND org_id = ? проходит старую фикстуру
+  // зелёным, потому что там человек принадлежал ровно одной организации.
+  users: Array<{ id: string; phone: string; name: string; role: string; telegram_username?: string; orgs?: string[] }>;
+  memberships: Array<{ project_id: string; user_id: string; org_id?: string }>;
   tasks: Array<Record<string, unknown>>;
-  projects?: Array<{ id: string; telegram_chat_id: string; created_by?: string; archived_at?: string }>;
-  attachments?: Array<{ id: string; task_id: string; uploaded_by: string; telegram_message_id: string; telegram_file_id: string; filename: string; mime_type: string; size_bytes: number }>;
+  projects?: Array<{ id: string; telegram_chat_id: string; created_by?: string; archived_at?: string; org_id?: string }>;
+  attachments?: Array<{ id: string; task_id: string; uploaded_by: string; telegram_message_id: string; telegram_file_id: string; filename: string; mime_type: string; size_bytes: number; org_id?: string }>;
 };
 
 // Засевает фикстуру в настоящую D1. Изоляция хранилища у vitest-pool-workers
@@ -32,22 +42,38 @@ export async function envWith(data: FakeData): Promise<Env> {
   const stmts: D1PreparedStatement[] = [];
   const userIds = new Set(data.users.map((u) => u.id));
 
+  // Обе организации заводятся всегда: тест изоляции обязан иметь куда целиться,
+  // а лишняя пустая организация ничему не мешает. org-pilot уже создан
+  // миграцией 0010 -- поэтому здесь только a и b.
+  for (const org of [ORG_A, ORG_B]) {
+    stmts.push(db.prepare('INSERT INTO orgs (id, name) VALUES (?,?)').bind(org, org));
+  }
+
   for (const u of data.users) {
+    const orgs = u.orgs ?? [ORG_A];
     stmts.push(
-      db.prepare('INSERT INTO users (id, phone, name, role, telegram_username) VALUES (?,?,?,?,?)')
-        .bind(u.id, u.phone, u.name, u.role, u.telegram_username ?? null),
+      // current_org_id -- первая из перечисленных: у человека с двумя членствами
+      // без него resolveOrgId вернул бы null и он бы просто не вошёл.
+      db.prepare('INSERT INTO users (id, phone, name, role, telegram_username, current_org_id) VALUES (?,?,?,?,?,?)')
+        .bind(u.id, u.phone, u.name, u.role, u.telegram_username ?? null, orgs[0]),
     );
+    for (const org of orgs) {
+      stmts.push(
+        db.prepare('INSERT INTO org_memberships (id, org_id, user_id, role) VALUES (?,?,?,?)')
+          .bind(`${org}:${u.id}`, org, u.id, u.role),
+      );
+    }
   }
 
   // Проекты: явные из фикстуры плюс те, на которые ссылаются задачи и членства.
-  const projects = new Map<string, { id: string; chat: string; by: string; archived: string | null }>();
-  for (const p of data.projects ?? []) projects.set(p.id, { id: p.id, chat: p.telegram_chat_id, by: p.created_by ?? '__seed', archived: p.archived_at ?? null });
+  const projects = new Map<string, { id: string; chat: string; by: string; archived: string | null; org: string }>();
+  for (const p of data.projects ?? []) projects.set(p.id, { id: p.id, chat: p.telegram_chat_id, by: p.created_by ?? '__seed', archived: p.archived_at ?? null, org: p.org_id ?? ORG_A });
   for (const t of data.tasks) {
     const pid = t.project_id as string | undefined;
-    if (pid && !projects.has(pid)) projects.set(pid, { id: pid, chat: '-100000', by: '__seed', archived: null });
+    if (pid && !projects.has(pid)) projects.set(pid, { id: pid, chat: '-100000', by: '__seed', archived: null, org: (t.org_id as string) ?? ORG_A });
   }
   for (const m of data.memberships) {
-    if (!projects.has(m.project_id)) projects.set(m.project_id, { id: m.project_id, chat: '-100000', by: '__seed', archived: null });
+    if (!projects.has(m.project_id)) projects.set(m.project_id, { id: m.project_id, chat: '-100000', by: '__seed', archived: null, org: m.org_id ?? ORG_A });
   }
 
   // Все пользователи, на которых ссылаются строки, но которых нет в фикстуре
@@ -60,22 +86,28 @@ export async function envWith(data: FakeData): Promise<Env> {
   let phone = 0;
   for (const id of referenced) {
     if (userIds.has(id)) continue;
-    stmts.push(db.prepare('INSERT INTO users (id, phone, name, role) VALUES (?,?,?,?)').bind(id, `+00${phone++}`, id, 'admin'));
+    // Досозданный человек получает членство в ORG_A: иначе строка, на которую
+    // ссылается задача, принадлежала бы никому и org-предикаты вели бы себя
+    // непредсказуемо.
+    stmts.push(db.prepare('INSERT INTO users (id, phone, name, role, current_org_id) VALUES (?,?,?,?,?)').bind(id, `+00${phone++}`, id, 'admin', ORG_A));
+    stmts.push(db.prepare('INSERT INTO org_memberships (id, org_id, user_id, role) VALUES (?,?,?,?)').bind(`${ORG_A}:${id}`, ORG_A, id, 'admin'));
   }
   for (const p of projects.values()) {
-    stmts.push(db.prepare('INSERT INTO projects (id, name, created_by, telegram_chat_id, archived_at) VALUES (?,?,?,?,?)').bind(p.id, p.id, p.by, p.chat, p.archived));
+    stmts.push(db.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id, archived_at) VALUES (?,?,?,?,?,?)').bind(p.id, p.org, p.id, p.by, p.chat, p.archived));
   }
   for (const m of data.memberships) {
-    stmts.push(db.prepare('INSERT INTO project_memberships (id, project_id, user_id) VALUES (?,?,?)').bind(`${m.project_id}:${m.user_id}`, m.project_id, m.user_id));
+    const org = m.org_id ?? projects.get(m.project_id)?.org ?? ORG_A;
+    stmts.push(db.prepare('INSERT INTO project_memberships (id, project_id, user_id, org_id) VALUES (?,?,?,?)').bind(`${m.project_id}:${m.user_id}`, m.project_id, m.user_id, org));
   }
   for (const t of data.tasks) {
     const resp = (t.responsible_user_id as string) ?? '__seed';
     stmts.push(
       db.prepare(
-        `INSERT INTO tasks (id, project_id, title, description, responsible_user_id, status, deadline, done_at, confirmed_at, telegram_message_id, priority, depends_on_task_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO tasks (id, org_id, project_id, title, description, responsible_user_id, status, deadline, done_at, confirmed_at, telegram_message_id, priority, depends_on_task_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).bind(
-        t.id, t.project_id, (t.title as string) ?? 'T', (t.description as string) ?? '', resp,
+        t.id, (t.org_id as string) ?? projects.get(t.project_id as string)?.org ?? ORG_A,
+        t.project_id, (t.title as string) ?? 'T', (t.description as string) ?? '', resp,
         (t.status as string) ?? 'todo', (t.deadline as string) ?? null, (t.done_at as string) ?? null,
         (t.confirmed_at as string) ?? null, (t.telegram_message_id as string) ?? null,
         (t.priority as string) ?? 'medium', (t.depends_on_task_id as string) ?? null,
@@ -85,8 +117,8 @@ export async function envWith(data: FakeData): Promise<Env> {
   for (const a of data.attachments ?? []) {
     stmts.push(
       db.prepare(
-        'INSERT INTO attachments (id, task_id, telegram_file_id, telegram_message_id, filename, mime_type, size_bytes, uploaded_by) VALUES (?,?,?,?,?,?,?,?)',
-      ).bind(a.id, a.task_id, a.telegram_file_id, a.telegram_message_id, a.filename, a.mime_type, a.size_bytes, a.uploaded_by),
+        'INSERT INTO attachments (id, org_id, task_id, telegram_file_id, telegram_message_id, filename, mime_type, size_bytes, uploaded_by) VALUES (?,?,?,?,?,?,?,?,?)',
+      ).bind(a.id, a.org_id ?? ORG_A, a.task_id, a.telegram_file_id, a.telegram_message_id, a.filename, a.mime_type, a.size_bytes, a.uploaded_by),
     );
   }
 
@@ -102,10 +134,14 @@ export async function envWith(data: FakeData): Promise<Env> {
     SESSION_SECRET: SECRET,
     MCP_API_TOKEN: 'mcp-token',
     MCP_USER_ID: 'mcp-user',
+    MCP_ORG_ID: ORG_A,
   };
 }
 
-export const cookie = async (id: string, role: string) => `session=${await mintSession(SECRET, { sub: id, role: role as never })}`;
+// orgId по умолчанию ORG_A. Тест изоляции выдаёт токен ORG_A и целится в
+// идентификаторы ORG_B -- в том числе от лица человека, состоящего в обеих.
+export const cookie = async (id: string, role: string, orgId: string = ORG_A) =>
+  `session=${await mintSession(SECRET, { sub: id, role: role as never, org_id: orgId })}`;
 
 
 // Ни один тест не должен ходить в Telegram. Заглушка отвечает так, как отвечает

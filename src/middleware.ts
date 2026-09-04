@@ -3,32 +3,75 @@
 import type { MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
 import type { Attachment, Env, Role, Task } from './types';
-import { SESSION_COOKIE, verifySession } from './auth';
+import { membershipRole, resolveOrgId, SESSION_COOKIE, verifySession } from './auth';
 
 export type AppEnv = {
   Bindings: Env;
-  Variables: { userId: string; role: Role; task?: Task; attachment?: Attachment };
+  Variables: { userId: string; role: Role; orgId: string; task?: Task; attachment?: Attachment };
 };
 
-// Verifies the session cookie; attaches { userId, role }. 401 if missing/invalid/expired.
+// Verifies the session cookie; attaches { userId, role, orgId }. 401 if
+// missing/invalid/expired.
+//
+// Догруз org_id -- ПЕРЕХОДНАЯ ветка. Токен живёт SESSION_TTL_SECONDS = 12ч и не
+// отзывается, поэтому сразу после деплоя 2a у всех живых сессий claim'а org_id
+// нет; без догруза они полсуток получали бы пустую доску или 500. Цена названа
+// явно: лишний SELECT на каждый запрос от старой сессии. Приемлемо на
+// 12-часовом окне, неприемлемо как постоянное состояние -- ветка снимается на
+// contract-релизе вместе с ужесточением org_id до NOT NULL.
 export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   const payload = await verifySession(c.env.SESSION_SECRET, getCookie(c, SESSION_COOKIE));
   if (!payload) return c.json({ error: 'unauthorized' }, 401);
+  const orgId = payload.org_id ?? (await resolveOrgId(c.env.DB, payload.sub));
+  // Организация не резолвится -- человека отозвали отовсюду либо членств
+  // несколько и ни одно не выбрано. И то и другое лечится релогином, а не
+  // догадкой о том, чьи данные ему показать.
+  if (!orgId) return c.json({ error: 'unauthorized' }, 401);
+
+  // Членство ПЕРЕПРОВЕРЯЕТСЯ на каждом запросе, а не берётся из claim'а.
+  // Токен -- stateless, живёт 12ч и не отзывается; до 2a это стоило дёшево,
+  // потому что отзыв доступа проверялся только на роль-гейтах (requireRole).
+  // С появлением второго арендатора цена изменилась: уволенный сотрудник читал
+  // бы доску бывшего работодателя ещё полсуток. Это ровно тот отказ, ради
+  // предотвращения которого существует весь шаг.
+  //
+  // Цена названа явно: один SELECT по индексу idx_org_memberships_user на
+  // каждый авторизованный запрос. Индекс для этого и заведён. Роль берётся
+  // оттуда же -- значит и понижение в должности действует сразу, а не только
+  // на роль-гейтах.
+  const role = await membershipRole(c.env.DB, orgId, payload.sub);
+  if (!role) return c.json({ error: 'unauthorized' }, 401);
+
   c.set('userId', payload.sub);
-  c.set('role', payload.role);
+  c.set('role', role);
+  c.set('orgId', orgId);
   await next();
 };
 
 // Gates role-elevated actions. Re-fetches the DB user (existence + current role)
 // so a de-provisioned / downgraded account can't ride a still-valid token.
 export const requireRole = (...roles: Role[]): MiddlewareHandler<AppEnv> => async (c, next) => {
-  const payload = await verifySession(c.env.SESSION_SECRET, getCookie(c, SESSION_COOKIE), { db: c.env.DB, allowed: roles });
+  // orgId берётся из контекста, выставленного requireAuth: сам verifySession
+  // организацию не угадывает, иначе роль искалась бы «в любой подходящей».
+  const payload = await verifySession(c.env.SESSION_SECRET, getCookie(c, SESSION_COOKIE), {
+    db: c.env.DB,
+    allowed: roles,
+    orgId: c.get('orgId') ?? null,
+  });
   if (!payload) return c.json({ error: 'forbidden' }, 403);
-  c.set('role', payload.role); // refreshed from DB
+  c.set('role', payload.role); // refreshed from org_memberships
   await next();
 };
 
-// creator always passes (global oversight). super_admin/admin pass only if they
+// creator проходит В ПРЕДЕЛАХ СВОЕЙ ОРГАНИЗАЦИИ. До шага 2a байпас был
+// безусловным ("global oversight") -- после появления второй организации это
+// означало бы, что creator семейной группы читает проекты школы.
+//
+// Глобального надзора после этого не остаётся ни у кого, включая оператора
+// продукта. Это РЕШЕНИЕ владельца (2026-09-04), а не побочный эффект:
+// платформенного флага нет, поддержка работает прямым доступом к D1.
+//
+// super_admin/admin pass only if they
 // are an explicit project_memberships row OR (super_admin only) the project's
 // creator -- each board has its own people; a super_admin isn't automatically
 // in every project just by holding the role. Returns the SAME 403 whether the
@@ -67,7 +110,9 @@ export const requireProjectAccess = (source: 'project' | 'task' | 'attachment' =
       projectId = attachment.project_id;
     } else if (source === 'task') {
       const taskId = c.req.param('id') ?? c.req.param('taskId');
-      const task = taskId ? await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(taskId).first<Task>() : null;
+      const task = taskId
+        ? await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').bind(taskId, c.get('orgId')).first<Task>()
+        : null;
       if (!task) return c.json({ error: 'forbidden' }, 403);
       c.set('task', task);
       projectId = task.project_id;
@@ -76,17 +121,23 @@ export const requireProjectAccess = (source: 'project' | 'task' | 'attachment' =
     }
 
     const role = c.get('role');
+    const orgId = c.get('orgId');
+
+    // Проект обязан принадлежать организации сессии -- ДО любой проверки роли.
+    // Иначе байпас creator сравнивался бы с проектом чужого арендатора.
+    const project = await c.env.DB.prepare('SELECT created_by FROM projects WHERE id = ? AND org_id = ?')
+      .bind(projectId, orgId)
+      .first<{ created_by: string }>();
+    if (!project) return c.json({ error: 'forbidden' }, 403);
+
     if (role === 'creator') return next();
 
-    const member = await c.env.DB.prepare('SELECT 1 FROM project_memberships WHERE project_id = ? AND user_id = ?')
-      .bind(projectId, c.get('userId'))
+    const member = await c.env.DB.prepare('SELECT 1 FROM project_memberships WHERE project_id = ? AND user_id = ? AND org_id = ?')
+      .bind(projectId, c.get('userId'), orgId)
       .first();
     if (member) return next();
 
-    if (role === 'super_admin') {
-      const project = await c.env.DB.prepare('SELECT created_by FROM projects WHERE id = ?').bind(projectId).first<{ created_by: string }>();
-      if (project?.created_by === c.get('userId')) return next();
-    }
+    if (role === 'super_admin' && project.created_by === c.get('userId')) return next();
     return c.json({ error: 'forbidden' }, 403);
     },
     { accessSource: source },

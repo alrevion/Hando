@@ -91,10 +91,12 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
   const statements = [
     env.DB.prepare(`UPDATE tasks SET ${columns.join(', ')} WHERE id = ?`).bind(...values, task.id),
     // Порядок бинда -- как у logEvent (db.ts): одна форма на всю кодовую базу.
+    // org_id берётся из САМОЙ ЗАДАЧИ, а не из сессии: автоархив по cron идёт без
+    // сессии вообще, и событие всё равно обязано принадлежать арендатору.
     env.DB.prepare(
-      `INSERT INTO events (id, actor_id, target_type, target_id, action, comment, overdue_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(uuid(), actorId, 'task', task.id, action, comment ?? null, overdueBy ?? null, now),
+      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(uuid(), actorId, task.org_id, 'task', task.id, action, comment ?? null, overdueBy ?? null, now),
   ];
 
   if (notify) {
@@ -133,6 +135,6 @@ export async function buildNotification(
   };
   return env.DB.prepare(
     `INSERT INTO notifications (id, task_id, assignee_id, org_id, kind, payload, scheduled_at)
-     VALUES (?, ?, ?, NULL, ?, ?, ?)`,
-  ).bind(uuid(), task.id, task.responsible_user_id, kind, JSON.stringify(payload), nowIso());
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(uuid(), task.id, task.responsible_user_id, task.org_id, kind, JSON.stringify(payload), nowIso());
 }

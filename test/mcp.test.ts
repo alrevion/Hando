@@ -40,22 +40,43 @@ function fakeDB(data: FakeData): Env['DB'] {
         return api;
       },
       async first<T = Record<string, unknown>>(): Promise<T | null> {
+        // Организационные запросы: подделка отвечает так, будто все люди состоят
+        // в 'org-a'. Замок арендатора здесь НЕ проверяется -- он вынесен в
+        // auth.mcpSessionClaims и проверяется против настоящей D1 в
+        // test/step2a.test.ts. Здесь нужно ровно одно: чтобы MCP-путь дошёл до
+        // API и записал задачу.
+        if (/current_org_id FROM users/.test(sql)) return ({ current_org_id: 'org-a' } as T);
+        // requireProjectAccess с шага 2a грузит проект ДО проверки роли, поэтому
+        // байпас creator больше не проскакивает мимо базы.
+        if (/FROM projects WHERE id/.test(sql)) {
+          const p = data.projects.find((x) => x.id === args[0]);
+          return p ? ({ created_by: OWNER, telegram_chat_id: '-100' } as T) : null;
+        }
+        if (/FROM org_memberships/.test(sql)) return ({ role: data.users.find((u) => u.id === args[1])?.role ?? 'admin' } as T);
         if (/FROM users WHERE id/.test(sql)) return (data.users.find((u) => u.id === args[0]) as T) ?? null;
         return null;
       },
       async all<T = Record<string, unknown>>(): Promise<{ results: T[] }> {
+        // Порядок важен: запрос GET /users -- это `FROM users u JOIN
+        // org_memberships`, поэтому проверка на org_memberships обязана быть
+        // УЖЕ (по началу оператора), иначе справочник людей вернёт членства.
+        if (/^SELECT org_id FROM org_memberships/.test(sql.trim())) return { results: [{ org_id: 'org-a' }] as T[] };
         if (/FROM projects/.test(sql)) return { results: data.projects.filter((p) => p.archived_at === null) as T[] };
         if (/FROM users/.test(sql)) return { results: data.users.map((u) => ({ id: u.id, name: u.name, role: u.role })) as T[] };
         if (/FROM tasks WHERE project_id/.test(sql)) return { results: data.tasks.filter((t) => t.project_id === args[0]) as T[] };
         return { results: [] as T[] };
       },
       async run() {
+        // Позиции бинда, а не имена колонок: подделка разбирает SQL текстом.
+        // На шаге 2a обе вставки получили org_id вторым аргументом -- и этот
+        // разбор пришлось править вслед. Это цена подделки, а не особенность
+        // кода: настоящая D1 связывает по именам колонок и не заметила бы.
         if (/INSERT INTO tasks/.test(sql)) {
-          const [id, project_id, title, description, responsible_user_id, deadline] = args;
-          data.tasks.push({ id, project_id, title, description, responsible_user_id, status: 'todo', deadline });
+          const [id, org_id, project_id, title, description, responsible_user_id, deadline] = args;
+          data.tasks.push({ id, org_id, project_id, title, description, responsible_user_id, status: 'todo', deadline });
         } else if (/INSERT INTO events/.test(sql)) {
-          const [id, actor_id, target_type, target_id, action] = args;
-          data.events.push({ id, actor_id, target_type, target_id, action });
+          const [id, actor_id, org_id, target_type, target_id, action] = args;
+          data.events.push({ id, actor_id, org_id, target_type, target_id, action });
         }
         return { success: true, meta: { changes: 1 } };
       },
@@ -85,6 +106,7 @@ function envWith(data: FakeData): Env {
     SESSION_SECRET: 'test-secret',
     MCP_API_TOKEN: TOKEN,
     MCP_USER_ID: OWNER,
+    MCP_ORG_ID: 'org-a',
   };
 }
 
