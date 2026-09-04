@@ -62,7 +62,16 @@ function fakeDB(data: FakeData): Env['DB'] {
     };
     return api;
   };
-  return { prepare } as unknown as Env['DB'];
+  // batch выполняет операторы по порядку. Это НЕ модель атомарности -- откатить
+  // подделка не умеет, и знать об этом надо. Здесь этого достаточно: файл
+  // проверяет bearer-гейт и атрибуцию MCP, а не поведение D1. Настоящая база --
+  // в workers-пуле; mcp.test.ts живёт в node-пуле из-за ajv (см. конфиги).
+  const batch = async (stmts: { run(): Promise<unknown> }[]) => {
+    const out = [];
+    for (const st of stmts) out.push(await st.run());
+    return out;
+  };
+  return { prepare, batch } as unknown as Env['DB'];
 }
 
 function envWith(data: FakeData): Env {

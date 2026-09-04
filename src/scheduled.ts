@@ -1,7 +1,9 @@
 // Cron (*/5 * * * *): auto-archive stale Done tasks, then escalate overdue ones.
 import type { Env, Task } from './types';
-import { logEvent, nowIso } from './db';
+import { nowIso } from './db';
 import { deleteMessage, sendMessage } from './telegram';
+import { applyTransition } from './transition';
+import { drainOutbox } from './outbox';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -12,19 +14,24 @@ export async function scheduled(_controller: ScheduledController, env: Env, _ctx
   await escalateOverdue(env);
   await remindApproachingDeadline(env);
   await remindStaleReview(env);
+  // Страховка за отправку: роуты сливают outbox сразу после ответа, но если тот
+  // вызов не дошёл, строка так и лежит с sent_at IS NULL -- здесь она уедет.
+  await drainOutbox(env);
 }
 
 // (a) status='done' + done_at older than 7 days -> archived (system-generated event).
+// Единственная ветка cron, которая пишет status, -- и потому единственная, что
+// идёт через applyTransition. Три остальных прохода ниже пишут только таймеры;
+// они переезжают на task_assignees на шаге 3.
 async function autoArchive(env: Env): Promise<void> {
-  const { results } = await env.DB.prepare("SELECT id, done_at FROM tasks WHERE status = 'done' AND done_at IS NOT NULL").all<{
-    id: string;
-    done_at: string;
-  }>();
+  const { results } = await env.DB.prepare("SELECT * FROM tasks WHERE status = 'done' AND done_at IS NOT NULL").all<Task>();
   const cutoff = Date.now() - SEVEN_DAYS_MS;
   for (const t of results) {
-    if (Date.parse(t.done_at) > cutoff) continue;
-    await env.DB.prepare("UPDATE tasks SET status = 'archived', updated_at = ? WHERE id = ?").bind(nowIso(), t.id).run();
-    await logEvent(env.DB, { actorId: null, targetType: 'task', targetId: t.id, action: 'archived' });
+    if (Date.parse(t.done_at as string) > cutoff) continue;
+    // actorId null -- отметка «сделала система»: по ней архив отличают от ручного.
+    // Уведомления нет намеренно: автоархив семидневной давности никого не касается,
+    // и так было до шага 1 -- вводить рассылку здесь значило бы менять поведение.
+    await applyTransition(env, { task: t, to: 'archived', actorId: null, action: 'archived' });
   }
 }
 

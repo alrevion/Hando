@@ -1,19 +1,46 @@
 // Thin Telegram Bot API wrapper. Best-effort: a down bot must not break task flow.
 import type { Env } from './types';
 
+// Инлайновая клавиатура Telegram. Тип объявлен здесь, потому что подпись
+// sendMessage его принимает уже сейчас, а прикрепление кнопок -- шаг 4a.
+export type InlineKeyboard = { inline_keyboard: { text: string; callback_data: string }[][] };
+
 // chatId is per-project (each project posts to its own group), never global.
-export async function sendMessage(env: Env, chatId: string, text: string): Promise<string | null> {
+//
+// replyMarkup -- ПОДПИСЬ БЕЗ ЕДИНОГО ВЫЗОВА В ПРОДЕ, и это осознанно (шаг 1 плана).
+// Кнопку нельзя показывать раньше шага 4a по двум причинам: до 4a нет входящего
+// канала (index.ts регистрирует только /api, /mcp и статику, обработчика
+// callback_query нет), поэтому нажатие крутило бы спиннер до таймаута; и
+// сообщения уходят в ГРУППОВОЙ чат, где нажать может любой участник, а
+// сопоставления telegram_user_id -> user_id до 4a не существует.
+export async function sendMessage(env: Env, chatId: string, text: string, replyMarkup?: InlineKeyboard): Promise<string | null> {
   try {
     const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify(replyMarkup ? { chat_id: chatId, text, reply_markup: replyMarkup } : { chat_id: chatId, text }),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { result?: { message_id?: number } };
     return data.result?.message_id != null ? String(data.result.message_id) : null;
   } catch {
     return null;
+  }
+}
+
+// Гасит клавиатуру у уже отправленного сообщения -- чтобы нажатую кнопку нельзя
+// было нажать второй раз. Тоже МЁРТВЫЙ КОД до шага 4a: гасить пока нечего,
+// кнопок никто не отправляет. Существует здесь, чтобы на 4a добавлялся
+// обработчик, а не заодно и транспорт.
+export async function editMessageReplyMarkup(env: Env, chatId: string, messageId: string, replyMarkup?: InlineKeyboard): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: Number(messageId), reply_markup: replyMarkup ?? { inline_keyboard: [] } }),
+    });
+  } catch {
+    // Best-effort, как и всё остальное здесь: лежащий бот не должен ронять поток задач.
   }
 }
 

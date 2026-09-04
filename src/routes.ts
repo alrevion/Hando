@@ -2,49 +2,25 @@
 // hold business rules. Every mutating action writes an events row (system of record).
 import { Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
-import type { Env, Role, TaskStatus } from './types';
+import type { Role, Task, TaskStatus } from './types';
 import { logEvent, nowIso, uuid } from './db';
 import { mintSession, precheckPhone, sendOtp, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyOtp, verifySession } from './auth';
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
-import { deleteMessage, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
+import { deleteMessage, getFileUrl, resolveChatId, sendDocument } from './telegram';
+import { applyTransition, buildNotification } from './transition';
+import { drainOutbox } from './outbox';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
 // larger, but would then be permanently unretrievable). Enforce the download cap
 // at upload time so users get a clear error instead of losing an unfetchable file.
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
-// Fixed custom domain (wrangler.jsonc routes) -- used only to build deep links
-// in Telegram notifications, not worth an env var for a single stable value.
-// Хвост дословного форка: до 2026-09-04 здесь стоял домен Sayn, то есть каждое
-// уведомление Hando звало пользователя на чужую доску, где его ждал бы 403.
-const APP_URL = 'https://hando.alrevion.com';
 
 export const apiRoutes = new Hono<AppEnv>();
 
-async function projectChatId(db: D1Database, projectId: string): Promise<string> {
-  const row = await db.prepare('SELECT telegram_chat_id FROM projects WHERE id = ?').bind(projectId).first<{ telegram_chat_id: string }>();
-  return row?.telegram_chat_id ?? '';
-}
-
-// Every board movement gets a permanent log line in the project's group (not
-// tracked/deleted -- that's only the in-progress escalation seed message's job).
-// Returns the sent message id, which only the in_progress mover cares about.
-async function notifyTask(
-  env: Env,
-  task: { id: string; project_id: string; title: string; responsible_user_id: string; deadline?: string | null },
-  emoji: string,
-  label: string,
-  extraLine?: string,
-): Promise<string | null> {
-  // @username actually pings them in Telegram; a plain name in message text doesn't.
-  const resp = await env.DB.prepare('SELECT name, telegram_username FROM users WHERE id = ?').bind(task.responsible_user_id).first<{ name: string; telegram_username: string | null }>();
-  const who = resp ? (resp.telegram_username ? `@${resp.telegram_username} (${resp.name})` : resp.name) : '—';
-  const lines = [`${emoji} ${label}: "${task.title}"`, `Ответственный: ${who}`];
-  if (task.deadline) lines.push(`Дедлайн: ${task.deadline}`);
-  if (extraLine) lines.push(extraLine);
-  lines.push(`${APP_URL}/?task=${task.id}`);
-  return sendMessage(env, await projectChatId(env.DB, task.project_id), lines.join('\n'));
-}
+// projectChatId и notifyTask удалены на шаге 1: адрес чата и текст сообщения
+// теперь собирает transition.ts, а отправляет outbox.ts. Держать здесь второй
+// путь рассылки значило бы, что «ровно один раз» доказано только для одного.
 
 function describeOverdue(seconds: number): string {
   if (seconds <= 0) return 'Без просрочки';
@@ -428,14 +404,29 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
   const dependency = await resolveDependency(c.env.DB, projectId, null, b.depends_on_task_id);
   if (!dependency.ok) return c.json({ error: 'depends_on_task_id must be another task in the same project' }, 400);
   const id = uuid();
-  await c.env.DB.prepare(
-    `INSERT INTO tasks (id, project_id, title, description, responsible_user_id, status, deadline, content_blocks, priority, depends_on_task_id)
-     VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
-  )
-    .bind(id, projectId, b.title, b.description ?? '', b.responsible_user_id, b.deadline ?? null, b.content_blocks ?? null, priority, dependency.value)
-    .run();
-  await logEvent(c.env.DB, { actorId: c.get('userId'), targetType: 'task', targetId: id, action: 'created' });
-  await notifyTask(c.env, { id, project_id: projectId, title: b.title, responsible_user_id: b.responsible_user_id, deadline: b.deadline ?? null }, '📌', 'Новая задача');
+  const created = {
+    id, project_id: projectId, title: b.title, responsible_user_id: b.responsible_user_id,
+    deadline: b.deadline ?? null, telegram_message_id: null,
+  } as Task;
+  const now = nowIso();
+  // Задача, событие и уведомление -- одним batch. Создание не переход, но болезнь
+  // та же: до шага 1 три записи шли порознь, и падение между второй и третьей
+  // оставляло задачу, о которой исполнителю никто не сказал.
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO tasks (id, project_id, title, description, responsible_user_id, status, deadline, content_blocks, priority, depends_on_task_id)
+       VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
+    ).bind(id, projectId, b.title, b.description ?? '', b.responsible_user_id, b.deadline ?? null, b.content_blocks ?? null, priority, dependency.value),
+    // Форма и порядок бинда совпадают с logEvent (db.ts) намеренно: INSERT в
+    // events существует в трёх местах, и расхождение здесь читалось бы как
+    // «в этой таблице колонки означают разное в зависимости от вызывающего».
+    c.env.DB.prepare(
+      `INSERT INTO events (id, actor_id, target_type, target_id, action, comment, overdue_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(uuid(), c.get('userId'), 'task', id, 'created', null, null, now),
+    await buildNotification(c.env, created, 'created', { emoji: '📌', label: 'Новая задача' }, b.deadline ?? null),
+  ]);
+  await drainOutbox(c.env);
   return c.json({ id }, 201);
 });
 
@@ -469,13 +460,13 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
     .catch(() => ({}) as Record<string, undefined>);
   const dependency = await resolveDependency(c.env.DB, task.project_id, task.id, b.depends_on_task_id);
   if (!dependency.ok) return c.json({ error: 'depends_on_task_id must be another task in the same project' }, 400);
-  if (reopening && task.telegram_message_id) {
-    await deleteMessage(c.env, await projectChatId(c.env.DB, task.project_id), task.telegram_message_id);
-  }
   const priority = b.priority && PRIORITIES.includes(b.priority) ? b.priority : null;
+  // Правка содержимого status НЕ трогает: иначе «единственный писатель» стал бы
+  // «единственный писатель, кроме PATCH». Возврат в todo -- это переход, и он
+  // уходит в applyTransition отдельным шагом ниже.
   await c.env.DB.prepare(
     `UPDATE tasks SET title = COALESCE(?, title), description = COALESCE(?, description),
-       responsible_user_id = COALESCE(?, responsible_user_id), deadline = ?, status = ?, telegram_message_id = ?,
+       responsible_user_id = COALESCE(?, responsible_user_id), deadline = ?,
        content_blocks = COALESCE(?, content_blocks), priority = COALESCE(?, priority),
        depends_on_task_id = ?, updated_at = ? WHERE id = ?`,
   )
@@ -484,8 +475,6 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
       b.description ?? null,
       b.responsible_user_id ?? null,
       b.deadline === undefined ? task.deadline : b.deadline,
-      reopening ? 'todo' : task.status,
-      reopening ? null : task.telegram_message_id,
       b.content_blocks ?? null,
       priority,
       b.depends_on_task_id === undefined ? task.depends_on_task_id : dependency.value,
@@ -493,21 +482,24 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
       task.id,
     )
     .run();
-  await logEvent(c.env.DB, { actorId: c.get('userId'), targetType: 'task', targetId: task.id, action: reopening ? 'edited_reopened' : 'edited' });
-  if (reopening) {
-    await notifyTask(
-      c.env,
-      {
-        id: task.id,
-        project_id: task.project_id,
-        title: b.title ?? task.title,
-        responsible_user_id: b.responsible_user_id ?? task.responsible_user_id,
-        deadline: b.deadline === undefined ? task.deadline : b.deadline,
-      },
-      '↩️',
-      'Возвращено в TODO (отредактировано)',
-    );
+
+  if (!reopening) {
+    await logEvent(c.env.DB, { actorId: c.get('userId'), targetType: 'task', targetId: task.id, action: 'edited' });
+    return c.json({ success: true });
   }
+
+  // Переход делается ПОСЛЕ правки содержимого, чтобы уведомление ушло с новым
+  // заголовком и сроком, а не с тем, что было до редактирования.
+  const updated = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>();
+  await applyTransition(c.env, {
+    task: updated ?? task,
+    to: 'todo',
+    actorId: c.get('userId'),
+    action: 'edited_reopened',
+    set: { telegram_message_id: null },
+    notify: { emoji: '↩️', label: 'Возвращено в TODO (отредактировано)', deletePrevious: true },
+  });
+  await drainOutbox(c.env);
   return c.json({ success: true });
 });
 
@@ -536,29 +528,34 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
     }
   }
 
-  const chatId = await projectChatId(c.env.DB, task.project_id);
-
   if (to === 'in_progress') {
-    // Seed message the escalation cycle later replaces.
-    const msgId = await notifyTask(c.env, task, '🚀', 'В работе');
-    await c.env.DB.prepare('UPDATE tasks SET status = ?, telegram_message_id = ?, updated_at = ? WHERE id = ?').bind('in_progress', msgId, nowIso(), task.id).run();
+    // Отслеживаемое стартовое сообщение: его id проставит проход отправки, а не
+    // переход -- сообщения на момент batch ещё не существует.
+    await applyTransition(c.env, {
+      task, to, actorId: c.get('userId'), action: 'moved_in_progress',
+      notify: { emoji: '🚀', label: 'В работе', track: true },
+    });
   } else {
-    // Reached done: clear the live escalation/seed message, announce completion.
-    if (task.telegram_message_id) await deleteMessage(c.env, chatId, task.telegram_message_id);
-    await c.env.DB.prepare('UPDATE tasks SET status = ?, done_at = ?, telegram_message_id = NULL, updated_at = ? WHERE id = ?').bind('done', nowIso(), nowIso(), task.id).run();
-    await notifyTask(c.env, task, '✅', 'Готово');
+    // Дошли до done: гасим живое сообщение эскалации и объявляем завершение.
+    await applyTransition(c.env, {
+      task, to, actorId: c.get('userId'), action: 'moved_done',
+      set: { done_at: nowIso(), telegram_message_id: null },
+      notify: { emoji: '✅', label: 'Готово', deletePrevious: true },
+    });
   }
-  await logEvent(c.env.DB, { actorId: c.get('userId'), targetType: 'task', targetId: task.id, action: `moved_${to}` });
+  await drainOutbox(c.env);
   return c.json({ success: true });
 });
 
 // Delete = archive (never hard delete). super_admin/creator only.
 apiRoutes.delete('/tasks/:id', requireProjectAccess('task'), requireRole('super_admin', 'creator'), async (c) => {
   const task = c.get('task')!;
-  if (task.telegram_message_id) await deleteMessage(c.env, await projectChatId(c.env.DB, task.project_id), task.telegram_message_id);
-  await c.env.DB.prepare("UPDATE tasks SET status = 'archived', telegram_message_id = NULL, updated_at = ? WHERE id = ?").bind(nowIso(), task.id).run();
-  await logEvent(c.env.DB, { actorId: c.get('userId'), targetType: 'task', targetId: task.id, action: 'deleted' });
-  await notifyTask(c.env, task, '🗑', 'Архивировано');
+  await applyTransition(c.env, {
+    task, to: 'archived', actorId: c.get('userId'), action: 'deleted',
+    set: { telegram_message_id: null },
+    notify: { emoji: '🗑', label: 'Архивировано', deletePrevious: true },
+  });
+  await drainOutbox(c.env);
   return c.json({ success: true });
 });
 
@@ -568,9 +565,12 @@ apiRoutes.post('/tasks/:id/restore', requireProjectAccess('task'), requireRole('
   const { comment } = await c.req.json<{ comment?: string }>().catch(() => ({ comment: undefined }));
   if (!comment || !comment.trim()) return c.json({ error: 'comment required' }, 400);
   if (task.status !== 'archived') return c.json({ error: 'only archived tasks can be restored' }, 409);
-  await c.env.DB.prepare("UPDATE tasks SET status = 'todo', done_at = NULL, updated_at = ? WHERE id = ?").bind(nowIso(), task.id).run();
-  await logEvent(c.env.DB, { actorId: c.get('userId'), targetType: 'task', targetId: task.id, action: 'restored', comment });
-  await notifyTask(c.env, task, '♻️', 'Восстановлено', `Комментарий: ${comment}`);
+  await applyTransition(c.env, {
+    task, to: 'todo', actorId: c.get('userId'), action: 'restored', comment,
+    set: { done_at: null },
+    notify: { emoji: '♻️', label: 'Восстановлено', extraLine: `Комментарий: ${comment}` },
+  });
+  await drainOutbox(c.env);
   return c.json({ success: true });
 });
 
@@ -586,9 +586,15 @@ apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), requireRole('
     const late = Math.floor((Date.parse(task.done_at) - Date.parse(task.deadline)) / 1000);
     overdueBy = late > 0 ? late : 0;
   }
-  await c.env.DB.prepare('UPDATE tasks SET confirmed_at = ?, updated_at = ? WHERE id = ?').bind(nowIso(), nowIso(), task.id).run();
-  await logEvent(c.env.DB, { actorId: c.get('userId'), targetType: 'task', targetId: task.id, action: 'confirmed', overdueBy });
-  await notifyTask(c.env, task, '✔️', 'Подтверждено', overdueBy == null ? undefined : describeOverdue(overdueBy));
+  // Статус не меняется: подтверждение живёт в confirmed_at. Но это переход
+  // жизненного цикла, и идти он обязан тем же путём -- иначе «единая точка»
+  // становится «единой точкой, кроме одного случая».
+  await applyTransition(c.env, {
+    task, to: task.status, actorId: c.get('userId'), action: 'confirmed', overdueBy,
+    set: { confirmed_at: nowIso() },
+    notify: { emoji: '✔️', label: 'Подтверждено', extraLine: overdueBy == null ? undefined : describeOverdue(overdueBy) },
+  });
+  await drainOutbox(c.env);
   return c.json({ success: true, overdue_by: overdueBy });
 });
 
@@ -602,14 +608,13 @@ apiRoutes.post('/tasks/:id/reject', requireProjectAccess('task'), requireRole('s
   const days = Number(extra_days);
   if (!Number.isInteger(days) || days < 1) return c.json({ error: 'extra_days must be a positive integer' }, 400);
   const newDeadline = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-  await c.env.DB.prepare(
-    `UPDATE tasks SET status = 'in_progress', done_at = NULL, confirmed_at = NULL, deadline = ?,
-       last_escalated_at = NULL, reminder_sent_at = NULL, review_reminded_at = NULL, updated_at = ? WHERE id = ?`,
-  )
-    .bind(newDeadline, nowIso(), task.id)
-    .run();
-  await logEvent(c.env.DB, { actorId: c.get('userId'), targetType: 'task', targetId: task.id, action: 'rejected', comment });
-  await notifyTask(c.env, { ...task, deadline: newDeadline }, '❌', 'Отклонено, возвращено в работу', `Причина: ${comment}`);
+  await applyTransition(c.env, {
+    task, to: 'in_progress', actorId: c.get('userId'), action: 'rejected', comment,
+    // Таймеры гасятся, чтобы новый срок получил собственный цикл напоминаний.
+    set: { done_at: null, confirmed_at: null, deadline: newDeadline, last_escalated_at: null, reminder_sent_at: null, review_reminded_at: null },
+    notify: { emoji: '❌', label: 'Отклонено, возвращено в работу', extraLine: `Причина: ${comment}` },
+  });
+  await drainOutbox(c.env);
   return c.json({ success: true });
 });
 
