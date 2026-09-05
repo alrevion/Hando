@@ -2,6 +2,7 @@
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { botApp } from '../src/bot';
+import { scheduled } from '../src/scheduled';
 import { apiRoutes } from '../src/routes';
 import { isQuiet } from '../src/quiet';
 import { drainOutbox } from '../src/outbox';
@@ -214,6 +215,60 @@ describe('шаг 4d: тихие часы в поясе организации', 
 
     vi.setSystemTime(new Date('2026-09-04T05:00:00Z')); // 10:00 в Ташкенте
     expect(await drainOutbox(env)).toBe(1);
+    vi.useRealTimers();
+  });
+});
+
+
+describe('ревью: у cron нет своего пути отправки', () => {
+  // Класс дефекта, доживший до прода: три прохода cron звали sendMessage
+  // напрямую и слали в ГРУППОВОЙ чат текст с заголовком задачи. Оба
+  // утверждения -- «в группу не уходит ничего» (ADR-4) и «тихие часы в
+  // единственной точке отправки» (4d) -- проверялись только на пути СОЗДАНИЯ
+  // задачи, поэтому дефект был невидим. Тесты ниже закрывают весь класс.
+
+  it('ни одно сообщение за тик cron не уходит в групповой чат', async () => {
+    const env = await world([
+      { id: 'late', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss', deadline: '2020-01-01T00:00:00.000Z' },
+      // done_at СТАРШЕ двух дней (окно проверки), но МОЛОЖЕ семи: иначе задачу
+      // сначала заберёт автоархив, и напоминание по ней законно не поставится.
+      { id: 'stale', project_id: 'p1', status: 'done', responsible_user_id: 'w1', author_id: 'boss', done_at: new Date(Date.now() - 3 * 86400_000).toISOString() },
+    ]);
+    await testEnv.DB.prepare("UPDATE task_assignees SET due_at = '2020-01-01T00:00:00.000Z' WHERE task_id = 'late'").run();
+    await testEnv.DB.prepare("UPDATE task_assignees SET state = 'done', done_at = (SELECT done_at FROM tasks WHERE id='stale') WHERE task_id = 'stale'").run();
+
+    const spy = tg();
+    await scheduled({} as ScheduledController, env, {} as ExecutionContext);
+
+    const sends = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)));
+    expect(sends.length).toBeGreaterThan(0); // иначе проверка вакуумна
+    // Групповой чат проекта -- '-100999'. Не должно быть НИ ОДНОГО.
+    expect(sends.map((x) => String(x.chat_id))).not.toContain('-100999');
+    // И заголовки действительно ушли -- в личку, а не пропали.
+    expect(sends.some((x) => String(x.text).includes('ПРОСРОЧИЛИ'))).toBe(true);
+  });
+
+  it('напоминания cron подчиняются тихим часам, а срочность их пробивает', async () => {
+    const env = await world([
+      { id: 'late', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss', deadline: '2020-01-01T00:00:00.000Z' },
+      { id: 'stale', project_id: 'p1', status: 'done', responsible_user_id: 'w1', author_id: 'boss', done_at: new Date(Date.now() - 3 * 86400_000).toISOString() },
+    ]);
+    await testEnv.DB.prepare('UPDATE orgs SET quiet_hours = 1 WHERE id = ?').bind(ORG_A).run();
+    await testEnv.DB.prepare("UPDATE task_assignees SET due_at = '2020-01-01T00:00:00.000Z' WHERE task_id = 'late'").run();
+    await testEnv.DB.prepare("UPDATE task_assignees SET state = 'done', done_at = (SELECT done_at FROM tasks WHERE id='stale') WHERE task_id = 'stale'").run();
+
+    vi.setSystemTime(new Date('2026-09-04T16:00:00Z')); // 21:00 в Ташкенте
+    const spy = tg();
+    await scheduled({} as ScheduledController, env, {} as ExecutionContext);
+    const sent = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)));
+
+    // Просрочка пробивает тишину: предупреждение после провала бесполезно.
+    expect(sent.some((x) => String(x.text).includes('ПРОСРОЧИЛИ'))).toBe(true);
+    // А «пора проверить» подождёт до утра.
+    expect(sent.some((x) => String(x.text).includes('Пора проверить'))).toBe(false);
+    // И не потеряно: строка ждёт в очереди.
+    const pending = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM notifications WHERE sent_at IS NULL AND kind = 'stale_review'").first<{ n: number }>();
+    expect(pending!.n).toBe(1);
     vi.useRealTimers();
   });
 });

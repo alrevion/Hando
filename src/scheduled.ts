@@ -1,7 +1,7 @@
 // Cron (*/5 * * * *): auto-archive stale Done tasks, then escalate overdue ones.
 import type { Env, Task } from './types';
-import { nowIso } from './db';
-import { deleteMessage, reconcileWebhook, sendMessage } from './telegram';
+import { nowIso, uuid } from './db';
+import { reconcileWebhook } from './telegram';
 import { applyTransition } from './transition';
 import { drainOutbox } from './outbox';
 import { enqueueNudges } from './nudges';
@@ -45,6 +45,35 @@ async function autoArchive(env: Env): Promise<void> {
   }
 }
 
+// Общая постановка напоминания в ОЧЕРЕДЬ, а не прямая отправка.
+//
+// До ревью три прохода ниже звали sendMessage напрямую и слали В ГРУППОВОЙ ЧАТ
+// текст с заголовком задачи. Это нарушало сразу два решения: ADR-4 (заголовок
+// только в личку) и шаг 4d (тихие часы в ЕДИНСТВЕННОЙ точке отправки -- прямой
+// вызов её обходил, и напоминание уходило в три часа ночи). Оба утверждения
+// проверялись тестами только на пути создания задачи, поэтому дефект дожил до
+// прода. Теперь у cron нет своего пути отправки вообще.
+function queueReminder(
+  env: Env,
+  row: { task_id: string; org_id: string; user_id: string },
+  text: string,
+  kind: string,
+  urgent: boolean,
+): D1PreparedStatement {
+  return env.DB.prepare(
+    `INSERT INTO notifications (id, task_id, assignee_id, org_id, kind, payload, scheduled_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(uuid(), row.task_id, row.user_id, row.org_id, kind, JSON.stringify({
+    recipient_user_id: row.user_id,
+    text,
+    delete_message_id: null,
+    track: false,
+    // Просрочка пробивает тихие часы: предупреждение после провала бесполезно.
+    // Напоминание «за сутки» и «пора проверить» -- нет, они подождут до утра.
+    urgent,
+  }), nowIso());
+}
+
 // (b) У КАЖДОГО адресата свой срок и свой флаг эскалации.
 //
 // До шага 3 это были по-задачные флаги, и при рассылке на 14 человек первая же
@@ -55,42 +84,37 @@ async function autoArchive(env: Env): Promise<void> {
 // одно предупреждение о просрочке, а не по одному на каждый тик cron.
 async function escalateOverdue(env: Env): Promise<void> {
   const { results } = await env.DB.prepare(
-    `SELECT a.id, a.due_at, a.user_id, t.id AS task_id, t.title, t.telegram_message_id, t.org_id,
-            u.name AS responsible_name, p.telegram_chat_id AS project_chat_id
+    `SELECT a.id, a.due_at, a.user_id, t.id AS task_id, t.title, t.org_id, u.name AS responsible_name
      FROM task_assignees a
      JOIN tasks t ON t.id = a.task_id
      JOIN users u ON u.id = a.user_id
      JOIN projects p ON p.id = t.project_id
      WHERE a.state IN ('pending','accepted','rejected') AND a.due_at IS NOT NULL
        AND a.last_escalated_at IS NULL AND p.archived_at IS NULL
-       -- Статус задачи гасит её строки: архивную задачу никто не делает, и
-       -- напоминать по ней -- шум. Проверка по t.status, а не только по
-       -- состоянию строки: архив ставит автор, состояния адресатов он не трогает.
        AND t.status <> 'archived'`,
-  ).all<{ id: string; due_at: string; task_id: string; title: string; telegram_message_id: string | null; org_id: string; responsible_name: string; project_chat_id: string }>();
+  ).all<{ id: string; due_at: string; user_id: string; task_id: string; title: string; org_id: string; responsible_name: string }>();
 
   const now = Date.now();
+  const writes: D1PreparedStatement[] = [];
   for (const r of results) {
     const deadlineMs = Date.parse(r.due_at);
     if (!(deadlineMs < now)) continue; // ещё не просрочено
-
-    const text = `⚠️ ВЫ ПРОСРОЧИЛИ ДЕДЛАЙН\n${r.responsible_name}, задача "${r.title}" просрочена на ${formatOverdue(now - deadlineMs)}.`;
-    const newId = await sendMessage(env, r.project_chat_id, text);
-    if (!newId) continue; // не ушло: флаг не ставим, следующий тик попробует снова
-
-    // Прежнее отслеживаемое сообщение гасим только у single: у рассылки оно
-    // общее на задачу, и удалять его на первой же эскалации значило бы стирать
-    // след для остальных тринадцати.
-    if (r.telegram_message_id) await deleteMessage(env, r.project_chat_id, r.telegram_message_id);
-    await env.DB.prepare('UPDATE task_assignees SET last_escalated_at = ? WHERE id = ?').bind(nowIso(), r.id).run();
+    writes.push(queueReminder(env, r,
+      `⚠️ ВЫ ПРОСРОЧИЛИ ДЕДЛАЙН\n${r.responsible_name}, задача "${r.title}" просрочена на ${formatOverdue(now - deadlineMs)}.`,
+      'overdue', true));
+    // Флаг ставится вместе с постановкой в очередь, одним batch: очередь сама
+    // отвечает за доставку и ретраи, поэтому «поставили, но не пометили» здесь
+    // означало бы дубль на следующем тике.
+    writes.push(env.DB.prepare('UPDATE task_assignees SET last_escalated_at = ? WHERE id = ?').bind(nowIso(), r.id));
   }
+  if (writes.length) await env.DB.batch(writes);
 }
 
 // (c) Срок наступает в ближайшие сутки и ещё не наступил -- разовое
 // предупреждение, отдельно от эскалации (та стреляет уже ПОСЛЕ срока).
 async function remindApproachingDeadline(env: Env): Promise<void> {
   const { results } = await env.DB.prepare(
-    `SELECT a.id, a.due_at, t.title, u.name AS responsible_name, p.telegram_chat_id AS project_chat_id
+    `SELECT a.id, a.due_at, a.user_id, t.id AS task_id, t.title, t.org_id, u.name AS responsible_name
      FROM task_assignees a
      JOIN tasks t ON t.id = a.task_id
      JOIN users u ON u.id = a.user_id
@@ -98,39 +122,46 @@ async function remindApproachingDeadline(env: Env): Promise<void> {
      WHERE a.state IN ('pending','accepted','rejected') AND a.due_at IS NOT NULL
        AND a.reminder_sent_at IS NULL AND p.archived_at IS NULL
        AND t.status <> 'archived'`,
-  ).all<{ id: string; due_at: string; title: string; responsible_name: string; project_chat_id: string }>();
+  ).all<{ id: string; due_at: string; user_id: string; task_id: string; title: string; org_id: string; responsible_name: string }>();
 
   const now = Date.now();
+  const writes: D1PreparedStatement[] = [];
   for (const r of results) {
     const deadlineMs = Date.parse(r.due_at);
     if (deadlineMs < now || deadlineMs - now > ONE_DAY_MS) continue;
-    const text = `⏰ Дедлайн приближается\nЗадача "${r.title}" (${r.responsible_name}) должна быть готова менее чем через день.`;
-    if (!(await sendMessage(env, r.project_chat_id, text))) continue;
-    await env.DB.prepare('UPDATE task_assignees SET reminder_sent_at = ? WHERE id = ?').bind(nowIso(), r.id).run();
+    writes.push(queueReminder(env, r,
+      `⏰ Дедлайн приближается\nЗадача "${r.title}" (${r.responsible_name}) должна быть готова менее чем через день.`,
+      'due_soon', false));
+    writes.push(env.DB.prepare('UPDATE task_assignees SET reminder_sent_at = ? WHERE id = ?').bind(nowIso(), r.id));
   }
+  if (writes.length) await env.DB.batch(writes);
 }
 
 // (d) Сделано, но не проверено 2+ дня. Это упрёк ПРОВЕРЯЮЩЕМУ, не исполнителю:
 // опоздание исполнителя судится по done_at против срока при подтверждении.
+// Поэтому и адресат напоминания -- АВТОР задачи, а не тот, кто её сделал.
 async function remindStaleReview(env: Env): Promise<void> {
   const { results } = await env.DB.prepare(
-    `SELECT a.id, a.done_at, t.title, u.name AS responsible_name, p.telegram_chat_id AS project_chat_id
+    `SELECT a.id, a.done_at, t.id AS task_id, t.title, t.org_id, t.author_id, u.name AS responsible_name
      FROM task_assignees a
      JOIN tasks t ON t.id = a.task_id
      JOIN users u ON u.id = a.user_id
      JOIN projects p ON p.id = t.project_id
      WHERE a.state = 'done' AND a.done_at IS NOT NULL
        AND a.review_reminded_at IS NULL AND p.archived_at IS NULL
-       AND t.status <> 'archived'`,
-  ).all<{ id: string; done_at: string; title: string; responsible_name: string; project_chat_id: string }>();
+       AND t.status <> 'archived' AND t.author_id IS NOT NULL`,
+  ).all<{ id: string; done_at: string; task_id: string; title: string; org_id: string; author_id: string; responsible_name: string }>();
 
   const now = Date.now();
+  const writes: D1PreparedStatement[] = [];
   for (const r of results) {
     if (now - Date.parse(r.done_at) < REVIEW_WINDOW_MS) continue;
-    const text = `🔔 Пора проверить задачу\n"${r.title}" (${r.responsible_name}) выполнена более 2 дней назад и всё ещё не проверена.`;
-    if (!(await sendMessage(env, r.project_chat_id, text))) continue;
-    await env.DB.prepare('UPDATE task_assignees SET review_reminded_at = ? WHERE id = ?').bind(nowIso(), r.id).run();
+    writes.push(queueReminder(env, { task_id: r.task_id, org_id: r.org_id, user_id: r.author_id },
+      `🔔 Пора проверить задачу\n"${r.title}" (${r.responsible_name}) выполнена более 2 дней назад и всё ещё не проверена.`,
+      'stale_review', false));
+    writes.push(env.DB.prepare('UPDATE task_assignees SET review_reminded_at = ? WHERE id = ?').bind(nowIso(), r.id));
   }
+  if (writes.length) await env.DB.batch(writes);
 }
 
 function formatOverdue(ms: number): string {
