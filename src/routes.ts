@@ -8,7 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, getFileUrl, resolveChatId, sendDocument } from './telegram';
 import { applyTransition, buildNotification } from './transition';
-import { buildAssignees, myAssignee, transitionAssignee, type TaskKind } from './assignees';
+import { buildAssignees, myAssignee, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
@@ -373,10 +373,12 @@ apiRoutes.get('/projects/:projectId/archive', requireProjectAccess('project'), r
 // (restoring is a project-archive action gated to super_admin/creator).
 apiRoutes.get('/archive/mine', async (c) => {
   const { results: tasks } = await c.env.DB.prepare(
-    // org_id обязателен, хотя фильтр по responsible_user_id и так узкий: человек
-    // глобальный (R1-2), и без организации его личный архив смешал бы задачи
-    // школы и кафе в одном списке.
-    "SELECT * FROM tasks WHERE responsible_user_id = ? AND org_id = ? AND status IN ('done', 'archived') ORDER BY updated_at DESC",
+    // «Мои» -- через строку адресата: колонки ответственного больше нет.
+    // org_id обязателен: человек глобальный (R1-2), и без организации личный
+    // архив смешал бы задачи школы и кафе в одном списке.
+    `SELECT t.* FROM tasks t
+     JOIN task_assignees a ON a.task_id = t.id AND a.user_id = ?
+     WHERE t.org_id = ? AND t.status IN ('done', 'archived') ORDER BY t.updated_at DESC`,
   )
     .bind(c.get('userId'), c.get('orgId'))
     .all();
@@ -557,10 +559,6 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
   const id = uuid();
   const created = {
     id, org_id: orgId, project_id: projectId, title: b.title,
-    // Колонка ещё NOT NULL до contract-релиза; правило заполнения -- ПЕРВЫЙ
-    // адресат списка. От него зависят инварианты бэкфилла и алиасный
-    // POST /tasks/:id/confirm для старого фронта.
-    responsible_user_id: assignees[0],
     kind, author_id: c.get('userId'),
     deadline: b.deadline ?? null, telegram_message_id: null,
   } as Task;
@@ -570,9 +568,9 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
   // оставляло задачу, о которой исполнителю никто не сказал.
   await c.env.DB.batch([
     c.env.DB.prepare(
-      `INSERT INTO tasks (id, org_id, project_id, title, description, responsible_user_id, kind, author_id, source, status, deadline, content_blocks, priority, depends_on_task_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
-    ).bind(id, orgId, projectId, b.title, b.description ?? '', assignees[0], kind, c.get('userId'), 'ui', b.deadline ?? null, b.content_blocks ?? null, priority, dependency.value),
+      `INSERT INTO tasks (id, org_id, project_id, title, description, kind, author_id, source, status, deadline, content_blocks, priority, depends_on_task_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
+    ).bind(id, orgId, projectId, b.title, b.description ?? '', kind, c.get('userId'), 'ui', b.deadline ?? null, b.content_blocks ?? null, priority, dependency.value),
     ...buildAssignees(c.env, created, assignees, b.deadline ?? null),
     // Форма и порядок бинда совпадают с logEvent (db.ts) намеренно: INSERT в
     // events существует в трёх местах, и расхождение здесь читалось бы как
@@ -581,12 +579,16 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(uuid(), c.get('userId'), orgId, 'task', id, 'created', null, null, now),
-    await buildNotification(c.env, created, 'created', {
-      emoji: '📌', label: 'Новая задача',
-      // «Принял» -- ключевая кнопка продукта: она превращает уведомление в
-      // подтверждаемое поручение вместо объявления в чате.
-      buttons: [[{ text: '✅ Принял', callback_data: `accept:${id}` }]],
-    }, b.deadline ?? null),
+    // Каждому адресату -- своё письмо со своей кнопкой: у рассылки на 14 человек
+    // одного получателя нет.
+    ...(await Promise.all(assignees.map((uid) =>
+      buildNotification(c.env, created, 'created', {
+        emoji: '📌', label: 'Новая задача',
+        // «Принял» -- ключевая кнопка продукта: она превращает уведомление в
+        // подтверждаемое поручение вместо объявления в чате.
+        buttons: [[{ text: '✅ Принял', callback_data: `accept:${id}` }]],
+      }, b.deadline ?? null, uid),
+    ))),
   ]);
   await drainOutbox(c.env);
   return c.json({ id }, 201);
@@ -622,10 +624,19 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
     .catch(() => ({}) as Record<string, undefined>);
   const dependency = await resolveDependency(c.env.DB, c.get('orgId'), task.project_id, task.id, b.depends_on_task_id);
   if (!dependency.ok) return c.json({ error: 'depends_on_task_id must be another task in the same project' }, 400);
-  // Тот же предикат, что и при создании: сменить ответственного на человека
-  // чужой организации нельзя.
+  // Тот же предикат, что и при создании: сменить адресата на человека чужой
+  // организации нельзя.
   if (b.responsible_user_id !== undefined && !(await membershipRole(c.env.DB, c.get('orgId'), b.responsible_user_id))) {
     return c.json({ error: 'responsible_user_id is not a member of this organisation' }, 400);
+  }
+  // Смена адресата у задачи с ОДНИМ адресатом. У рассылки «сменить
+  // ответственного» смысла не имеет -- там адресатов много, и правка списка
+  // это отдельная операция, а не поле формы.
+  if (b.responsible_user_id !== undefined) {
+    if (task.kind !== 'single') return c.json({ error: 'multi-assignee task: edit assignees, not responsible_user_id' }, 409);
+    await c.env.DB.prepare('UPDATE task_assignees SET user_id = ? WHERE task_id = ? AND org_id = ?')
+      .bind(b.responsible_user_id, task.id, c.get('orgId'))
+      .run();
   }
   const priority = b.priority && PRIORITIES.includes(b.priority) ? b.priority : null;
   // Правка содержимого status НЕ трогает: иначе «единственный писатель» стал бы
@@ -633,14 +644,13 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
   // уходит в applyTransition отдельным шагом ниже.
   await c.env.DB.prepare(
     `UPDATE tasks SET title = COALESCE(?, title), description = COALESCE(?, description),
-       responsible_user_id = COALESCE(?, responsible_user_id), deadline = ?,
+       deadline = ?,
        content_blocks = COALESCE(?, content_blocks), priority = COALESCE(?, priority),
        depends_on_task_id = ?, updated_at = ? WHERE id = ?`,
   )
     .bind(
       b.title ?? null,
       b.description ?? null,
-      b.responsible_user_id ?? null,
       b.deadline === undefined ? task.deadline : b.deadline,
       b.content_blocks ?? null,
       priority,
@@ -819,11 +829,26 @@ apiRoutes.post('/tasks/:id/reject', requireProjectAccess('task'), async (c) => {
   const days = Number(extra_days);
   if (!Number.isInteger(days) || days < 1) return c.json({ error: 'extra_days must be a positive integer' }, 400);
   const newDeadline = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+  // Отклоняется работа КАЖДОГО, кто её сдал: у рассылки сдавших может быть
+  // несколько, и вернуть в работу надо всех. Таймеры гасятся на СТРОКАХ --
+  // в tasks их больше нет, и новый срок обязан получить собственный цикл
+  // напоминаний, иначе проживёт без единого предупреждения.
+  const { results: done } = await c.env.DB.prepare(
+    "SELECT * FROM task_assignees WHERE task_id = ? AND org_id = ? AND state = 'done'",
+  ).bind(task.id, c.get('orgId')).all<Assignee>();
+  if (done.length === 0) return c.json({ error: 'nobody has submitted this task' }, 409);
+
+  for (const a of done) {
+    await transitionAssignee(c.env, {
+      task, assignee: a, to: 'rejected', actorId: c.get('userId'), reason: comment, dueAt: newDeadline,
+      notify: { emoji: '❌', label: 'Отклонено, возвращено в работу', extraLine: `Причина: ${comment}` },
+    });
+  }
+  // Срок самой задачи тоже сдвигается: доска показывает его, а не персональные.
   await applyTransition(c.env, {
     task, to: 'in_progress', actorId: c.get('userId'), action: 'rejected', comment,
-    // Таймеры гасятся, чтобы новый срок получил собственный цикл напоминаний.
-    set: { done_at: null, confirmed_at: null, deadline: newDeadline, last_escalated_at: null, reminder_sent_at: null, review_reminded_at: null },
-    notify: { emoji: '❌', label: 'Отклонено, возвращено в работу', extraLine: `Причина: ${comment}` },
+    set: { done_at: null, confirmed_at: null, deadline: newDeadline },
   });
   await drainOutbox(c.env);
   return c.json({ success: true });

@@ -79,11 +79,6 @@ export interface Task {
   // JSON array of {type:'text',text} / {type:'image',attachment_id} blocks --
   // the canvas editor's content. NULL for tasks created before this existed.
   content_blocks: string | null;
-  // ОТМИРАЮЩАЯ КОЛОНКА: адресаты живут в task_assignees с шага 3. Здесь она
-  // остаётся до contract-релиза, который пересобирает tasks (удалить её раньше
-  // нельзя: она NOT NULL и под индексом idx_tasks_responsible). Значение --
-  // первый адресат списка.
-  responsible_user_id: string;
   // Вид поручения: single (один), each (каждый делает своё), any (достаточно
   // одного). От него зависит свёртка состояний адресатов в статус задачи.
   kind: 'single' | 'each' | 'any';

@@ -17,9 +17,10 @@ export type LifecycleFields = {
   done_at?: string | null;
   confirmed_at?: string | null;
   deadline?: string | null;
-  last_escalated_at?: string | null;
-  reminder_sent_at?: string | null;
-  review_reminded_at?: string | null;
+  // Трёх таймеров (last_escalated_at / reminder_sent_at / review_reminded_at)
+  // здесь БОЛЬШЕ НЕТ: они переехали на строки адресатов в шаге 3 и удалены из
+  // tasks contract-релизом. У рассылки на 14 человек по-задачный таймер гасился
+  // первой же отправкой, и тринадцать не получали ничего.
   telegram_message_id?: string | null;
 };
 
@@ -56,11 +57,12 @@ const APP_URL = 'https://hando.alrevion.com';
 async function composeText(
   env: Env,
   task: Task,
+  recipientId: string,
   n: NonNullable<TransitionInput['notify']>,
   deadline: string | null,
 ): Promise<string> {
   const resp = await env.DB.prepare('SELECT name, telegram_username FROM users WHERE id = ?')
-    .bind(task.responsible_user_id)
+    .bind(recipientId)
     .first<{ name: string; telegram_username: string | null }>();
   // @username действительно пингует в Telegram, простое имя в тексте -- нет.
   const who = resp ? (resp.telegram_username ? `@${resp.telegram_username} (${resp.name})` : resp.name) : '—';
@@ -104,7 +106,15 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
   if (notify) {
     // Дедлайн берётся ПОСЛЕ перехода: reject сдвигает срок, и сообщение про
     // старый срок было бы прямой дезинформацией исполнителя.
-    statements.push(await buildNotification(env, task, action, notify, set?.deadline !== undefined ? set.deadline : (task.deadline ?? null)));
+    // Уведомление о переходе ЗАДАЧИ уходит каждому живому адресату: у рассылки
+    // «ответственного», которому можно было бы адресовать одно письмо, нет.
+    const { results: recipients } = await env.DB.prepare(
+      "SELECT user_id FROM task_assignees WHERE task_id = ? AND state <> 'declined'",
+    ).bind(task.id).all<{ user_id: string }>();
+    const deadline = set?.deadline !== undefined ? set.deadline : (task.deadline ?? null);
+    for (const r of recipients) {
+      statements.push(await buildNotification(env, task, action, notify, deadline, r.user_id));
+    }
   }
 
   await env.DB.batch(statements);
@@ -122,6 +132,9 @@ export async function buildNotification(
   kind: string,
   notify: NonNullable<TransitionInput['notify']>,
   deadline: string | null,
+  // Кому именно. С contract-релиза «ответственного» у задачи нет -- есть
+  // строки адресатов, и уведомление адресуется конкретной из них.
+  recipientId: string,
 ): Promise<D1PreparedStatement> {
   // ADR-4: ЗАГОЛОВОК ЗАДАЧИ УХОДИТ В ЛИЧКУ, а не в групповой чат. Группа --
   // общий канал доски, и содержание поручения там видят все участники, включая
@@ -138,8 +151,8 @@ export async function buildNotification(
   // то, что ADR-4 обещает доставить. Поэтому в payload едет recipient_user_id, а
   // telegram_user_id резолвится проходом отправки.
   const payload = {
-    recipient_user_id: task.responsible_user_id,
-    text: await composeText(env, task, notify, deadline),
+    recipient_user_id: recipientId,
+    text: await composeText(env, task, recipientId, notify, deadline),
     // Гасим прежнее отслеживаемое сообщение (например «🚀 В работе») тем же
     // проходом отправки, чтобы порядок «удалить старое, отправить новое» не
     // зависел от того, чем закончился запрос.
@@ -153,5 +166,5 @@ export async function buildNotification(
   return env.DB.prepare(
     `INSERT INTO notifications (id, task_id, assignee_id, org_id, kind, payload, scheduled_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(uuid(), task.id, task.responsible_user_id, task.org_id, kind, JSON.stringify(payload), nowIso());
+  ).bind(uuid(), task.id, recipientId, task.org_id, kind, JSON.stringify(payload), nowIso());
 }

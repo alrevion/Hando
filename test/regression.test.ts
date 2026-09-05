@@ -64,7 +64,6 @@ describe('регрессия шага -1: создание и редактиро
       project_id: 'p1',
       title: 'Договор',
       description: 'текст',
-      responsible_user_id: 'w1',
       status: 'todo',
       priority: 'medium',
       deadline: '2030-01-01T00:00:00.000Z',
@@ -72,7 +71,10 @@ describe('регрессия шага -1: создание и редактиро
     // Ничего из «жизненного цикла» не проставлено заранее -- это и есть чистый todo.
     expect(t!.done_at).toBeNull();
     expect(t!.confirmed_at).toBeNull();
-    expect(t!.last_escalated_at).toBeNull();
+    // Адресат -- отдельная строка с шага 3; таймеры теперь на ней.
+    const assignee = await testEnv.DB.prepare('SELECT user_id, state, last_escalated_at FROM task_assignees WHERE task_id = ?').bind(id).first<{ user_id: string; state: string; last_escalated_at: string | null }>();
+    expect(assignee).toMatchObject({ user_id: 'w1', state: 'pending' });
+    expect(assignee!.last_escalated_at).toBeNull();
 
     const { results } = await events(id);
     expect(results).toEqual([{ action: 'created', actor_id: 's1', comment: null, overdue_by: null }]);
@@ -213,7 +215,7 @@ describe('регрессия шага -1: приёмка', () => {
     // Таймеры не заводятся через фикстуру -- их ставит cron. Здесь важно, что
     // reject их гасит: иначе новый дедлайн проживёт без единого напоминания.
     await testEnv.DB.prepare(
-      "UPDATE tasks SET last_escalated_at = '2026-01-01T01:00:00.000Z', reminder_sent_at = '2025-12-31T00:00:00.000Z', review_reminded_at = '2026-01-04T00:00:00.000Z' WHERE id = 't1'",
+      "UPDATE task_assignees SET state = 'done', last_escalated_at = '2026-01-01T01:00:00.000Z', reminder_sent_at = '2025-12-31T00:00:00.000Z', review_reminded_at = '2026-01-04T00:00:00.000Z' WHERE task_id = 't1'",
     ).run();
     tg();
 
@@ -225,15 +227,26 @@ describe('регрессия шага -1: приёмка', () => {
     expect(t!.status).toBe('in_progress');
     expect(t!.done_at).toBeNull();
     expect(t!.confirmed_at).toBeNull();
-    expect(t!.last_escalated_at).toBeNull();
-    expect(t!.reminder_sent_at).toBeNull();
-    expect(t!.review_reminded_at).toBeNull();
+    // Таймеры гасятся на СТРОКЕ адресата: в tasks их больше нет, потому что при
+    // рассылке на 14 человек по-задачный флаг гасился первой же отправкой.
+    const a = await testEnv.DB.prepare("SELECT state, last_escalated_at, reminder_sent_at, review_reminded_at FROM task_assignees WHERE task_id = 't1'").first<Record<string, unknown>>();
+    expect(a!.state).toBe('rejected');
+    expect(a!.last_escalated_at).toBeNull();
+    expect(a!.reminder_sent_at).toBeNull();
+    expect(a!.review_reminded_at).toBeNull();
 
     const shifted = Date.parse(t!.deadline as string) - before;
     expect(shifted).toBeGreaterThan(3 * 24 * 3600 * 1000 - 5000);
     expect(shifted).toBeLessThan(3 * 24 * 3600 * 1000 + 5000);
 
-    expect((await events('t1')).results[0]).toMatchObject({ action: 'rejected', comment: 'переделать' });
+    // Слои журнала разделены: строка адресата пишет 'rejected' (target_type =
+    // 'assignee'), задача -- свой переход. Раньше это было одно событие, потому
+    // что адресат был один; при рассылке первое случается по числу сдавших.
+    const assigneeEvents = await testEnv.DB.prepare(
+      "SELECT action, comment FROM events WHERE target_type = 'assignee' ORDER BY rowid",
+    ).all<{ action: string; comment: string | null }>();
+    expect(assigneeEvents.results.at(-1)).toMatchObject({ action: 'rejected', comment: 'переделать' });
+    expect((await events('t1')).results.map((e) => e.action)).toContain('rejected');
   });
 });
 

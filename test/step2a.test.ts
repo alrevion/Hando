@@ -272,7 +272,8 @@ describe('шаг 2a: адресатом не станет чужой челов�
     expect(patch.status).toBe(400);
     // Уведомление с заголовком задачи чужому человеку не ушло бы -- но важнее,
     // что и ответственный не сменился.
-    expect((await testEnv.DB.prepare("SELECT responsible_user_id FROM tasks WHERE id='ta'").first<{ responsible_user_id: string }>())!.responsible_user_id).toBe('a1');
+    // Адресат живёт в task_assignees с contract-релиза.
+    expect((await testEnv.DB.prepare("SELECT user_id FROM task_assignees WHERE task_id='ta'").first<{ user_id: string }>())!.user_id).toBe('a1');
   });
 
   it('POST /projects/:id/members не принимает человека чужой организации', async () => {

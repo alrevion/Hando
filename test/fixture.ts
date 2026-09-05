@@ -113,14 +113,16 @@ export async function envWith(data: FakeData): Promise<Env> {
     const resp = (t.responsible_user_id as string) ?? '__seed';
     stmts.push(
       db.prepare(
-        // author_id: гейт confirm/reject с шага 3 -- авторство, а не роль.
-        // По умолчанию автор = ответственный (как в бэкфилле 0012 для задач без
-        // события создания), чтобы задача была подтверждаемой.
-        `INSERT INTO tasks (id, org_id, project_id, title, description, responsible_user_id, author_id, kind, status, deadline, done_at, confirmed_at, telegram_message_id, priority, depends_on_task_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        // responsible_user_id снят contract-релизом: «кто делает» -- строка
+        // адресата, которая заводится ниже. Фикстура по-прежнему принимает
+        // responsible_user_id: это удобный способ сказать «один адресат».
+        // author_id: гейт confirm/reject -- авторство, а не роль. По умолчанию
+        // автор = адресат, чтобы задача была подтверждаемой.
+        `INSERT INTO tasks (id, org_id, project_id, title, description, author_id, kind, status, deadline, done_at, confirmed_at, telegram_message_id, priority, depends_on_task_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).bind(
         t.id, (t.org_id as string) ?? projects.get(t.project_id as string)?.org ?? ORG_A,
-        t.project_id, (t.title as string) ?? 'T', (t.description as string) ?? '', resp,
+        t.project_id, (t.title as string) ?? 'T', (t.description as string) ?? '',
         (t.author_id as string) ?? resp, (t.kind as string) ?? 'single',
         (t.status as string) ?? 'todo', (t.deadline as string) ?? null, (t.done_at as string) ?? null,
         (t.confirmed_at as string) ?? null, (t.telegram_message_id as string) ?? null,

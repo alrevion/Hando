@@ -166,38 +166,33 @@ describe('шаг 3: гейт приёмки -- авторство, а не ро�
   });
 });
 
-describe('шаг 3: четыре инварианта', () => {
-  it('после сквозного сценария все четыре дают ноль', async () => {
+describe('шаг 3: инварианты после contract-релиза', () => {
+  it('остаётся только №4 -- у каждой задачи есть автор', async () => {
     const env = await world([{ id: 'old', project_id: 'p1', status: 'todo', responsible_user_id: 'u0', author_id: 'boss' }]);
     tg();
     await apiRoutes.request('/projects/p1/tasks',
       json(await cookie('boss', 'creator', ORG_A), { title: 'Новая', assignee_ids: ['u0', 'u1'], kind: 'each' }), env);
 
+    // Инварианты 1-3 СНЯТЫ: все три ссылались на tasks.responsible_user_id,
+    // которого больше нет. Это не потеря покрытия -- они проверяли, что бэкфилл
+    // не разошёлся с колонкой, а колонка удалена. Их предмет («у задачи есть
+    // адресат из той же организации») теперь держит внешний ключ и валидация
+    // на создании, проверенная отдельными тестами выше.
     const zero = async (label: string, sql: string) => {
       const { n } = (await testEnv.DB.prepare(sql).first<{ n: number }>())!;
       expect(n, label).toBe(0);
     };
-    // 1. у каждой задачи есть хотя бы один адресат
-    await zero('без адресатов', `SELECT COUNT(*) AS n FROM tasks t LEFT JOIN task_assignees a ON a.task_id = t.id WHERE a.task_id IS NULL`);
-    // 2. каждый адресат -- член ТОЙ ЖЕ организации на момент постановки.
-    // Сравнение с created_at задачи, а не «членство живо сейчас»: иначе первое
-    // же увольнение покрасило бы CI навсегда.
+    // №4 не снимается НИКОГДА: author_id -- предикат авторизации, и его NULL
+    // означает задачу, которую никто не может подтвердить.
+    await zero('задача без автора', 'SELECT COUNT(*) AS n FROM tasks WHERE author_id IS NULL');
+
+    // Заодно: адресат всё ещё обязан быть членом организации задачи. Проверка
+    // пережила снятие колонки, потому что опиралась на task_assignees.
     await zero('адресат не из организации задачи', `
       SELECT COUNT(*) AS n FROM task_assignees a
         JOIN tasks t ON t.id = a.task_id
         LEFT JOIN org_memberships m ON m.user_id = a.user_id AND m.org_id = t.org_id
           AND (m.left_at IS NULL OR m.left_at > t.created_at)
         WHERE m.user_id IS NULL`);
-    // 3. прежний ответственный СРЕДИ адресатов -- направленная форма.
-    // Форма `a.user_id <> t.responsible_user_id` была бы неверна: она становится
-    // ненулевой ПО ЗАМЫСЛУ на первой же рассылке.
-    await zero('ответственный не среди адресатов', `
-      SELECT COUNT(*) AS n FROM tasks t
-        LEFT JOIN task_assignees a ON a.task_id = t.id AND a.user_id = t.responsible_user_id
-        WHERE a.task_id IS NULL`);
-    // 4. у каждой задачи есть автор -- этот инвариант не снимается никогда:
-    // author_id теперь предикат авторизации, и NULL означает задачу, которую
-    // никто не может подтвердить.
-    await zero('задача без автора', 'SELECT COUNT(*) AS n FROM tasks WHERE author_id IS NULL');
   });
 });

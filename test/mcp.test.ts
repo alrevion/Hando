@@ -72,8 +72,11 @@ function fakeDB(data: FakeData): Env['DB'] {
         // разбор пришлось править вслед. Это цена подделки, а не особенность
         // кода: настоящая D1 связывает по именам колонок и не заметила бы.
         if (/INSERT INTO tasks/.test(sql)) {
-          const [id, org_id, project_id, title, description, responsible_user_id, deadline] = args;
-          data.tasks.push({ id, org_id, project_id, title, description, responsible_user_id, status: 'todo', deadline });
+          // responsible_user_id снят contract-релизом: «кто делает» -- строка
+          // task_assignees. Подделка её не моделирует, поэтому исполнителя тут
+          // просто нет; файл проверяет bearer-гейт и атрибуцию, а не адресатов.
+          const [id, org_id, project_id, title, description, , , , deadline] = args;
+          data.tasks.push({ id, org_id, project_id, title, description, status: 'todo', deadline });
         } else if (/INSERT INTO events/.test(sql)) {
           const [id, actor_id, org_id, target_type, target_id, action] = args;
           data.events.push({ id, actor_id, org_id, target_type, target_id, action });
@@ -170,11 +173,16 @@ describe('mcp /mcp endpoint', () => {
     expect(rpc.result?.isError).toBeFalsy();
     expect(rpc.result?.content[0].text).toContain('Created task');
 
-    // Reached real business logic: a todo task exists, assigned to Bob...
+    // Дошло до настоящей бизнес-логики: задача создана в todo...
     expect(data.tasks).toHaveLength(1);
-    expect(data.tasks[0]).toMatchObject({ title: 'Ship the thing', responsible_user_id: 'u_bob', status: 'todo' });
-    // ...and the audit event is attributed to the configured MCP user.
+    expect(data.tasks[0]).toMatchObject({ title: 'Ship the thing', status: 'todo' });
+    // ...и событие приписано настроенному пользователю MCP, а не выдумано.
     const created = data.events.find((e) => e.target_type === 'task' && e.action === 'created');
     expect(created?.actor_id).toBe(OWNER);
+
+    // Кому назначена -- ЗДЕСЬ НЕ ПРОВЕРЯЕТСЯ, и это осознанно: адресат живёт в
+    // task_assignees, которую подделка не моделирует. Проверять его подделкой
+    // значило бы доказывать поведение её собственного диспетчера. Настоящая
+    // маршрутизация адресатов покрыта step3.test.ts против живой D1.
   });
 });

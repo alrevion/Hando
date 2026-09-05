@@ -128,17 +128,18 @@ async function listTasks(env: Env, projectRef: string): Promise<ToolOut> {
 
   const res = await callApi(env, auth.cookie, `/projects/${project.id}/tasks`);
   if (!res.ok) return fail(`could not list tasks (${res.status})`);
-  const tasks = (await res.json()) as { id: string; title: string; status: string; responsible_user_id: string; deadline: string | null }[];
+  // responsible_user_id снят contract-релизом. Доска отдаёт задачи без него,
+  // поэтому имя исполнителя здесь больше не подставляется -- MCP показывает
+  // задачу и её состояние, а «кто делает» смотрят в мини-аппе, где есть строки
+  // адресатов. Выдумывать здесь первого попавшегося было бы враньём при рассылке.
+  const tasks = (await res.json()) as { id: string; title: string; status: string; deadline: string | null }[];
 
-  const users = await fetchUsers(env, auth.cookie);
-  const nameById = new Map('text' in users ? [] : users.map((u) => [u.id, u.name] as const));
   return ok(
     JSON.stringify(
       tasks.map((t) => ({
         id: t.id,
         title: t.title,
         status: t.status,
-        responsible: nameById.get(t.responsible_user_id) ?? t.responsible_user_id,
         deadline: t.deadline ?? null,
       })),
     ),

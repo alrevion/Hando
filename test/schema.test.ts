@@ -4,7 +4,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 describe('тестовая база — настоящая D1', () => {
-  it('миграции применены: есть все таблицы схемы 0001-0013', async () => {
+  it('миграции применены: есть все таблицы схемы 0001-0015', async () => {
     const { results } = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'd1_%' ORDER BY name",
     ).all<{ name: string }>();
@@ -23,11 +23,22 @@ describe('тестовая база — настоящая D1', () => {
     ]);
   });
 
-  it('колонки поздних миграций на месте', async () => {
+  it('колонки поздних миграций на месте, а снятые contract-релизом -- ушли', async () => {
     const { results } = await env.DB.prepare('PRAGMA table_info(tasks)').all<{ name: string }>();
     const cols = results.map((r: { name: string }) => r.name);
-    for (const c of ['priority', 'depends_on_task_id', 'reminder_sent_at', 'review_reminded_at', 'confirmed_at', 'content_blocks']) {
+    for (const c of ['priority', 'depends_on_task_id', 'confirmed_at', 'content_blocks', 'kind', 'author_id', 'source']) {
       expect(cols).toContain(c);
+    }
+    // Contract-релиз снял «кто делает» и три по-задачных таймера: и то и другое
+    // переехало на строки адресатов. Проверка на ОТСУТСТВИЕ обязательна --
+    // иначе колонка, случайно возвращённая в пересборке, жила бы незамеченной и
+    // код снова начал бы писать в два места.
+    for (const c of ['responsible_user_id', 'last_escalated_at', 'reminder_sent_at', 'review_reminded_at']) {
+      expect(cols, `${c} обязана была уйти из tasks`).not.toContain(c);
+    }
+    const { results: aCols } = await env.DB.prepare('PRAGMA table_info(task_assignees)').all<{ name: string }>();
+    for (const c of ['last_escalated_at', 'reminder_sent_at', 'review_reminded_at', 'due_at', 'state']) {
+      expect(aCols.map((r: { name: string }) => r.name)).toContain(c);
     }
   });
 
