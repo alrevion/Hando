@@ -4,6 +4,7 @@ import { nowIso } from './db';
 import { deleteMessage, reconcileWebhook, sendMessage } from './telegram';
 import { applyTransition } from './transition';
 import { drainOutbox } from './outbox';
+import { enqueueNudges } from './nudges';
 
 // Тот же домен, что в transition.ts: адрес воркера один.
 const APP_URL = 'https://hando.alrevion.com';
@@ -19,6 +20,9 @@ export async function scheduled(_controller: ScheduledController, env: Env, _ctx
   await remindStaleReview(env);
   // Страховка за отправку: роуты сливают outbox сразу после ответа, но если тот
   // вызов не дошёл, строка так и лежит с sent_at IS NULL -- здесь она уедет.
+  // Поводы ставятся ДО слива очереди: иначе выданный сейчас повод ждал бы
+  // следующего тика.
+  await enqueueNudges(env);
   await drainOutbox(env);
   // Самопочинка вебхука: без неё регистрация была бы ручным шагом с токеном
   // бота, а сбившийся вебхук пришлось бы замечать по молчанию бота.

@@ -92,6 +92,39 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
 
+    // Ветка поводов идёт ДО проверки «ты адресат» намеренно: повод адресован
+    // АВТОРУ поручения, а он обычно не входит в список исполнителей. Проверка
+    // адресата выше отбивала бы собственные кнопки автора.
+    // Нажатие отмечается в nudges: без acted_at метрика «доля
+    // поводов без нажатия за сутки» не имеет числителя.
+    if (action === 'nudge_remind' || action === 'nudge_confirm') {
+      await c.env.DB.prepare(
+        'UPDATE nudges SET acted_at = ? WHERE user_id = ? AND task_id = ? AND acted_at IS NULL',
+      ).bind(nowIso(), who.userId, task.id).run();
+
+      if (action === 'nudge_confirm') {
+        // Подтвердить может только автор -- тот же гейт, что у POST /confirm.
+        // Повод адресован автору, но кнопку могли переслать.
+        if (task.author_id !== who.userId) {
+          await answerCallbackQuery(c.env, cq.id, 'Принимает работу автор');
+          return c.json({ ok: true });
+        }
+        await c.env.DB.prepare('UPDATE tasks SET confirmed_at = ? WHERE id = ? AND org_id = ?')
+          .bind(nowIso(), task.id, who.orgId).run();
+        await answerCallbackQuery(c.env, cq.id, 'Принято');
+      } else {
+        await answerCallbackQuery(c.env, cq.id, 'Напомним исполнителям');
+        // Сброс флага эскалации -- повторное напоминание пойдёт штатным проходом
+        // cron, а не отдельной рассылкой в обход тихих часов.
+        await c.env.DB.prepare(
+          "UPDATE task_assignees SET last_escalated_at = NULL WHERE task_id = ? AND state = 'pending'",
+        ).bind(task.id).run();
+      }
+      if (cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
+      await drainOutbox(c.env);
+      return c.json({ ok: true });
+    }
+
     // Сообщение уходит в ЛИЧКУ адресата (ADR-4), но нажать всё равно может
     // только тот, у кого есть своя строка: пересланное сообщение кнопку не
     // делает чужой.
