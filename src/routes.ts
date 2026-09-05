@@ -143,14 +143,26 @@ apiRoutes.post('/users', requireRole('super_admin', 'creator'), async (c) => {
       .bind(orgId, existing.id)
       .first<{ left_at: string | null }>();
     if (already && already.left_at === null) return c.json({ error: 'already a member of this organisation' }, 409);
-    if (already) {
-      // Возвращается отозванный: членство воскрешается, а не дублируется --
-      // UNIQUE(org_id, user_id) второй строки не допустит.
-      await c.env.DB.prepare('UPDATE org_memberships SET left_at = NULL, role = ? WHERE org_id = ? AND user_id = ?').bind(role, orgId, existing.id).run();
-    } else {
-      await c.env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role) VALUES (?, ?, ?, ?)').bind(uuid(), orgId, existing.id, role).run();
-    }
-    await logEvent(c.env.DB, { actorId: c.get('userId'), orgId, targetType: 'user', targetId: existing.id, action: 'membership_added' });
+
+    // ЧУЖОГО ЧЕЛОВЕКА ПО ОДНОМУ ТЕЛЕФОНУ ПРИСОЕДИНИТЬ НЕЛЬЗЯ.
+    //
+    // Раньше здесь молча создавалось членство. План описывал сценарий «владелец
+    // добавляет в кафе своего бухгалтера из школы», где согласие подразумевалось
+    // самим фактом, что это его человек. Но код не мог отличить этот случай от
+    // «беру телефон постороннего»: имя, роль и организацию задаёт вызывающий, а
+    // жертва не получает даже уведомления.
+    //
+    // Цена была не в самом графте: получив членство, атакующий проходил гейт
+    // PATCH /users/:id и переписывал ГЛОБАЛЬНУЮ идентичность жертвы (телефон),
+    // после чего входил под ней и попадал в ЕЁ организации.
+    //
+    // Возврат СВОЕГО отозванного сотрудника разрешён: членство уже было, то есть
+    // согласие когда-то состоялось. Присоединение нового идёт через приглашение,
+    // которое человек гасит сам.
+    if (!already) return c.json({ error: 'this phone already belongs to a person; send them an invite instead', code: 'INVITE_REQUIRED' }, 409);
+
+    await c.env.DB.prepare('UPDATE org_memberships SET left_at = NULL, role = ? WHERE org_id = ? AND user_id = ?').bind(role, orgId, existing.id).run();
+    await logEvent(c.env.DB, { actorId: c.get('userId'), orgId, targetType: 'user', targetId: existing.id, action: 'membership_restored' });
     return c.json({ id: existing.id, phone: trimmed, name, role, telegram_username: username }, 201);
   }
 
@@ -194,6 +206,23 @@ apiRoutes.patch('/users/:id', requireRole('super_admin', 'creator'), async (c) =
   }
   if (body.name !== undefined && !body.name.trim()) return c.json({ error: 'name cannot be empty' }, 400);
   if (body.phone !== undefined && !body.phone.trim()) return c.json({ error: 'phone cannot be empty' }, 400);
+
+  // ИДЕНТИЧНОСТЬ ОБЩЕГО ЧЕЛОВЕКА НЕ ПРИНАДЛЕЖИТ ОДНОМУ АРЕНДАТОРУ.
+  //
+  // users глобальные (R1-2): один человек живёт в нескольких организациях. Право
+  // править его имя и ТЕЛЕФОН выдавалось по членству в одной из них -- значит
+  // любая организация могла переписать его точку входа и войти под ним в
+  // остальные. Роль правится по-прежнему: она и так org-скоупная.
+  const identityEdit = body.name !== undefined || body.phone !== undefined || 'telegram_username' in body;
+  if (identityEdit) {
+    const elsewhere = await c.env.DB
+      .prepare('SELECT 1 FROM org_memberships WHERE user_id = ? AND org_id <> ? AND left_at IS NULL')
+      .bind(targetId, orgId)
+      .first();
+    if (elsewhere) {
+      return c.json({ error: 'this person belongs to other organisations; only their role can be changed here' }, 403);
+    }
+  }
 
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -743,11 +772,24 @@ apiRoutes.post('/tasks/:id/decline', requireProjectAccess('task'), async (c) => 
   const { reason } = await c.req.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
   if (!reason || !reason.trim()) return c.json({ error: 'reason required' }, 400);
 
-  const res = await transitionAssignee(c.env, {
-    task, assignee: mine, to: 'declined', actorId: c.get('userId'), reason: reason.trim(),
-    notify: { emoji: '🚫', label: 'Отказ от поручения', extraLine: `Причина: ${reason.trim()}` },
-  });
+  const res = await transitionAssignee(c.env, { task, assignee: mine, to: 'declined', actorId: c.get('userId'), reason: reason.trim() });
   if (!res.ok) return c.json({ error: res.error }, 409);
+
+  // Уведомление АВТОРУ, а не «живым адресатам». Раньше оно шло через
+  // applyTransition, а тот рассылает всем со state <> 'declined' -- то есть
+  // отказавшийся из списка уже выпал, автора в списке не было никогда, и при
+  // единственном адресате не уходило НИЧЕГО: задача тихо уезжала в архив, а
+  // поднять её автор-сотрудник сам не может. При рассылке было ещё хуже -- письмо
+  // про отказ получали тринадцать посторонних и не получал тот, кому оно нужно.
+  if (task.author_id) {
+    const who = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(c.get('userId')).first<{ name: string }>();
+    await c.env.DB.batch([
+      await buildNotification(c.env, task, 'declined', {
+        emoji: '🚫', label: 'Отказ от поручения',
+        extraLine: `${who?.name ?? 'Исполнитель'} отказался. Причина: ${reason.trim()}`,
+      }, task.deadline ?? null, task.author_id),
+    ]);
+  }
   await drainOutbox(c.env);
   return c.json({ success: true });
 });

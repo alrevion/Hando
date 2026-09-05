@@ -28,7 +28,7 @@ export const botApp = new Hono<{ Bindings: Env }>();
 
 type TgUser = { id: number; username?: string };
 type Update = {
-  message?: { chat: { id: number }; from?: TgUser; text?: string };
+  message?: { chat: { id: number; type?: string }; from?: TgUser; text?: string };
   callback_query?: { id: string; from: TgUser; data?: string; message?: { chat: { id: number }; message_id: number } };
 };
 
@@ -102,11 +102,21 @@ botApp.post('/webhook', async (c) => {
         'UPDATE nudges SET acted_at = ? WHERE user_id = ? AND task_id = ? AND acted_at IS NULL',
       ).bind(nowIso(), who.userId, task.id).run();
 
+      // Гейт -- на ОБЕ кнопки, а не только на «принять». Повод адресован автору,
+      // но кнопку можно переслать или подделать callback_data. Без гейта любой
+      // член организации сбрасывал бы флаг эскалации по любой задаче, и
+      // исполнители получали бы повторные «ВЫ ПРОСРОЧИЛИ» -- причём срочные, то
+      // есть сквозь тихие часы, и сколько угодно раз.
+      if (task.author_id !== who.userId) {
+        await answerCallbackQuery(c.env, cq.id, 'Это не ваше поручение');
+        return c.json({ ok: true });
+      }
+
       if (action === 'nudge_confirm') {
-        // Подтвердить может только автор -- тот же гейт, что у POST /confirm.
-        // Повод адресован автору, но кнопку могли переслать.
-        if (task.author_id !== who.userId) {
-          await answerCallbackQuery(c.env, cq.id, 'Принимает работу автор');
+        // Те же гейты, что у POST /tasks/:id/confirm: иначе с кнопки можно
+        // подтвердить недоделанную или уже подтверждённую задачу.
+        if (task.status !== 'done' || task.confirmed_at) {
+          await answerCallbackQuery(c.env, cq.id, 'Задача ещё не сдана');
           return c.json({ ok: true });
         }
         await c.env.DB.prepare('UPDATE tasks SET confirmed_at = ? WHERE id = ? AND org_id = ?')
@@ -117,8 +127,8 @@ botApp.post('/webhook', async (c) => {
         // Сброс флага эскалации -- повторное напоминание пойдёт штатным проходом
         // cron, а не отдельной рассылкой в обход тихих часов.
         await c.env.DB.prepare(
-          "UPDATE task_assignees SET last_escalated_at = NULL WHERE task_id = ? AND state = 'pending'",
-        ).bind(task.id).run();
+          "UPDATE task_assignees SET last_escalated_at = NULL WHERE task_id = ? AND org_id = ? AND state = 'pending'",
+        ).bind(task.id, who.orgId).run();
       }
       if (cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
       await drainOutbox(c.env);
@@ -161,6 +171,19 @@ botApp.post('/webhook', async (c) => {
   const msg = update.message;
   if (!msg?.from) return c.json({ ok: true });
 
+  // ЛИЧНЫЙ СЛОЙ -- ТОЛЬКО В ЛИЧКЕ.
+  //
+  // Бот состоит в групповых чатах проектов, а Telegram доставляет ему сообщения
+  // со слэша даже при включённом privacy mode. Ответ шёл по адресу входящего
+  // сообщения, поэтому «/moe», набранное в группе школы, печатало туда задачи
+  // человека ИЗ ВСЕХ его организаций -- вместе с их названиями. Это ровно та
+  // утечка, ради закрытия которой ADR-4 убрал заголовки из групп, и она
+  // обходила закрытие: bot.ts -- второй путь отправки, мимо outbox.
+  //
+  // В группе бот просто молчит: объяснять, почему он не отвечает, значило бы
+  // подтверждать, что человек в системе есть.
+  if (msg.chat.type !== 'private' && msg.chat.id !== msg.from.id) return c.json({ ok: true });
+
   const start = msg.text?.match(/^\/start\s+(\S+)/);
   if (start) {
     const name = await connectByInvite(c.env, msg.from, start[1]);
@@ -187,6 +210,10 @@ botApp.post('/webhook', async (c) => {
        FROM task_assignees a
        JOIN tasks t ON t.id = a.task_id
        JOIN orgs o ON o.id = a.org_id
+       -- Действующее членство обязательно: уволенный не должен видеть задачи
+       -- бывшего работодателя. Строка task_assignees отзыв не переживает по
+       -- смыслу, но физически остаётся -- задачи и события на неё ссылаются.
+       JOIN org_memberships m ON m.org_id = a.org_id AND m.user_id = a.user_id AND m.left_at IS NULL
        WHERE a.user_id = ? AND a.state IN ('pending','accepted','rejected') AND t.status <> 'archived'
        ORDER BY a.due_at IS NULL, a.due_at`,
     ).bind(who.userId).all<{ title: string; org_name: string; due_at: string | null }>();

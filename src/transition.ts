@@ -57,12 +57,16 @@ const APP_URL = 'https://hando.alrevion.com';
 async function composeText(
   env: Env,
   task: Task,
-  recipientId: string,
+  // Про КОГО сообщение -- актор перехода, а не получатель письма. Это разные
+  // люди: когда С0 берёт задачу, тринадцать остальных получают письмо ПРО С0.
+  // Раньше подставлялось имя получателя, и каждый читал «Ответственный: <он
+  // сам>» о действии, которого не совершал.
+  subjectId: string,
   n: NonNullable<TransitionInput['notify']>,
   deadline: string | null,
 ): Promise<string> {
   const resp = await env.DB.prepare('SELECT name, telegram_username FROM users WHERE id = ?')
-    .bind(recipientId)
+    .bind(subjectId)
     .first<{ name: string; telegram_username: string | null }>();
   // @username действительно пингует в Telegram, простое имя в тексте -- нет.
   const who = resp ? (resp.telegram_username ? `@${resp.telegram_username} (${resp.name})` : resp.name) : '—';
@@ -106,14 +110,46 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
   if (notify) {
     // Дедлайн берётся ПОСЛЕ перехода: reject сдвигает срок, и сообщение про
     // старый срок было бы прямой дезинформацией исполнителя.
-    // Уведомление о переходе ЗАДАЧИ уходит каждому живому адресату: у рассылки
-    // «ответственного», которому можно было бы адресовать одно письмо, нет.
-    const { results: recipients } = await env.DB.prepare(
-      "SELECT user_id FROM task_assignees WHERE task_id = ? AND state <> 'declined'",
-    ).bind(task.id).all<{ user_id: string }>();
+    // КОГО касается переход.
+    //
+    // Раньше письмо уходило каждому живому адресату на каждое действие каждого
+    // другого адресата: на рассылке из 14 это 14x14 = 196 сообщений за цикл
+    // «принял/сдал», и Telegram упирался бы в rate limit раньше, чем пилот в
+    // метрики. Правило теперь такое:
+    //   -- действие ОДНОГО адресата (принял, сдал) касается автора: ему видеть
+    //      ход работы, остальным исполнителям -- нет;
+    //   -- переход ЗАДАЧИ целиком (закрыта, возвращена, архив) касается всех
+    //      живых адресатов: он меняет их собственную работу.
     const deadline = set?.deadline !== undefined ? set.deadline : (task.deadline ?? null);
-    for (const r of recipients) {
-      statements.push(await buildNotification(env, task, action, notify, deadline, r.user_id));
+    const targets = new Set<string>();
+
+    // (1) АКТОР, если он адресат. Его письмо -- якорь ветки: именно его
+    // message_id сохраняется как telegram_message_id и позже заменяется
+    // эскалацией. Убрать актора значило бы остаться без якоря.
+    if (actorId) {
+      const mine = await env.DB.prepare('SELECT 1 FROM task_assignees WHERE task_id = ? AND user_id = ?')
+        .bind(task.id, actorId).first();
+      if (mine) targets.add(actorId);
+    }
+
+    // (2) АВТОР -- ему видеть ход работы, которую он поручил. Себе о собственном
+    // действии не пишем: человек только что нажал кнопку.
+    if (task.author_id && task.author_id !== actorId) targets.add(task.author_id);
+
+    // (3) ОСТАЛЬНЫЕ адресаты -- только когда переход меняет ИХ работу: задача
+    // закрыта, ушла в архив или возвращена в работу. «Коллега взял свою часть»
+    // их не касается, и раньше это письмо уходило каждому на каждое действие
+    // каждого: на рассылке из 14 -- 196 сообщений за цикл, и Telegram упирался
+    // бы в rate limit раньше, чем пилот в метрики.
+    if (to === 'done' || to === 'archived' || action === 'rejected') {
+      const { results } = await env.DB.prepare(
+        "SELECT user_id FROM task_assignees WHERE task_id = ? AND state <> 'declined'",
+      ).bind(task.id).all<{ user_id: string }>();
+      for (const r of results) targets.add(r.user_id);
+    }
+
+    for (const uid of targets) {
+      statements.push(await buildNotification(env, task, action, notify, deadline, uid, actorId ?? undefined));
     }
   }
 
@@ -135,6 +171,9 @@ export async function buildNotification(
   // Кому именно. С contract-релиза «ответственного» у задачи нет -- есть
   // строки адресатов, и уведомление адресуется конкретной из них.
   recipientId: string,
+  // Про кого. По умолчанию -- сам получатель (создание задачи: «вам поручено»).
+  // На переходах это АКТОР: остальные адресаты читают про того, кто действовал.
+  subjectId?: string,
 ): Promise<D1PreparedStatement> {
   // ADR-4: ЗАГОЛОВОК ЗАДАЧИ УХОДИТ В ЛИЧКУ, а не в групповой чат. Группа --
   // общий канал доски, и содержание поручения там видят все участники, включая
@@ -152,7 +191,7 @@ export async function buildNotification(
   // telegram_user_id резолвится проходом отправки.
   const payload = {
     recipient_user_id: recipientId,
-    text: await composeText(env, task, recipientId, notify, deadline),
+    text: await composeText(env, task, subjectId ?? recipientId, notify, deadline),
     // Гасим прежнее отслеживаемое сообщение (например «🚀 В работе») тем же
     // проходом отправки, чтобы порядок «удалить старое, отправить новое» не
     // зависел от того, чем закончился запрос.

@@ -21,6 +21,10 @@ type Payload = {
 };
 
 const BATCH = 50;
+// После скольких неудач строка выпадает из выборки. Без этого один
+// неотправляемый получатель НАВСЕГДА занимает место в первых BATCH строках, и
+// очередь встаёт целиком -- включая срочные, которые обязаны пробивать тишину.
+const MAX_ATTEMPTS = 10;
 
 /**
  * Отправляет все неотправленные уведомления. Возвращает число доставленных.
@@ -29,14 +33,18 @@ const BATCH = 50;
  */
 export async function drainOutbox(env: Env): Promise<number> {
   const { results } = await env.DB.prepare(
-    `SELECT n.id, n.task_id, n.payload, COALESCE(o.timezone, 'Asia/Tashkent') AS timezone,
+    `SELECT n.id, n.task_id, n.org_id, n.payload, COALESCE(o.timezone, 'Asia/Tashkent') AS timezone,
             COALESCE(o.quiet_hours, 1) AS quiet_hours
      FROM notifications n
      LEFT JOIN orgs o ON o.id = n.org_id
-     WHERE n.sent_at IS NULL ORDER BY n.scheduled_at LIMIT ?`,
+     -- attempts < MAX: строка, которую не удаётся доставить, обязана выпасть из
+     -- очереди. Иначе она вечно занимает место в первых BATCH и держит за собой
+     -- всё остальное -- проверено: 55 задач неподключённому человеку блокировали
+     -- доставку ВСЕМ, включая срочные эскалации.
+     WHERE n.sent_at IS NULL AND n.attempts < ? ORDER BY n.scheduled_at LIMIT ?`,
   )
-    .bind(BATCH)
-    .all<{ id: string; task_id: string; payload: string; timezone: string; quiet_hours: number }>();
+    .bind(MAX_ATTEMPTS, BATCH)
+    .all<{ id: string; task_id: string; org_id: string | null; payload: string; timezone: string; quiet_hours: number }>();
 
   const now = new Date();
 
@@ -60,31 +68,65 @@ export async function drainOutbox(env: Env): Promise<number> {
     // Адрес резолвится СЕЙЧАС, а не при постановке: человек мог подключить бота
     // уже после неё. Не подключил -- строка ЖДЁТ (ADR-4: личка или ничего;
     // падать назад в групповой чат нельзя, это и есть закрываемая утечка).
-    const to = await env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?')
-      .bind(p.recipient_user_id)
+    //
+    // ЧЛЕНСТВО проверяется здесь же и по той же причине, по которой здесь стоят
+    // тихие часы: это единственная точка отправки, и предикат, поставленный
+    // тут, накрывает все четыре источника строк (переходы, три прохода cron,
+    // поводы). requireAuth перечитывает членство на КАЖДОМ запросе, но очередь
+    // живёт без запроса -- уволенный продолжал бы получать заголовки задач
+    // бывшего работодателя бессрочно.
+    const to = await env.DB.prepare(
+      `SELECT u.telegram_user_id FROM users u
+       JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL
+       WHERE u.id = ?`,
+    )
+      .bind(row.org_id, p.recipient_user_id)
       .first<{ telegram_user_id: string | null }>();
     const chatId = to?.telegram_user_id;
-    if (!chatId) continue;
-
-    if (p.delete_message_id) await deleteMessage(env, chatId, p.delete_message_id);
-    const messageId = await sendMessage(env, chatId, p.text, p.keyboard ? { inline_keyboard: p.keyboard } : undefined);
-    if (messageId === null) {
-      // sendMessage глотает ошибки и возвращает null -- различить «бот лежит» и
-      // «чат не тот» здесь нельзя, поэтому просто считаем попытку.
+    if (!chatId) {
+      // Не адресат сейчас (не подключил бота или отозван). Считаем попытку --
+      // иначе строка держала бы очередь вечно (см. MAX_ATTEMPTS выше).
       await env.DB.prepare('UPDATE notifications SET attempts = attempts + 1 WHERE id = ?').bind(row.id).run();
       continue;
     }
 
-    const writes = [
-      env.DB.prepare('UPDATE notifications SET sent_at = ?, attempts = attempts + 1 WHERE id = ?').bind(nowIso(), row.id),
-    ];
+    // КЛЕЙМ перед отправкой, а не пометка после.
+    //
+    // drainOutbox зовётся из каждого мутирующего роута, из обеих веток бота и из
+    // cron. Между SELECT и UPDATE в D1 нет ни блокировки, ни SELECT FOR UPDATE,
+    // поэтому два одновременных прохода выбирали одни и те же строки и слали
+    // КАЖДУЮ ДВАЖДЫ -- проверено: три строки в очереди дали шесть сообщений.
+    // Рассылка на 14 человек -- это 14 нажатий «Принял» в одну минуту, то есть
+    // конкуренция здесь норма, а не край.
+    //
+    // Однооператорный клейм атомарен: `changes` скажет, досталась ли строка нам.
+    // Цена: при падении между клеймом и отправкой сообщение теряется, а не
+    // дублируется. Для уведомления это правильный размен -- дубль «ВЫ
+    // ПРОСРОЧИЛИ» хуже пропуска, а пропущенное состояние человек увидит на доске.
+    const claimed = await env.DB
+      .prepare("UPDATE notifications SET sent_at = ?, attempts = attempts + 1 WHERE id = ? AND sent_at IS NULL")
+      .bind(nowIso(), row.id)
+      .run();
+    if (!claimed.meta.changes) continue; // строку забрал другой проход
+
+    if (p.delete_message_id) await deleteMessage(env, chatId, p.delete_message_id);
+    const messageId = await sendMessage(env, chatId, p.text, p.keyboard ? { inline_keyboard: p.keyboard } : undefined);
+    if (messageId === null) {
+      // Не ушло -- возвращаем строку в очередь, сняв клейм. attempts уже
+      // увеличен клеймом, поэтому вечного цикла не будет: после MAX_ATTEMPTS
+      // строка выпадет из выборки.
+      await env.DB.prepare('UPDATE notifications SET sent_at = NULL WHERE id = ?').bind(row.id).run();
+      continue;
+    }
+
+    const writes: D1PreparedStatement[] = [];
     if (p.track) {
       // Единственная запись в tasks вне transition.ts, и она не про status:
       // id сообщения существует только после отправки, поэтому попасть в batch
       // перехода он физически не мог.
       writes.push(env.DB.prepare('UPDATE tasks SET telegram_message_id = ? WHERE id = ?').bind(messageId, row.task_id));
     }
-    await env.DB.batch(writes);
+    if (writes.length) await env.DB.batch(writes);
     sent++;
   }
   return sent;

@@ -40,7 +40,7 @@ describe('шаг 4a: границы третьей двери', () => {
   it('апдейт без корректного секрет-токена отвергается', async () => {
     const env = await world();
     tg();
-    expect((await (hook(env, { message: { chat: { id: 1 }, from: { id: 1 }, text: '/moe' } }, 'не тот'))).status).toBe(403);
+    expect((await (hook(env, { message: { chat: { id: 1, type: 'private' }, from: { id: 1 }, text: '/moe' } }, 'не тот'))).status).toBe(403);
     // И без заголовка вовсе.
     expect((await hook(env, {}, null)).status).toBe(403);
   });
@@ -50,14 +50,14 @@ describe('шаг 4a: границы третьей двери', () => {
     // отретраил бы и отключил вебхук молча.
     const env = await world();
     tg();
-    const res = await (hook(env, { message: { chat: { id: 999 }, from: { id: 999 }, text: 'привет' } }));
+    const res = await (hook(env, { message: { chat: { id: 999, type: 'private' }, from: { id: 999 }, text: 'привет' } }));
     expect(res.status).toBe(200);
   });
 
   it('неизвестный отправитель не порождает ответа -- молчание, а не «вы не зарегистрированы»', async () => {
     const env = await world();
     const spy = tg();
-    await (hook(env, { message: { chat: { id: 777 }, from: { id: 777 }, text: '/moe' } }));
+    await (hook(env, { message: { chat: { id: 777, type: 'private' }, from: { id: 777 }, text: '/moe' } }));
     // Ответ «вы не зарегистрированы» -- оракул существования: по нему перебором
     // узнают, какие telegram_user_id заведены в системе.
     expect(calls(spy).filter(([u]) => u.includes('/sendMessage'))).toHaveLength(0);
@@ -83,7 +83,7 @@ describe('шаг 4a: границы третьей двери', () => {
     const pending = await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM notifications WHERE sent_at IS NULL').first<{ n: number }>();
     expect(pending!.n).toBe(1);
 
-    await (hook(env, { message: { chat: { id: 555 }, from: { id: 555, username: 'w' }, text: '/start inv_abc' } }));
+    await (hook(env, { message: { chat: { id: 555, type: 'private' }, from: { id: 555, username: 'w' }, text: '/start inv_abc' } }));
 
     const u = await testEnv.DB.prepare("SELECT telegram_user_id, invite_token, connected_at FROM users WHERE id='w1'").first<{ telegram_user_id: string; invite_token: string | null; connected_at: string }>();
     expect(u!.telegram_user_id).toBe('555');
@@ -99,7 +99,7 @@ describe('шаг 4a: границы третьей двери', () => {
   it('неверный токен приглашения -- тоже молчание', async () => {
     const env = await world();
     const spy = tg();
-    await (hook(env, { message: { chat: { id: 1 }, from: { id: 1 }, text: '/start inv_выдумка' } }));
+    await (hook(env, { message: { chat: { id: 1, type: 'private' }, from: { id: 1 }, text: '/start inv_выдумка' } }));
     expect(calls(spy).filter(([u]) => u.includes('/sendMessage'))).toHaveLength(0);
   });
 });
@@ -109,7 +109,7 @@ describe('шаг 4a: кнопка и её погашение', () => {
     const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss' }]);
     const spy = tg();
     await (hook(env, {
-      callback_query: { id: 'cb1', from: { id: 'tg-w1' as unknown as number }, data: 'accept:t1', message: { chat: { id: 5 }, message_id: 7 } },
+      callback_query: { id: 'cb1', from: { id: 'tg-w1' as unknown as number }, data: 'accept:t1', message: { chat: { id: 5, type: 'private' }, message_id: 7 } },
     }));
 
     const a = await testEnv.DB.prepare("SELECT state FROM task_assignees WHERE task_id='t1'").first<{ state: string }>();
@@ -125,7 +125,7 @@ describe('шаг 4a: кнопка и её погашение', () => {
     const spy = tg();
     // boss не адресат: пересланное сообщение не делает кнопку его.
     await (hook(env, {
-      callback_query: { id: 'cb2', from: { id: 'tg-boss' as unknown as number }, data: 'accept:t1', message: { chat: { id: 5 }, message_id: 7 } },
+      callback_query: { id: 'cb2', from: { id: 'tg-boss' as unknown as number }, data: 'accept:t1', message: { chat: { id: 5, type: 'private' }, message_id: 7 } },
     }));
 
     expect((await testEnv.DB.prepare("SELECT state FROM task_assignees WHERE task_id='t1'").first<{ state: string }>())!.state).toBe('pending');
@@ -144,7 +144,7 @@ describe('шаг 4a: кнопка и её погашение', () => {
       body: JSON.stringify({ to: 'done' }),
     }, env);
     await (hook(env, {
-      callback_query: { id: 'cb3', from: { id: 'tg-w1' as unknown as number }, data: 'done:bot', message: { chat: { id: 5 }, message_id: 8 } },
+      callback_query: { id: 'cb3', from: { id: 'tg-w1' as unknown as number }, data: 'done:bot', message: { chat: { id: 5, type: 'private' }, message_id: 8 } },
     }));
 
     const row = (id: string) => testEnv.DB.prepare('SELECT status, telegram_message_id, confirmed_at FROM tasks WHERE id = ?').bind(id).first<Record<string, unknown>>();
@@ -210,11 +210,13 @@ describe('шаг 4d: тихие часы в поясе организации', 
       body: JSON.stringify({ to: 'in_progress' }),
     }, env);
     expect(calls(spy).filter(([u]) => u.includes('/sendMessage'))).toHaveLength(0);
-    // Строка ЖДЁТ, а не потеряна.
-    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM notifications WHERE sent_at IS NULL').first<{ n: number }>())!.n).toBe(1);
+    // Строки ЖДУТ, а не потеряны. Их две: адресат (его письмо -- якорь ветки) и
+    // автор (ему видеть ход поручённой работы). Раньше письмо уходило ещё и
+    // каждому постороннему адресату -- см. правило адресации в transition.ts.
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM notifications WHERE sent_at IS NULL').first<{ n: number }>())!.n).toBe(2);
 
     vi.setSystemTime(new Date('2026-09-04T05:00:00Z')); // 10:00 в Ташкенте
-    expect(await drainOutbox(env)).toBe(1);
+    expect(await drainOutbox(env)).toBe(2);
     vi.useRealTimers();
   });
 });
@@ -270,5 +272,67 @@ describe('ревью: у cron нет своего пути отправки', ()
     const pending = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM notifications WHERE sent_at IS NULL AND kind = 'stale_review'").first<{ n: number }>();
     expect(pending!.n).toBe(1);
     vi.useRealTimers();
+  });
+});
+
+
+describe('ревью: находки security-ревью', () => {
+  it('в групповом чате бот МОЛЧИТ: «/moe» печатал туда задачи всех организаций', async () => {
+    const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss' }]);
+    const spy = tg();
+    // Бот состоит в группах проектов, и Telegram доставляет ему команды со
+    // слэша даже при privacy mode. Ответ шёл по адресу входящего сообщения.
+    await hook(env, { message: { chat: { id: -100999, type: 'supergroup' }, from: { id: 'tg-w1' }, text: '/moe' } });
+    expect(calls(spy).filter(([u]) => u.includes('/sendMessage'))).toHaveLength(0);
+
+    // А в личке -- отвечает.
+    await hook(env, { message: { chat: { id: 'tg-w1', type: 'private' }, from: { id: 'tg-w1' }, text: '/moe' } });
+    expect(calls(spy).filter(([u]) => u.includes('/sendMessage'))).toHaveLength(1);
+  });
+
+  it('отозванный сотрудник не получает накопленных уведомлений', async () => {
+    const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss' }]);
+    tg();
+    // Ставим уведомление в очередь...
+    await apiRoutes.request('/tasks/t1/move', {
+      method: 'POST', headers: { Cookie: await cookie('w1', 'admin', ORG_A), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: 'in_progress' }),
+    }, env);
+    restore!.mockRestore();
+
+    // ...человека увольняют, и только ПОТОМ идёт проход отправки.
+    await testEnv.DB.prepare("UPDATE org_memberships SET left_at = '2026-01-01' WHERE user_id='w1' AND org_id=?").bind(ORG_A).run();
+    await testEnv.DB.prepare("INSERT INTO notifications (id, task_id, assignee_id, org_id, kind, payload) VALUES ('n9','t1','w1',?,'test',?)")
+      .bind(ORG_A, JSON.stringify({ recipient_user_id: 'w1', text: 'Секретное поручение', delete_message_id: null, track: false }))
+      .run();
+
+    const spy = tg();
+    await drainOutbox(env);
+    // requireAuth перечитывает членство на каждом запросе -- но очередь живёт
+    // без запроса, и без предиката в точке отправки уволенный получал бы
+    // заголовки задач бывшего работодателя бессрочно.
+    expect(calls(spy).filter(([u]) => u.includes('/sendMessage'))).toHaveLength(0);
+  });
+
+  it('«напомнить» с кнопки повода доступно только автору', async () => {
+    const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss' }]);
+    await testEnv.DB.prepare("UPDATE task_assignees SET last_escalated_at = '2026-01-01' WHERE task_id='t1'").run();
+    tg();
+    // Не автор: без гейта он сбрасывал бы флаг эскалации по любой задаче, и
+    // исполнитель получал бы повторные «ВЫ ПРОСРОЧИЛИ» сквозь тихие часы.
+    await hook(env, { callback_query: { id: 'c1', from: { id: 'tg-w1' }, data: 'nudge_remind:t1', message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
+    expect((await testEnv.DB.prepare("SELECT last_escalated_at FROM task_assignees WHERE task_id='t1'").first<{ last_escalated_at: string | null }>())!.last_escalated_at).not.toBeNull();
+
+    await hook(env, { callback_query: { id: 'c2', from: { id: 'tg-boss' }, data: 'nudge_remind:t1', message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
+    expect((await testEnv.DB.prepare("SELECT last_escalated_at FROM task_assignees WHERE task_id='t1'").first<{ last_escalated_at: string | null }>())!.last_escalated_at).toBeNull();
+  });
+
+  it('«принять» с кнопки повода не подтверждает недоделанную задачу', async () => {
+    const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss' }]);
+    tg();
+    await hook(env, { callback_query: { id: 'c3', from: { id: 'tg-boss' }, data: 'nudge_confirm:t1', message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
+    // Кнопка обходила гейты status==='done' и confirmed_at IS NULL, которые
+    // есть у POST /tasks/:id/confirm.
+    expect((await testEnv.DB.prepare("SELECT confirmed_at FROM tasks WHERE id='t1'").first<{ confirmed_at: string | null }>())!.confirmed_at).toBeNull();
   });
 });

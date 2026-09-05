@@ -91,7 +91,7 @@ describe('шаг 4c: поводы', () => {
     const nudge = await testEnv.DB.prepare('SELECT task_id FROM nudges LIMIT 1').first<{ task_id: string }>();
 
     await hook(env, {
-      callback_query: { id: 'cb', from: { id: 'tg-boss' }, data: `nudge_remind:${nudge!.task_id}`, message: { chat: { id: 1 }, message_id: 2 } },
+      callback_query: { id: 'cb', from: { id: 'tg-boss' }, data: `nudge_remind:${nudge!.task_id}`, message: { chat: { id: 1, type: 'private' }, message_id: 2 } },
     });
     const acted = await testEnv.DB.prepare('SELECT acted_at FROM nudges WHERE task_id = ?').bind(nudge!.task_id).first<{ acted_at: string | null }>();
     expect(acted!.acted_at).not.toBeNull();
@@ -105,17 +105,17 @@ describe('шаг 4c: поводы', () => {
     await enqueueNudges(env);
 
     // Работник не автор -- кнопку могли переслать, и гейт обязан её отбить.
-    await hook(env, { callback_query: { id: 'c1', from: { id: 'tg-w1' }, data: 'nudge_confirm:stale1', message: { chat: { id: 1 }, message_id: 2 } } });
+    await hook(env, { callback_query: { id: 'c1', from: { id: 'tg-w1' }, data: 'nudge_confirm:stale1', message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
     expect((await testEnv.DB.prepare("SELECT confirmed_at FROM tasks WHERE id='stale1'").first<{ confirmed_at: string | null }>())!.confirmed_at).toBeNull();
 
-    await hook(env, { callback_query: { id: 'c2', from: { id: 'tg-boss' }, data: 'nudge_confirm:stale1', message: { chat: { id: 1 }, message_id: 2 } } });
+    await hook(env, { callback_query: { id: 'c2', from: { id: 'tg-boss' }, data: 'nudge_confirm:stale1', message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
     expect((await testEnv.DB.prepare("SELECT confirmed_at FROM tasks WHERE id='stale1'").first<{ confirmed_at: string | null }>())!.confirmed_at).not.toBeNull();
   });
 
   it('/промах пишет events.action = miss -- знаменатель метрики', async () => {
     const env = await world();
     tg();
-    await hook(env, { message: { chat: { id: 1 }, from: { id: 'tg-boss' }, text: '/промах' } });
+    await hook(env, { message: { chat: { id: 1, type: 'private' }, from: { id: 'tg-boss' }, text: '/промах' } });
     const { n } = (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM events WHERE action='miss'").first<{ n: number }>())!;
     expect(n).toBe(1);
   });

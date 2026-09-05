@@ -437,27 +437,56 @@ describe('шаг 2a: предикаты, до которых загрузчик 
     expect(body.user.org_name).toBe(ORG_B);
   });
 
-  it('POST /users с телефоном из другой организации заводит членство здесь, а не 409', async () => {
+  it('чужого человека по телефону НЕ присоединить: это была цепочка захвата аккаунта', async () => {
     const env = await world();
-    // b1 существует, но состоит только в Б. Для организации А это НЕ дубль:
-    // ровно тот сценарий, ради которого R1-2 сделал людей глобальными.
+    // b1 существует и состоит только в Б. Раньше здесь молча создавалось
+    // членство в А -- и этого хватало, чтобы пройти гейт PATCH /users/:id,
+    // переписать ГЛОБАЛЬНЫЙ телефон жертвы на свой, войти под ней и оказаться
+    // в ЕЁ организациях. Согласия жертвы не спрашивали, уведомления не было.
     const res = await apiRoutes.request('/users', {
       method: 'POST', headers: { Cookie: await asA(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: '+3', name: 'Только Б', role: 'admin' }),
     }, env);
-    expect(res.status).toBe(201);
-    expect((await res.json<{ id: string }>()).id).toBe('b1');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'INVITE_REQUIRED' });
 
-    // Появилось второе членство, а прежнее в Б не тронуто.
-    const { results } = await testEnv.DB.prepare("SELECT org_id, role FROM org_memberships WHERE user_id='b1' ORDER BY org_id").all<{ org_id: string; role: string }>();
-    expect(results).toEqual([{ org_id: ORG_A, role: 'admin' }, { org_id: ORG_B, role: 'creator' }]);
+    // Членства не появилось.
+    const { results } = await testEnv.DB.prepare("SELECT org_id FROM org_memberships WHERE user_id='b1'").all<{ org_id: string }>();
+    expect(results.map((r) => r.org_id)).toEqual([ORG_B]);
+  });
 
-    // А вот повторный вызов -- уже настоящий дубль.
-    const again = await apiRoutes.request('/users', {
-      method: 'POST', headers: { Cookie: await asA(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: '+3', name: 'x', role: 'admin' }),
+  it('идентичность человека из нескольких организаций не правит один арендатор', async () => {
+    const env = await world();
+    // `w` -- рядовой сотрудник, состоящий и в А, и в Б. Цель именно такая:
+    // у `both` роль creator, а её менять запрещено отдельным правилом, и тест
+    // проверял бы не то.
+    const res = await apiRoutes.request('/users/w', {
+      method: 'PATCH', headers: { Cookie: await cookie('b1', 'creator', ORG_B), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '+79990000000' }),
     }, env);
-    expect(again.status).toBe(409);
+    expect(res.status).toBe(403);
+    expect((await testEnv.DB.prepare("SELECT phone FROM users WHERE id='w'").first<{ phone: string }>())!.phone).toBe('+4');
+
+    // А роль -- правит: она org-скоупная, и в чужую организацию не протекает.
+    const role = await apiRoutes.request('/users/w', {
+      method: 'PATCH', headers: { Cookie: await cookie('b1', 'creator', ORG_B), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'member' }),
+    }, env);
+    expect(role.status).toBe(200);
+    const { results } = await testEnv.DB.prepare("SELECT org_id, role FROM org_memberships WHERE user_id='w' ORDER BY org_id").all<{ org_id: string; role: string }>();
+    expect(results).toEqual([{ org_id: ORG_A, role: 'admin' }, { org_id: ORG_B, role: 'member' }]);
+  });
+
+  it('своего отозванного сотрудника вернуть по телефону МОЖНО: согласие уже было', async () => {
+    const env = await world();
+    await testEnv.DB.prepare("UPDATE org_memberships SET left_at='2026-01-01' WHERE user_id='w' AND org_id=?").bind(ORG_A).run();
+    const res = await apiRoutes.request('/users', {
+      method: 'POST', headers: { Cookie: await asA(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '+4', name: 'Сотрудник', role: 'admin' }),
+    }, env);
+    expect(res.status).toBe(201);
+    const m = await testEnv.DB.prepare("SELECT left_at FROM org_memberships WHERE user_id='w' AND org_id=?").bind(ORG_A).first<{ left_at: string | null }>();
+    expect(m!.left_at).toBeNull();
   });
 
   it('понижение роли меняет членство ТОЛЬКО в текущей организации', async () => {

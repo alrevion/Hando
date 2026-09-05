@@ -76,7 +76,15 @@ describe('шаг 1: единственный писатель tasks.status', () 
     expect(selects.length).toBeGreaterThanOrEqual(3);
     for (const where of selects) {
       expect(where).toMatch(/a\.state\s*(=|IN)/);
-      expect(where).toMatch(/t\.status\s*<>\s*'archived'/);
+      // Статус задачи гасит её строки. 'archived' мало: при kind='any' задача
+      // закрывается ПЕРВЫМ сдавшим, строки остальных остаются 'pending', и им
+      // уходило бы «ВЫ ПРОСРОЧИЛИ» по работе, которую делать уже не надо.
+      expect(where).toMatch(/t\.status\s+NOT IN \('archived','done'\)|t\.status\s*<>\s*'archived'/);
     }
+    // И отдельно: проход «пора проверить» обязан видеть ПОДТВЕРЖДЕНИЕ задачи.
+    // Строки адресатов остаются 'done' и после приёмки, поэтому фильтра по
+    // состоянию строки для этого недостаточно -- условие потерялось при переезде
+    // таймеров и вернулось только ревью.
+    expect(code).toMatch(/t\.confirmed_at IS NULL/);
   });
 });

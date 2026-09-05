@@ -196,3 +196,74 @@ describe('шаг 3: инварианты после contract-релиза', () =
         WHERE m.user_id IS NULL`);
   });
 });
+
+
+describe('ревью: адресация уведомлений на рассылке', () => {
+  // Дефект жил при зелёном наборе, потому что все проверки уведомлений писались
+  // на single. На each он давал 14x14 = 196 сообщений за цикл, и в КАЖДОМ стояло
+  // имя получателя вместо имени того, кто действовал.
+
+  it('«принял» одного не рассылается остальным тринадцати', async () => {
+    const env = await world();
+    tg();
+    const res = await apiRoutes.request('/projects/p1/tasks',
+      json(await cookie('boss', 'creator', ORG_A), { title: 'Рассылка', assignee_ids: staff.map((u) => u.id), kind: 'each' }), env);
+    const { id } = await res.json<{ id: string }>();
+    await testEnv.DB.prepare('DELETE FROM notifications').run(); // письма о создании не считаем
+
+    await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('u0', 'admin', ORG_A), { to: 'in_progress' }), env);
+
+    const { results } = await testEnv.DB.prepare('SELECT assignee_id FROM notifications WHERE task_id = ?').bind(id).all<{ assignee_id: string }>();
+    // Двое: сам u0 (его письмо -- якорь ветки, его заменит эскалация) и автор,
+    // которому видеть ход поручённой работы. Остальные тринадцать делают своё --
+    // «коллега взял свою часть» их не касается.
+    expect(results.map((r) => r.assignee_id).sort()).toEqual(['boss', 'u0']);
+  });
+
+  it('в тексте стоит имя ТОГО, КТО ДЕЙСТВОВАЛ, а не получателя', async () => {
+    const env = await world();
+    tg();
+    const res = await apiRoutes.request('/projects/p1/tasks',
+      json(await cookie('boss', 'creator', ORG_A), { title: 'Рассылка', assignee_ids: ['u0', 'u1'], kind: 'each' }), env);
+    const { id } = await res.json<{ id: string }>();
+    await testEnv.DB.prepare('DELETE FROM notifications').run();
+
+    await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('u0', 'admin', ORG_A), { to: 'in_progress' }), env);
+
+    const forAuthor = await testEnv.DB.prepare("SELECT payload FROM notifications WHERE assignee_id = 'boss'").first<{ payload: string }>();
+    const text = JSON.parse(forAuthor!.payload).text as string;
+    // Директор читает «Сотрудник 0 взял задачу», а не «Директор взял задачу».
+    expect(text).toContain('Сотрудник 0');
+    expect(text).not.toContain('Директор');
+  });
+
+  it('закрытие задачи касается всех: его получают и остальные адресаты', async () => {
+    const env = await world();
+    tg();
+    const res = await apiRoutes.request('/projects/p1/tasks',
+      json(await cookie('boss', 'creator', ORG_A), { title: 'Кто первый', assignee_ids: ['u0', 'u1', 'u2'], kind: 'any' }), env);
+    const { id } = await res.json<{ id: string }>();
+    await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('u0', 'admin', ORG_A), { to: 'in_progress' }), env);
+    await testEnv.DB.prepare('DELETE FROM notifications').run();
+
+    await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('u0', 'admin', ORG_A), { to: 'done' }), env);
+
+    const { results } = await testEnv.DB.prepare('SELECT assignee_id FROM notifications WHERE task_id = ?').bind(id).all<{ assignee_id: string }>();
+    // Задача закрыта -- это меняет работу остальных: делать её больше не надо.
+    expect(results.map((r) => r.assignee_id).sort()).toEqual(['boss', 'u0', 'u1', 'u2']);
+  });
+
+  it('отказ доходит до АВТОРА, а не до посторонних исполнителей', async () => {
+    const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'u0', author_id: 'boss' }]);
+    tg();
+    await apiRoutes.request('/tasks/t1/decline', json(await cookie('u0', 'admin', ORG_A), { reason: 'болею' }), env);
+
+    const { results } = await testEnv.DB.prepare("SELECT assignee_id, payload FROM notifications WHERE kind = 'declined'").all<{ assignee_id: string; payload: string }>();
+    // Раньше здесь было ПУСТО: рассылка шла «живым адресатам», отказавшийся из
+    // списка уже выпал, а автора в списке не было никогда. Задача уезжала в
+    // архив молча, и поднять её автор-сотрудник сам не может.
+    expect(results.map((r) => r.assignee_id)).toEqual(['boss']);
+    expect(JSON.parse(results[0].payload).text).toContain('болею');
+    expect((await testEnv.DB.prepare("SELECT status FROM tasks WHERE id='t1'").first<{ status: string }>())!.status).toBe('archived');
+  });
+});

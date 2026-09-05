@@ -91,7 +91,10 @@ async function escalateOverdue(env: Env): Promise<void> {
      JOIN projects p ON p.id = t.project_id
      WHERE a.state IN ('pending','accepted','rejected') AND a.due_at IS NOT NULL
        AND a.last_escalated_at IS NULL AND p.archived_at IS NULL
-       AND t.status <> 'archived'`,
+       -- Не только archived: при kind='any' задача закрывается ПЕРВЫМ сдавшим, а
+       -- строки остальных остаются 'pending'. Без t.status <> 'done' им уходило
+       -- бы «ВЫ ПРОСРОЧИЛИ» по работе, которую делать уже не надо.
+       AND t.status NOT IN ('archived','done')`,
   ).all<{ id: string; due_at: string; user_id: string; task_id: string; title: string; org_id: string; responsible_name: string }>();
 
   const now = Date.now();
@@ -121,7 +124,7 @@ async function remindApproachingDeadline(env: Env): Promise<void> {
      JOIN projects p ON p.id = t.project_id
      WHERE a.state IN ('pending','accepted','rejected') AND a.due_at IS NOT NULL
        AND a.reminder_sent_at IS NULL AND p.archived_at IS NULL
-       AND t.status <> 'archived'`,
+       AND t.status NOT IN ('archived','done')`,
   ).all<{ id: string; due_at: string; user_id: string; task_id: string; title: string; org_id: string; responsible_name: string }>();
 
   const now = Date.now();
@@ -149,7 +152,13 @@ async function remindStaleReview(env: Env): Promise<void> {
      JOIN projects p ON p.id = t.project_id
      WHERE a.state = 'done' AND a.done_at IS NOT NULL
        AND a.review_reminded_at IS NULL AND p.archived_at IS NULL
-       AND t.status <> 'archived' AND t.author_id IS NOT NULL`,
+       AND t.status <> 'archived' AND t.author_id IS NOT NULL
+       -- confirmed_at IS NULL было в дофорковом коде и потерялось при переезде
+       -- таймеров на строки: строки остаются 'done' и после приёмки, поэтому
+       -- фильтр по состоянию строки подтверждение НЕ видит. Без этого условия
+       -- директор получает «пора проверить» по задаче, которую сам принял --
+       -- пре-мортем №2 дословно.
+       AND t.confirmed_at IS NULL`,
   ).all<{ id: string; done_at: string; task_id: string; title: string; org_id: string; author_id: string; responsible_name: string }>();
 
   const now = Date.now();

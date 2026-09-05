@@ -139,14 +139,25 @@ export async function transitionAssignee(
     sets.push('done_at = NULL', 'last_escalated_at = NULL', 'reminder_sent_at = NULL', 'review_reminded_at = NULL');
     if (dueAt !== undefined) { sets.push('due_at = ?'); vals.push(dueAt); }
   }
-  await env.DB.prepare(`UPDATE task_assignees SET ${sets.join(', ')} WHERE id = ?`).bind(...vals, assignee.id).run();
-
-  // Событие по САМОЙ строке адресата: журнал обязан различать «Пётр отказался» и
-  // «задача отклонена». target_type='assignee' добавлен пересборкой 2b.
-  await env.DB.prepare(
-    `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(uuid(), actorId, task.org_id, 'assignee', assignee.id, to, reason ?? null, null, now).run();
+  // ОДИН batch, а не два .run(): ADR-1 требует этого именно потому, что
+  // «двойная запись двумя отдельными .run() при вытеснении изолята оставляет
+  // представления расходящимися». Здесь расходились бы состояние строки и
+  // журнал: строка переведена, события нет.
+  //
+  // Пересчёт статуса задачи ниже -- третья запись, и своим batch'ем она
+  // накрыта, но с этой парой в одну транзакцию не сводится: rollup обязан
+  // ПРОЧИТАТЬ уже обновлённые строки, а чтение внутри batch увидело бы старые.
+  // Разрыв назван явно: при вытеснении между ними строка адресата верна, а
+  // tasks.status отстаёт до следующего действия по этой задаче.
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE task_assignees SET ${sets.join(', ')} WHERE id = ?`).bind(...vals, assignee.id),
+    // Событие по САМОЙ строке адресата: журнал обязан различать «Пётр отказался»
+    // и «задача отклонена». target_type='assignee' добавлен пересборкой 2b.
+    env.DB.prepare(
+      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(uuid(), actorId, task.org_id, 'assignee', assignee.id, to, reason ?? null, null, now),
+  ]);
 
   // В журнал уходит ДВА события, и это не дубль: строка адресата пишет своё
   // состояние ('accepted', 'declined'), задача -- свой переход ('moved_done').
