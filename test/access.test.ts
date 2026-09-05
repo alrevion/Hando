@@ -262,7 +262,7 @@ describe('access control', () => {
     fetchSpy.mockRestore();
   });
 
-  it('creating a task notifies the project Telegram group, @mentioning the responsible person by their Telegram username', async () => {
+  it('creating a task notifies the assignee IN DM, @mentioning them by their Telegram username', async () => {
     const env = await envWith({
       users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin', telegram_username: 'a_handle' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
@@ -288,6 +288,11 @@ describe('access control', () => {
     const body = JSON.parse(sendInit.body as string);
     expect(body.text).toContain('?task=');
     expect(body.text).toContain('@a_handle');
+    // chat_id проверяется ЯВНО. Имя теста до 2026-09-05 говорило «в групповой
+    // чат» -- то есть описывало поведение, отменённое ADR-4, -- и оставалось
+    // зелёным ровно потому, что адрес не смотрело вовсе.
+    expect(String(body.chat_id)).toBe('tg-a1');
+    expect(String(body.chat_id)).not.toBe('-100999');
     fetchSpy.mockRestore();
   });
 

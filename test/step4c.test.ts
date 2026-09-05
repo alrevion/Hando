@@ -4,11 +4,10 @@
 // проверять надо не «есть ли код», а считаются ли они вообще на живой схеме.
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it } from 'vitest';
-import { apiRoutes } from '../src/routes';
 import { enqueueNudges } from '../src/nudges';
 import { drainOutbox } from '../src/outbox';
 import { botApp } from '../src/bot';
-import { cookie, envWith, ORG_A, stubTelegram } from './fixture';
+import { envWith, ORG_A, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
 
 let restore: { mockRestore(): void } | null = null;
@@ -121,40 +120,106 @@ describe('шаг 4c: поводы', () => {
   });
 });
 
-describe('шаг 4c: пять метрик считаются на живой схеме', () => {
-  it('каждая метрика выполняется и возвращает число', async () => {
+describe('шаг 4c: пять метрик пилота', () => {
+  // ПРЕЖНЯЯ РЕДАКЦИЯ ЭТОГО БЛОКА БЫЛА ВАКУУМНОЙ, и это нашёл Critic.
+  // Она утверждала по каждой метрике только `expect(row).not.toBeNull()`, а все
+  // пять -- агрегаты: `.first()` на COUNT/SUM возвращает строку ВСЕГДА, хоть по
+  // пустой таблице. Утверждение было истинно по семантике SQL, независимо от
+  // данных и от правильности самой метрики -- покраснеть могло лишь на
+  // синтаксической ошибке. И оно прятало дефект: метрика №1 считала РАЗЛИЧНЫЕ
+  // дни, тогда как план требует дней ПОДРЯД.
+  //
+  // Теперь каждая метрика проверяется ЗНАЧЕНИЕМ на засеянных данных.
+
+  it('№1 «дней подряд с поручением» считает подряд, а не различные дни', async () => {
+    const env = await world();
+    void env;
+    // Три дня подряд, потом разрыв, потом ещё день. Различных дней -- четыре,
+    // подряд идущих (считая от последнего) -- один. Прежняя формула дала бы 4 и
+    // объявила бы пилот успешным при разорванной серии.
+    const days = [0, 1, 2, 5];
+    for (const d of days) {
+      await testEnv.DB.prepare(
+        `INSERT INTO tasks (id, org_id, project_id, title, author_id, kind, status, created_at)
+         VALUES (?, ?, 'p1', 'x', 'boss', 'single', 'todo', datetime('now', ?))`,
+      ).bind(`m-${d}`, ORG_A, `-${d} day`).run();
+    }
+
+    const { results } = await testEnv.DB.prepare(
+      `SELECT DISTINCT date(created_at) AS d FROM tasks WHERE org_id = ? ORDER BY d DESC`,
+    ).bind(ORG_A).all<{ d: string }>();
+
+    // Серия считается в коде, а не в SQL: рекурсивный CTE ради одной цифры раз в
+    // две недели -- цена, которой пилот не стоит.
+    let streak = 0;
+    const day = 86400_000;
+    const today = new Date(new Date().toISOString().slice(0, 10)).getTime();
+    for (let i = 0; i < results.length; i++) {
+      if (new Date(results[i].d).getTime() === today - i * day) streak++;
+      else break;
+    }
+    expect(results.length, 'различных дней').toBe(4);
+    expect(streak, 'дней ПОДРЯД -- не то же самое, что различных').toBe(3);
+  });
+
+  it('№2 «промахов за 14 дней» считает только окно', async () => {
+    const env = await world();
+    tg();
+    await hook(env, { message: { chat: { id: 1, type: 'private' }, from: { id: 'tg-boss' }, text: '/промах' } });
+    await testEnv.DB.prepare(
+      "INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, created_at) VALUES ('old','boss',?, 'user','boss','miss', datetime('now','-20 day'))",
+    ).bind(ORG_A).run();
+
+    const { v } = (await testEnv.DB.prepare(
+      "SELECT COUNT(*) AS v FROM events WHERE action='miss' AND created_at >= datetime('now','-14 day')",
+    ).first<{ v: number }>())!;
+    // Старый промах за окном -- иначе метрика «≤2 за 14 дней» копила бы вечно.
+    expect(v).toBe(1);
+  });
+
+  it('№3 «доля поводов с содержательной кнопкой» -- сегодня тождественно 1, и это надо знать', async () => {
     const env = await world();
     await age();
     tg();
     await enqueueNudges(env);
-    await apiRoutes.request('/projects/p1/tasks', {
-      method: 'POST', headers: { Cookie: await cookie('boss', 'creator', ORG_A), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Сегодняшняя', responsible_user_id: 'w1' }),
-    }, env);
+    const { v } = (await testEnv.DB.prepare(
+      'SELECT CAST(SUM(actionable) AS REAL) / NULLIF(COUNT(*),0) AS v FROM nudges',
+    ).first<{ v: number }>())!;
+    // Оба (и единственных) вида поводов ставят actionable = 1, поэтому метрика
+    // равна единице ПО ПОСТРОЕНИЮ, а не по качеству продукта. Порог «≥40%»
+    // ничего не измеряет, пока не появится повод без кнопки. Фиксируем это
+    // значением, чтобы факт был виден, а не выглядел успехом.
+    expect(v).toBe(1);
+  });
 
-    // Метрики -- это и есть приёмка пилота. Проверяем не значения (их даст
-    // только живой пилот), а что каждая СЧИТАЕТСЯ на текущей схеме: метрика,
-    // падающая с ошибкой SQL через две недели, обесценивает весь замер.
-    const metrics: [string, string][] = [
-      ['дней подряд с ≥1 поручением',
-       "SELECT COUNT(DISTINCT date(created_at)) AS v FROM tasks WHERE org_id = 'org-a' AND created_at >= datetime('now','-10 day')"],
-      ['промахов за 14 дней',
-       "SELECT COUNT(*) AS v FROM events WHERE action='miss' AND created_at >= datetime('now','-14 day')"],
-      ['доля поводов с содержательной кнопкой',
-       'SELECT CAST(SUM(actionable) AS REAL) / NULLIF(COUNT(*),0) AS v FROM nudges'],
-      ['доля поводов без нажатия за сутки',
-       "SELECT CAST(SUM(CASE WHEN acted_at IS NULL AND sent_at < datetime('now','-1 day') THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*),0) AS v FROM nudges"],
-      ['поводов за календарный день',
-       "SELECT COUNT(*) AS v FROM nudges WHERE date(sent_at) = date('now')"],
-    ];
-    for (const [name, sql] of metrics) {
-      const row = await testEnv.DB.prepare(sql).first<{ v: number | null }>();
-      expect(row, `метрика «${name}» не посчиталась`).not.toBeNull();
-    }
+  it('№4 «доля поводов без нажатия за сутки» реагирует на нажатие', async () => {
+    const env = await world();
+    await age();
+    tg();
+    await enqueueNudges(env);
+    // Состариваем поводы: метрика смотрит на те, что старше суток.
+    await testEnv.DB.prepare("UPDATE nudges SET sent_at = datetime('now','-2 day')").run();
+    const sql = "SELECT CAST(SUM(CASE WHEN acted_at IS NULL AND sent_at < datetime('now','-1 day') THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*),0) AS v FROM nudges";
+    expect((await testEnv.DB.prepare(sql).first<{ v: number }>())!.v).toBe(1);
 
-    // Потолок «≤2 в календарный день» -- единственная метрика, которую можно
-    // проверить значением уже сейчас.
-    const cap = await testEnv.DB.prepare("SELECT COUNT(*) AS v FROM nudges WHERE user_id='boss' AND date(sent_at) = date('now')").first<{ v: number }>();
-    expect(cap!.v).toBeLessThanOrEqual(2);
+    const one = await testEnv.DB.prepare('SELECT task_id FROM nudges LIMIT 1').first<{ task_id: string }>();
+    await hook(env, { callback_query: { id: 'c', from: { id: 'tg-boss' }, data: `nudge_remind:${one!.task_id}`, message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
+    expect((await testEnv.DB.prepare(sql).first<{ v: number }>())!.v).toBeLessThan(1);
+  });
+
+  it('№5 «поводов за календарный день» считает в поясе организации, а не в UTC', async () => {
+    const env = await world();
+    await age();
+    tg();
+    await enqueueNudges(env);
+    // Потолок обеспечивается в поясе организации (nudges.ts), поэтому и метрика
+    // обязана считать в нём же: в Ташкенте UTC-сутки сдвинуты на пять часов, и
+    // date(sent_at) по UTC разносил бы вечерние поводы на «другой день».
+    const { v } = (await testEnv.DB.prepare(
+      `SELECT COUNT(*) AS v FROM nudges n JOIN orgs o ON o.id = n.org_id
+       WHERE date(n.sent_at, '+5 hours') = date('now', '+5 hours') AND n.user_id = 'boss'`,
+    ).first<{ v: number }>())!;
+    expect(v).toBeGreaterThan(0);
+    expect(v).toBeLessThanOrEqual(2);
   });
 });

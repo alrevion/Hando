@@ -14,7 +14,9 @@
 // gate on /mcp, and that a create_task tool call reaches the REAL apiRoutes and
 // writes a task attributed to MCP_USER_ID (not a stub). Drives the real Worker
 // (src/index) end-to-end against a tiny in-memory D1 fake -- no Workers pool,
-// matching test/access.test.ts.
+// against a tiny in-memory D1 fake. NB: access.test.ts NO LONGER does this --
+// снятие его с подделки было содержанием шага -1. Здесь подделка осталась
+// вынужденно: файл импортирует src/mcp -> ajv, который в workerd не грузится.
 import { describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 import type { Env } from '../src/types';
