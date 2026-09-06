@@ -20,6 +20,10 @@ import { myAssignee, transitionAssignee } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage } from './telegram';
 import { drainOutbox } from './outbox';
 import { approveJoin, createOrg, ensureUser, joinByCode, rejectJoin } from './signup';
+import { download, extractMedia, storeByFileId, type Media } from './media';
+import { parseTask, transcribe, type Draft } from './parse';
+import { buildAssignees } from './assignees';
+import { buildNotification } from './transition';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -29,7 +33,9 @@ export const botApp = new Hono<{ Bindings: Env }>();
 
 type TgUser = { id: number; username?: string; first_name?: string; last_name?: string };
 type Update = {
-  message?: { chat: { id: number; type?: string }; from?: TgUser; text?: string };
+  // Медиа-поля описаны в media.ts; здесь они приходят как есть и передаются
+  // туда через extractMedia -- дублировать их формы в двух местах незачем.
+  message?: { chat: { id: number; type?: string }; from?: TgUser; text?: string; caption?: string };
   callback_query?: { id: string; from: TgUser; data?: string; message?: { chat: { id: number }; message_id: number } };
 };
 
@@ -60,6 +66,82 @@ async function connectByInvite(env: Env, tg: TgUser, token: string): Promise<str
     .bind(String(tg.id), tg.username ?? null, nowIso(), row.id)
     .run();
   return row.name;
+}
+
+/**
+ * Создаёт задачу из разобранной фразы и прикладывает медиа, если оно было.
+ *
+ * Доска выбирается ПЕРВОЙ из тех, где состоит автор: у бота нет экрана выбора
+ * проекта, а поручение без доски существовать не может. Это осознанное
+ * упрощение -- человек поправит на доске, если промахнулись.
+ *
+ * Всё пишется одним batch: задача, событие, адресаты и уведомления. Если файл
+ * не сохранится, задача всё равно останется -- вложение это дополнение к
+ * поручению, а не его условие.
+ */
+async function createFromDraft(
+  env: Env,
+  who: { userId: string; orgId: string },
+  draft: Draft,
+  media: Media | null,
+  rawPhrase: string,
+): Promise<string | null> {
+  const project = await env.DB.prepare(
+    `SELECT p.id, p.telegram_chat_id FROM projects p
+     LEFT JOIN project_memberships m ON m.project_id = p.id AND m.user_id = ?
+     WHERE p.org_id = ? AND p.archived_at IS NULL AND (m.user_id IS NOT NULL OR p.created_by = ?)
+     ORDER BY p.created_at LIMIT 1`,
+  ).bind(who.userId, who.orgId, who.userId).first<{ id: string }>();
+  if (!project) return null;
+
+  const taskId = uuid();
+  const now = nowIso();
+  const task = {
+    id: taskId, org_id: who.orgId, project_id: project.id, title: draft.title,
+    author_id: who.userId, kind: draft.kind, deadline: draft.deadline,
+    telegram_message_id: null,
+  } as import('./types').Task;
+
+  const writes = [
+    env.DB.prepare(
+      `INSERT INTO tasks (id, org_id, project_id, title, description, author_id, kind, source, status, deadline)
+       VALUES (?, ?, ?, ?, '', ?, ?, ?, 'todo', ?)`,
+    ).bind(taskId, who.orgId, project.id, draft.title, who.userId, draft.kind,
+      // source различает разбор паттернами и моделью -- это и есть замер для
+      // порога-гейта шага 4b: сколько фраз обошлось без обращения к сети.
+      media?.hasAudio ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.deadline),
+    env.DB.prepare(
+      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(uuid(), who.userId, who.orgId, 'task', taskId, 'created', rawPhrase.slice(0, 500), null, now),
+    ...buildAssignees(env, task, draft.assigneeIds, draft.deadline),
+  ];
+
+  // Уведомление каждому адресату, кроме самого автора: он только что это и
+  // продиктовал.
+  for (const uid of draft.assigneeIds) {
+    if (uid === who.userId) continue;
+    writes.push(await buildNotification(env, task, 'created', { emoji: '📌', label: 'Новая задача' }, draft.deadline, uid, who.userId));
+  }
+  await env.DB.batch(writes);
+
+  // Файл кладётся ПОСЛЕ задачи и отдельно: сеть может подвести, и терять из-за
+  // этого разобранное поручение нельзя.
+  if (media) {
+    const stored = await storeByFileId(env, media);
+    if (stored) {
+      await env.DB.prepare(
+        `INSERT INTO attachments (id, org_id, task_id, telegram_file_id, telegram_message_id, filename, mime_type, size_bytes, uploaded_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(uuid(), who.orgId, taskId, stored.fileId, stored.messageId, media.filename, media.mimeType, media.sizeBytes, who.userId).run();
+      // Голосовое остаётся доказательством: «покажи, что я тогда сказал».
+      if (media.hasAudio) {
+        await env.DB.prepare('UPDATE tasks SET origin_audio_id = (SELECT id FROM attachments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1) WHERE id = ?')
+          .bind(taskId, taskId).run();
+      }
+    }
+  }
+  return taskId;
 }
 
 botApp.post('/webhook', async (c) => {
@@ -327,5 +409,63 @@ botApp.post('/webhook', async (c) => {
     return c.json({ ok: true });
   }
 
+  // ------------------------------------------------------- поручение из фразы
+  //
+  // Сюда попадает всё, что не команда: текст, голосовое, кружочек, видео, фото,
+  // документ. Порядок -- медиа сначала, потому что подпись к фото это тоже
+  // текст, но файл при этом обязан сохраниться.
+  const media = extractMedia(msg as never);
+  let phrase = (msg.text ?? msg.caption ?? '').trim();
+
+  if (media?.hasAudio) {
+    const blob = await download(c.env, media);
+    if (!blob) {
+      // 20 МБ -- потолок getFile у Telegram, не наш выбор (ADR-4). Говорим
+      // прямо, что делать: короче или файлом.
+      await sendMessage(c.env, String(msg.chat.id), 'Файл больше 20 МБ — Telegram не отдаёт такие боту. Пришлите короче.');
+      return c.json({ ok: true });
+    }
+    const text = await transcribe(c.env, blob, media.filename);
+    if (!text) {
+      await sendMessage(c.env, String(msg.chat.id), 'Не удалось разобрать запись. Напишите текстом, пожалуйста.');
+      return c.json({ ok: true });
+    }
+    // Подпись к видео тоже учитывается: человек мог дописать то, чего не сказал.
+    phrase = [text, phrase].filter(Boolean).join('. ');
+  }
+
+  if (!phrase && !media) return c.json({ ok: true });
+  if (!phrase) {
+    await sendMessage(c.env, String(msg.chat.id), 'Что с этим сделать? Напишите подпись — я поставлю задачу и приложу файл.');
+    return c.json({ ok: true });
+  }
+
+  // Справочник людей ТЕКУЩЕЙ организации: разбор не должен видеть чужих.
+  const { results: people } = await c.env.DB.prepare(
+    `SELECT u.id, u.name, u.aliases FROM users u
+     JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
+     ORDER BY u.name`,
+  ).bind(who.orgId).all<{ id: string; name: string; aliases: string | null }>();
+  const roster = people.map((p) => ({
+    id: p.id, name: p.name,
+    aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined,
+  }));
+
+  const org = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(who.orgId).first<{ timezone: string }>();
+  const draft = await parseTask(c.env, phrase, roster, who.userId, org?.timezone ?? 'Asia/Tashkent');
+
+  // Неоднозначное имя -- ПЕРЕСПРОС, а не догадка. Поручение, ушедшее не тому,
+  // дороже одного вопроса.
+  if (draft.ambiguous.length > 0) {
+    await sendMessage(c.env, String(msg.chat.id), `Кого именно вы имели в виду: «${draft.ambiguous.join('», «')}»? Уточните фамилию.`);
+    return c.json({ ok: true });
+  }
+
+  const created = await createFromDraft(c.env, who, draft, media, phrase);
+  if (!created) {
+    await sendMessage(c.env, String(msg.chat.id), 'Не получилось создать задачу. Попробуйте ещё раз.');
+    return c.json({ ok: true });
+  }
+  await drainOutbox(c.env);
   return c.json({ ok: true });
 });

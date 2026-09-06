@@ -113,6 +113,11 @@ function envWith(data: FakeData): Env {
     MCP_USER_ID: OWNER,
     MCP_ORG_ID: 'org-a',
     TELEGRAM_WEBHOOK_SECRET: 'tg-secret',
+    // Пустой ключ намеренно: тесты разбора не должны ходить в сеть. Пустой
+    // означает «только паттерны», а не падение -- см. parseTask.
+    GROQ_API_KEY: '',
+    GROQ_STT_MODEL: 'whisper-large-v3-turbo',
+    GROQ_LLM_MODEL: 'openai/gpt-oss-120b',
   };
 }
 

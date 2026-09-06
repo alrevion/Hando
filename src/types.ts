@@ -141,6 +141,12 @@ export interface Env {
   // Секрет вебхука Telegram. Пустой = дверь закрыта: незаданная переменная не
   // должна означать «пускаем всех».
   TELEGRAM_WEBHOOK_SECRET: string;
+  // Groq: расшифровка голоса и разбор фраз. Ключ -- секрет; названия моделей --
+  // vars, чтобы менять их без выкладки кода. Пустой ключ = разбор работает
+  // только паттернами, а не падает: см. parseTask.
+  GROQ_API_KEY: string;
+  GROQ_STT_MODEL: string;
+  GROQ_LLM_MODEL: string;
 }
 
 export interface SessionPayload {
