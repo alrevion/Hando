@@ -63,7 +63,7 @@ export async function envWith(data: FakeData): Promise<Env> {
       // сообщение честно ждёт в очереди. Тестам нужен подключённый человек,
       // поэтому id выводится из его собственного. Кому нужен НЕподключённый --
       // передаёт telegram_user_id: null явно.
-      db.prepare('INSERT INTO users (id, phone, name, telegram_username, telegram_user_id, current_org_id) VALUES (?,?,?,?,?,?)')
+      db.prepare("INSERT INTO users (id, phone, name, telegram_username, telegram_user_id, current_org_id, onboarded_at) VALUES (?,?,?,?,?,?,datetime('now'))")
         .bind(u.id, u.phone, u.name, u.telegram_username ?? null,
           u.telegram_user_id === undefined ? `tg-${u.id}` : u.telegram_user_id, orgs[0]),
     );
@@ -101,7 +101,7 @@ export async function envWith(data: FakeData): Promise<Env> {
     // Досозданный человек получает членство в ORG_A: иначе строка, на которую
     // ссылается задача, принадлежала бы никому и org-предикаты вели бы себя
     // непредсказуемо.
-    stmts.push(db.prepare('INSERT INTO users (id, phone, name, telegram_user_id, current_org_id) VALUES (?,?,?,?,?)').bind(id, `+00${phone++}`, id, `tg-${id}`, ORG_A));
+    stmts.push(db.prepare("INSERT INTO users (id, phone, name, telegram_user_id, current_org_id, onboarded_at) VALUES (?,?,?,?,?,datetime('now'))").bind(id, `+00${phone++}`, id, `tg-${id}`, ORG_A));
     stmts.push(db.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?,?,?,?,datetime('now'))").bind(`${ORG_A}:${id}`, ORG_A, id, 'admin'));
   }
   for (const p of projects.values()) {

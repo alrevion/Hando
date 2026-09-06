@@ -5,6 +5,29 @@ import type { Env } from './types';
 // sendMessage его принимает уже сейчас, а прикрепление кнопок -- шаг 4a.
 export type InlineKeyboard = { inline_keyboard: { text: string; callback_data: string }[][] };
 
+/**
+ * Постоянная клавиатура внизу чата.
+ *
+ * Отличие от инлайновой принципиальное, а не косметическое: инлайновая живёт
+ * ВНУТРИ конкретного сообщения, и когда оно уезжает вверх под уведомлениями,
+ * меню исчезает вместе с ним. Reply-клавиатура остаётся внизу экрана всегда --
+ * это навигация приложения, а не украшение одного сообщения.
+ *
+ * Инлайновая при этом не отменяется: она уместна там, где кнопка привязана к
+ * ОБЪЕКТУ («Принял» на этой задаче, «Принять заявку» от этого человека). Такие
+ * кнопки и должны жить при своём сообщении.
+ *
+ * web_app открывает мини-приложение прямо в Telegram; работает только в личке.
+ */
+export type ReplyKeyboard = {
+  keyboard: { text: string; web_app?: { url: string } }[][];
+  resize_keyboard?: boolean;
+  is_persistent?: boolean;
+  input_field_placeholder?: string;
+};
+
+export type Keyboard = InlineKeyboard | ReplyKeyboard;
+
 // chatId is per-project (each project posts to its own group), never global.
 //
 // replyMarkup -- ПОДПИСЬ БЕЗ ЕДИНОГО ВЫЗОВА В ПРОДЕ, и это осознанно (шаг 1 плана).
@@ -13,7 +36,7 @@ export type InlineKeyboard = { inline_keyboard: { text: string; callback_data: s
 // callback_query нет), поэтому нажатие крутило бы спиннер до таймаута; и
 // сообщения уходят в ГРУППОВОЙ чат, где нажать может любой участник, а
 // сопоставления telegram_user_id -> user_id до 4a не существует.
-export async function sendMessage(env: Env, chatId: string, text: string, replyMarkup?: InlineKeyboard): Promise<string | null> {
+export async function sendMessage(env: Env, chatId: string, text: string, replyMarkup?: Keyboard): Promise<string | null> {
   try {
     const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',

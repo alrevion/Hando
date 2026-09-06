@@ -16,7 +16,7 @@ export default defineWorkersConfig(async () => {
       // mcp.test.ts идёт в node-пуле: он импортирует src/index -> src/mcp ->
       // @modelcontextprotocol/sdk -> ajv, а ajv грузит .json как модуль, чего
       // workerd не умеет. См. vitest.node.config.ts.
-      include: ['test/access.test.ts', 'test/schema.test.ts', 'test/regression.test.ts', 'test/step0.test.ts', 'test/step1.test.ts', 'test/single-writer.test.ts', 'test/step2a.test.ts', 'test/step2b.test.ts', 'test/step3.test.ts', 'test/step4.test.ts', 'test/step4c.test.ts', 'test/outbox-review.test.ts', 'test/status-invariant.test.ts', 'test/signup.test.ts', 'test/parse.test.ts'],
+      include: ['test/access.test.ts', 'test/schema.test.ts', 'test/regression.test.ts', 'test/step0.test.ts', 'test/step1.test.ts', 'test/single-writer.test.ts', 'test/step2a.test.ts', 'test/step2b.test.ts', 'test/step3.test.ts', 'test/step4.test.ts', 'test/step4c.test.ts', 'test/outbox-review.test.ts', 'test/status-invariant.test.ts', 'test/signup.test.ts', 'test/parse.test.ts', 'test/webapp-auth.test.ts'],
       setupFiles: ['./test/apply-migrations.ts'],
       poolOptions: {
         workers: {

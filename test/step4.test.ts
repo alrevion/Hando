@@ -69,10 +69,8 @@ describe('шаг 4a: границы третьей двери', () => {
     const bodies = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)));
     expect(bodies).toHaveLength(2);
     for (const b of bodies) {
-      // Регистрация предлагается КНОПКАМИ, а не диктовкой команд.
-      const labels = (b.reply_markup?.inline_keyboard ?? []).flat().map((x: { text: string }) => x.text).join(' ');
-      expect(labels).toContain('Создать организацию');
-      expect(labels).toContain('Вступить по коду');
+      // Первым делом бот знакомится: имя из Telegram для обращения не годится.
+      expect(b.text).toContain('Как к Вам обращаться');
       // Ответ не содержит ничьих имён и не подтверждает наличия кого-либо.
       expect(b.text).not.toContain('Директор');
       expect(b.text).not.toContain('не зарегистрированы');

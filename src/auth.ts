@@ -129,6 +129,58 @@ export async function mcpSessionClaims(
   return { sub: userId, role, org_id: orgId };
 }
 
+/**
+ * Проверяет initData мини-приложения Telegram.
+ *
+ * Telegram подписывает данные ключом HMAC-SHA256, где сам ключ получен как
+ * HMAC("WebAppData", bot_token). Проверяем строку data-check-string: все поля
+ * кроме hash, отсортированы по имени, склеены через \n.
+ *
+ * Почему это вообще нужно: initData приходит от КЛИЕНТА, то есть от браузера
+ * внутри Telegram. Без проверки подписи любой мог бы прислать
+ * `user={"id":123}` и войти кем угодно.
+ *
+ * auth_date проверяется на свежесть: перехваченная строка иначе работала бы
+ * вечно, а она попадает в URL мини-приложения и живёт в истории браузера.
+ */
+export async function verifyInitData(
+  botToken: string,
+  initData: string,
+  maxAgeSeconds = 24 * 60 * 60,
+  now: Date = new Date(),
+): Promise<{ id: string; username?: string; first_name?: string; last_name?: string } | null> {
+  if (!botToken || !initData) return null;
+  const params = new URLSearchParams(initData);
+  const hash = params.get('hash');
+  if (!hash) return null;
+  params.delete('hash');
+
+  const dataCheckString = [...params.entries()]
+    .map(([k, v]) => `${k}=${v}`)
+    .sort()
+    .join('\n');
+
+  try {
+    const secret = await hmac('WebAppData', botToken);
+    const key = await crypto.subtle.importKey('raw', secret as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(dataCheckString)));
+    const expected = Array.from(sig, (b) => b.toString(16).padStart(2, '0')).join('');
+    // Сравнение постоянного времени: hash приходит от клиента.
+    if (!safeEqual(enc.encode(expected), enc.encode(hash))) return null;
+
+    const authDate = Number(params.get('auth_date') ?? 0);
+    if (!authDate || now.getTime() / 1000 - authDate > maxAgeSeconds) return null;
+
+    const raw = params.get('user');
+    if (!raw) return null;
+    const user = JSON.parse(raw) as { id?: number; username?: string; first_name?: string; last_name?: string };
+    if (user.id == null) return null;
+    return { id: String(user.id), username: user.username, first_name: user.first_name, last_name: user.last_name };
+  } catch {
+    return null;
+  }
+}
+
 export async function mintSession(secret: string, claims: { sub: string; role: Role; org_id: string }): Promise<string> {
   const payload: SessionPayload = { ...claims, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS };
   const body = b64url(enc.encode(JSON.stringify(payload)));

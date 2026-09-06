@@ -4,7 +4,7 @@ import { type Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Role, Task, TaskStatus } from './types';
 import { logEvent, nowIso, uuid } from './db';
-import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyOtp, verifySession } from './auth';
+import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyInitData, verifyOtp, verifySession } from './auth';
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, getFileUrl, resolveChatId, sendDocument } from './telegram';
 import { applyTransition, buildNotification } from './transition';
@@ -77,6 +77,37 @@ apiRoutes.post('/auth/verify', async (c) => {
   if (!orgId) return c.json({ error: 'no active organisation for this account' }, 403);
   const role = await membershipRole(c.env.DB, orgId, user.id);
   if (!role) return c.json({ error: 'no active organisation for this account' }, 403);
+  const token = await mintSession(c.env.SESSION_SECRET, { sub: user.id, role, org_id: orgId });
+  setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
+  return c.json({ user: { id: user.id, name: user.name, role, org_id: orgId } });
+});
+
+/**
+ * Вход из мини-приложения Telegram. Публичный роут -- он ДО requireAuth, как и
+ * остальные /auth/*: человек тут ещё без сессии, он её и получает.
+ *
+ * Телефон и OTP не нужны: подпись Telegram доказывает, что это тот самый
+ * аккаунт, который уже подключён к боту. Второй способ входа, а не замена
+ * первого -- у кого-то бот не подключён, и он входит по номеру.
+ */
+apiRoutes.post('/auth/telegram', async (c) => {
+  const { initData } = await c.req.json<{ initData?: string }>().catch(() => ({}) as Record<string, undefined>);
+  const tg = await verifyInitData(c.env.TELEGRAM_BOT_TOKEN, initData ?? '');
+  if (!tg) return c.json({ error: 'invalid initData' }, 401);
+
+  // Человек должен быть уже подключён к боту: мини-приложение не заводит людей,
+  // это делает регистрация в самом боте. Иначе появился бы второй путь создания
+  // пользователей, о котором не знает подтверждение владельцем.
+  const user = await c.env.DB.prepare('SELECT id, name FROM users WHERE telegram_user_id = ?')
+    .bind(tg.id)
+    .first<{ id: string; name: string }>();
+  if (!user) return c.json({ error: 'not connected', code: 'CONNECT_BOT_FIRST' }, 403);
+
+  const orgId = await resolveOrgId(c.env.DB, user.id);
+  if (!orgId) return c.json({ error: 'no active organisation', code: 'NO_ORG' }, 403);
+  const role = await membershipRole(c.env.DB, orgId, user.id);
+  if (!role) return c.json({ error: 'no active organisation', code: 'NO_ORG' }, 403);
+
   const token = await mintSession(c.env.SESSION_SECRET, { sub: user.id, role, org_id: orgId });
   setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
   return c.json({ user: { id: user.id, name: user.name, role, org_id: orgId } });

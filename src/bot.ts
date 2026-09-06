@@ -17,12 +17,13 @@ import { Hono } from 'hono';
 import type { Env, Role } from './types';
 import { nowIso, uuid } from './db';
 import { myAssignee, transitionAssignee } from './assignees';
-import { answerCallbackQuery, editMessageReplyMarkup, editMessageText, sendMessage } from './telegram';
+import { answerCallbackQuery, editMessageReplyMarkup, sendMessage } from './telegram';
 import { drainOutbox } from './outbox';
 import { approveJoin, createOrg, ensureUser, joinByCode, rejectJoin } from './signup';
 import {
-  confirmDeleteScreen, deleteOrg, getAwaiting, leaveOrg, mainScreen, myOrgs,
-  orgScreen, orgsScreen, renameOrg, setAwaiting, switchOrg, type Screen,
+  askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
+  mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
+  setState, switchOrg, type OrgRow, type Screen,
 } from './menu';
 import { download, extractMedia, storeByFileId, type Media } from './media';
 import { parseTask, transcribe, type Draft } from './parse';
@@ -173,17 +174,20 @@ async function myTasksText(env: Env, userId: string): Promise<string> {
 }
 
 /**
- * Показывает экран меню: правит прежнее сообщение или шлёт новое.
+ * Показывает экран: текст плюс постоянная клавиатура внизу.
  *
- * Правка на месте -- не украшение: без неё каждое нажатие оставляет в чате ещё
- * одно меню, и через минуту переписка состоит из них. Если прежнее сообщение
- * удалено человеком, правка не пройдёт -- тогда шлём новое и запоминаем его.
+ * Прежняя редакция правила сообщение на месте -- это было нужно инлайновой
+ * клавиатуре, которая живёт ВНУТРИ сообщения. Постоянная клавиатура к сообщению
+ * не привязана: она остаётся внизу экрана и переживает любой поток уведомлений.
+ * Поэтому правки нет -- есть обычный ответ.
  */
-async function showMenu(env: Env, chatId: string, userId: string, screen: Screen, editId?: string): Promise<void> {
-  if (editId && (await editMessageText(env, chatId, editId, screen.text, screen.keyboard))) return;
-  const id = await sendMessage(env, chatId, screen.text, screen.keyboard);
-  if (id) await env.DB.prepare('UPDATE users SET menu_message_id = ? WHERE id = ?').bind(id, userId).run();
+async function show(env: Env, chatId: string, userId: string, screen: Screen): Promise<void> {
+  await setState(env, userId, screen.state);
+  await sendMessage(env, chatId, screen.text, screen.keyboard);
 }
+
+/** Адрес мини-приложения: он же домен воркера. */
+const APP_URL = 'https://hando.alrevion.com';
 
 botApp.post('/webhook', async (c) => {
   // Секрет проверяется constant-time и ПЕРВЫМ: без него роут -- открытая дверь
@@ -201,82 +205,6 @@ botApp.post('/webhook', async (c) => {
     const cq = update.callback_query;
     // answerCallbackQuery отправляется НА КАЖДОЕ нажатие, включая отвергнутые:
     // без него у нажавшего крутится спиннер до таймаута.
-    // Меню разбирается ДО whoIs: у человека может ещё не быть организации, а
-    // кнопки «создать» и «вступить» нужны именно ему.
-    if ((cq.data ?? '').startsWith('m:')) {
-      const uid = await c.env.DB.prepare('SELECT id, name FROM users WHERE telegram_user_id = ?')
-        .bind(String(cq.from.id)).first<{ id: string; name: string }>();
-      if (!uid) {
-        await answerCallbackQuery(c.env, cq.id);
-        return c.json({ ok: true });
-      }
-      const chatId = String(cq.message?.chat.id ?? cq.from.id);
-      const editId = cq.message ? String(cq.message.message_id) : undefined;
-      const [, verb, arg] = (cq.data ?? '').split(':');
-      const orgs = await myOrgs(c.env, uid.id);
-      const org = arg ? orgs.find((o) => o.id === arg) : undefined;
-
-      // Все действия ниже проверяют право ВНУТРИ своих функций: сообщение с
-      // кнопкой живёт в Telegram и может быть переслано кому угодно.
-      switch (verb) {
-        case 'main':
-          await showMenu(c.env, chatId, uid.id, mainScreen(uid.name, orgs), editId);
-          break;
-        case 'orgs':
-          await showMenu(c.env, chatId, uid.id, orgsScreen(orgs), editId);
-          break;
-        case 'org':
-          if (org) await showMenu(c.env, chatId, uid.id, orgScreen(org, uid.id), editId);
-          break;
-        case 'new':
-          await setAwaiting(c.env, uid.id, { await: 'new' });
-          await showMenu(c.env, chatId, uid.id, { text: 'Как назвать организацию? Напишите название.', keyboard: { inline_keyboard: [[{ text: '‹ Отмена', callback_data: 'm:main' }]] } }, editId);
-          break;
-        case 'join':
-          await setAwaiting(c.env, uid.id, { await: 'join' });
-          await showMenu(c.env, chatId, uid.id, { text: 'Пришлите код организации.', keyboard: { inline_keyboard: [[{ text: '‹ Отмена', callback_data: 'm:main' }]] } }, editId);
-          break;
-        case 'ren':
-          if (org) {
-            await setAwaiting(c.env, uid.id, { await: 'ren', org: org.id });
-            await showMenu(c.env, chatId, uid.id, { text: `Новое название для «${org.name}»?`, keyboard: { inline_keyboard: [[{ text: '‹ Отмена', callback_data: `m:org:${org.id}` }]] } }, editId);
-          }
-          break;
-        case 'sw':
-          if (arg && (await switchOrg(c.env, uid.id, arg))) {
-            await answerCallbackQuery(c.env, cq.id, 'Переключено');
-            await showMenu(c.env, chatId, uid.id, mainScreen(uid.name, await myOrgs(c.env, uid.id)), editId);
-            return c.json({ ok: true });
-          }
-          break;
-        case 'del':
-          if (org) await showMenu(c.env, chatId, uid.id, confirmDeleteScreen(org), editId);
-          break;
-        case 'delok':
-          if (arg && (await deleteOrg(c.env, uid.id, arg))) {
-            await answerCallbackQuery(c.env, cq.id, 'Удалено');
-            await showMenu(c.env, chatId, uid.id, mainScreen(uid.name, await myOrgs(c.env, uid.id)), editId);
-            return c.json({ ok: true });
-          }
-          break;
-        case 'leave':
-          if (arg && (await leaveOrg(c.env, uid.id, arg))) {
-            await answerCallbackQuery(c.env, cq.id, 'Вы вышли');
-            await showMenu(c.env, chatId, uid.id, mainScreen(uid.name, await myOrgs(c.env, uid.id)), editId);
-            return c.json({ ok: true });
-          }
-          break;
-        case 'tasks': {
-          await answerCallbackQuery(c.env, cq.id);
-          const me = await whoIs(c.env, cq.from);
-          if (me) await sendMessage(c.env, chatId, await myTasksText(c.env, me.userId));
-          return c.json({ ok: true });
-        }
-      }
-      await answerCallbackQuery(c.env, cq.id);
-      return c.json({ ok: true });
-    }
-
     const who = await whoIs(c.env, cq.from);
     if (!who) {
       await answerCallbackQuery(c.env, cq.id);
@@ -431,54 +359,76 @@ botApp.post('/webhook', async (c) => {
   const tgName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || msg.from.username || 'Без имени';
 
   const userId = await ensureUser(c.env, String(msg.from.id), tgName, msg.from.username ?? null);
+  const chatId = String(msg.chat.id);
+  const st = await getState(c.env, userId);
+  const orgs = await myOrgs(c.env, userId);
+  const me = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
+  const myName = me?.name ?? tgName;
 
+  // ------------------------------------------------------------- знакомство
+  //
+  // Имя из Telegram для обращения не годится: там латиница, никнейм или пусто.
+  // А имя видят коллеги в поручениях. Спрашиваем один раз.
   if (text === '/start' || text === '/начать' || text === '/menu' || text === '/меню') {
-    await setAwaiting(c.env, userId, null);
-    await showMenu(c.env, String(msg.chat.id), userId, mainScreen(tgName, await myOrgs(c.env, userId)));
+    await show(c.env, chatId, userId, (await isOnboarded(c.env, userId))
+      ? mainScreen(myName, orgs, APP_URL)
+      : askNameScreen());
+    return c.json({ ok: true });
+  }
+  if (!(await isOnboarded(c.env, userId))) {
+    if (!text) return c.json({ ok: true });
+    if (!(await setDisplayName(c.env, userId, text))) {
+      await show(c.env, chatId, userId, askNameScreen());
+      return c.json({ ok: true });
+    }
+    await sendMessage(c.env, chatId, `Приятно познакомиться, ${text.trim()}.`);
+    await show(c.env, chatId, userId, mainScreen(text.trim(), await myOrgs(c.env, userId), APP_URL));
     return c.json({ ok: true });
   }
 
-  // ------------------------------------------------- ответ на вопрос меню
+  // ------------------------------------------------- ответ на вопрос бота
   //
-  // Печатать человеку приходится только то, чего бот знать не может: название
+  // Печатать приходится только то, чего бот знать не может: имя, название
   // организации или код. Всё остальное -- кнопки.
-  const awaiting = await getAwaiting(c.env, userId);
-  if (awaiting && text) {
-    await setAwaiting(c.env, userId, null);
-    const chatId = String(msg.chat.id);
-
-    if (awaiting.await === 'new') {
+  if (st.await && text) {
+    if (st.await === 'name') {
+      const ok = await setDisplayName(c.env, userId, text);
+      await sendMessage(c.env, chatId, ok ? 'Имя обновлено.' : 'Слишком короткое имя.');
+      await show(c.env, chatId, userId, profileScreen(ok ? text.trim() : myName, orgs));
+      return c.json({ ok: true });
+    }
+    if (st.await === 'new') {
       const { code } = await createOrg(c.env, userId, text.slice(0, 60));
       await sendMessage(c.env, chatId, [
         `Организация «${text.slice(0, 60)}» создана. Вы её владелец.`,
         '',
         `Код для сотрудников: ${code}`,
-        'Каждого вступившего вы подтверждаете кнопкой.',
+        'Каждого вступившего Вы подтверждаете кнопкой.',
       ].join('\n'));
-      await showMenu(c.env, chatId, userId, mainScreen(tgName, await myOrgs(c.env, userId)));
+      await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId), APP_URL));
       return c.json({ ok: true });
     }
-
-    if (awaiting.await === 'ren') {
-      const ok = await renameOrg(c.env, userId, awaiting.org, text);
+    if (st.await === 'rename' && st.org) {
+      const ok = await renameOrg(c.env, userId, st.org, text);
       await sendMessage(c.env, chatId, ok ? 'Переименовано.' : 'Переименовать не удалось.');
-      await showMenu(c.env, chatId, userId, orgsScreen(await myOrgs(c.env, userId)));
+      await show(c.env, chatId, userId, orgsScreen(await myOrgs(c.env, userId)));
       return c.json({ ok: true });
     }
-
-    // awaiting.await === 'join'
+    // st.await === 'join'
     const res = await joinByCode(c.env, userId, text);
     if (!res.ok) {
       await sendMessage(c.env, chatId,
         res.reason === 'unknown_code' ? 'Код не подошёл. Проверьте у того, кто его дал.'
         : res.reason === 'already_member' ? 'Вы уже в этой организации.'
         : 'Заявка уже подана, ждём подтверждения.');
-      await showMenu(c.env, chatId, userId, mainScreen(tgName, await myOrgs(c.env, userId)));
+      await show(c.env, chatId, userId, mainScreen(myName, orgs, APP_URL));
       return c.json({ ok: true });
     }
     await sendMessage(c.env, chatId, `Заявка в «${res.orgName}» отправлена. Ждём подтверждения.`);
     if (res.ownerTgId) {
-      await sendMessage(c.env, res.ownerTgId, `К вам просится: ${res.applicantName}`, {
+      // Заявка -- инлайновой клавиатурой НАМЕРЕННО: кнопка привязана к этому
+      // человеку и к этой заявке, а не к навигации.
+      await sendMessage(c.env, res.ownerTgId, `К Вам просится: ${res.applicantName}`, {
         inline_keyboard: [[
           { text: '✅ Принять', callback_data: `join_ok:${res.orgId}:${userId}` },
           { text: '✖️ Отклонить', callback_data: `join_no:${res.orgId}:${userId}` },
@@ -488,11 +438,85 @@ botApp.post('/webhook', async (c) => {
     return c.json({ ok: true });
   }
 
+  // ------------------------------------------------------- нажатия клавиатуры
+  //
+  // Reply-кнопка присылает свой текст, поэтому нажатие -- это совпадение с
+  // подписью. Экран учитывается: «‹ Назад» на разных экранах ведёт в разное.
+  const openOrg = async (org: OrgRow) => show(c.env, chatId, userId, orgScreen(org, userId));
+  const current = st.org ? orgs.find((o) => o.id === st.org) : undefined;
+
+  switch (text) {
+    case BTN.tasks:
+      await sendMessage(c.env, chatId, await myTasksText(c.env, userId));
+      return c.json({ ok: true });
+    case BTN.orgs:
+      await show(c.env, chatId, userId, orgsScreen(orgs));
+      return c.json({ ok: true });
+    case BTN.profile:
+      await show(c.env, chatId, userId, profileScreen(myName, orgs));
+      return c.json({ ok: true });
+    case BTN.editName:
+      await setState(c.env, userId, { await: 'name', screen: 'profile' });
+      await sendMessage(c.env, chatId, 'Как к Вам обращаться? Напишите имя и фамилию.');
+      return c.json({ ok: true });
+    case BTN.create:
+    case BTN.createShort:
+      await setState(c.env, userId, { await: 'new', screen: st.screen });
+      await sendMessage(c.env, chatId, 'Как назвать организацию?');
+      return c.json({ ok: true });
+    case BTN.join:
+    case BTN.joinShort:
+      await setState(c.env, userId, { await: 'join', screen: st.screen });
+      await sendMessage(c.env, chatId, 'Пришлите код организации.');
+      return c.json({ ok: true });
+    case BTN.back:
+      // «Назад» зависит от экрана: из карточки -- в список, иначе на главный.
+      await show(c.env, chatId, userId, st.screen === 'org' || st.screen === 'confirm_delete'
+        ? orgsScreen(orgs)
+        : mainScreen(myName, orgs, APP_URL));
+      return c.json({ ok: true });
+    case BTN.switch:
+      if (current && (await switchOrg(c.env, userId, current.id))) {
+        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId), APP_URL));
+      }
+      return c.json({ ok: true });
+    case BTN.rename:
+      if (current) {
+        await setState(c.env, userId, { await: 'rename', screen: 'org', org: current.id });
+        await sendMessage(c.env, chatId, `Новое название для «${current.name}»?`);
+      }
+      return c.json({ ok: true });
+    case BTN.remove:
+      if (current) await show(c.env, chatId, userId, confirmDeleteScreen(current));
+      return c.json({ ok: true });
+    case BTN.yes:
+      if (st.screen === 'confirm_delete' && st.org && (await deleteOrg(c.env, userId, st.org))) {
+        await sendMessage(c.env, chatId, 'Организация удалена.');
+        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId), APP_URL));
+      }
+      return c.json({ ok: true });
+    case BTN.leave:
+      if (current && (await leaveOrg(c.env, userId, current.id))) {
+        await sendMessage(c.env, chatId, 'Вы вышли из организации.');
+        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId), APP_URL));
+      }
+      return c.json({ ok: true });
+  }
+
+  // Выбор организации из списка: подпись -- это её название с маркером.
+  if (st.screen === 'orgs' && text) {
+    const picked = orgs.find((o) => `${o.is_current ? '● ' : '○ '}${o.name}` === text);
+    if (picked) {
+      await openOrg(picked);
+      return c.json({ ok: true });
+    }
+  }
+
   const who = await whoIs(c.env, msg.from);
   if (!who) {
     // Подключился, но организации ещё нет -- показываем меню с кнопками, а не
     // молчим и не диктуем команды.
-    await showMenu(c.env, String(msg.chat.id), userId, mainScreen(tgName, []));
+    await show(c.env, chatId, userId, mainScreen(myName, [], APP_URL));
     return c.json({ ok: true });
   }
 

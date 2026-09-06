@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { botApp } from '../src/bot';
 import { apiRoutes } from '../src/routes';
 import { approveJoin, createOrg, ensureUser, generateJoinCode, joinByCode, rejectJoin } from '../src/signup';
-import { deleteOrg, leaveOrg, myOrgs, renameOrg, switchOrg } from '../src/menu';
+import { BTN, deleteOrg, leaveOrg, myOrgs, renameOrg, switchOrg } from '../src/menu';
 import { membershipRole, resolveOrgId } from '../src/auth';
 import { cookie, envWith, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
@@ -175,68 +175,122 @@ describe('подтверждает только владелец', () => {
   });
 });
 
-describe('регистрация целиком через бота -- КНОПКАМИ', () => {
-  const press = (env: Env, tgId: number, data: string, messageId = 1) =>
-    hook(env, { callback_query: { id: `cb-${data}`, from: { id: tgId, first_name: `Ч${tgId}` }, data, message: { chat: { id: tgId }, message_id: messageId } } });
+describe('регистрация целиком через бота -- ПОСТОЯННОЙ клавиатурой', () => {
+  // Нажатие reply-кнопки приходит боту обычным сообщением с её подписью.
+  const tap = (env: Env, tgId: number, label: string) => hook(env, msg(tgId, label));
+  // reply_markup в ответе -- любой из двух видов клавиатуры, поэтому приводим.
+  const kbOf = (m: { reply_markup?: unknown }) =>
+    ((m.reply_markup as { keyboard?: { text: string }[][] } | undefined)?.keyboard ?? [])
+      .flat().map((b) => b.text).join(' ');
+
+  /** Знакомство: /start -> имя. До него меню не показывается. */
+  const meet = async (env: Env, tgId: number, name: string) => {
+    await hook(env, msg(tgId, '/start'));
+    await hook(env, msg(tgId, name));
+  };
+
+  it('бот сначала спрашивает имя, и только потом предлагает организацию', async () => {
+    const env = await blank();
+    const spy = tg();
+
+    await hook(env, msg(101, '/start'));
+    // Имя из Telegram для обращения не годится: там латиница или никнейм, а имя
+    // видят коллеги в поручениях.
+    expect(sent(spy).at(-1)!.text).toContain('Как к Вам обращаться');
+
+    await hook(env, msg(101, 'Азиз Каримов'));
+    const after = sent(spy).at(-1)!;
+    expect(kbOf(after)).toContain(BTN.create);
+    expect(kbOf(after)).toContain(BTN.join);
+    // Имя сохранено -- его увидят коллеги.
+    const me = await testEnv.DB.prepare("SELECT name FROM users WHERE telegram_user_id = '101'").first<{ name: string }>();
+    expect(me!.name).toBe('Азиз Каримов');
+  });
 
   it('директор создаёт, сотрудник вступает, директор подтверждает', async () => {
     const env = await blank();
     const spy = tg();
 
-    // /start -- единственная команда, которую человек печатает. Дальше кнопки.
-    await hook(env, msg(101, '/start'));
-    const first = sent(spy).at(-1)!;
-    const labels = ((first as unknown as { reply_markup?: { inline_keyboard: { text: string }[][] } }).reply_markup?.inline_keyboard ?? []).flat().map((b) => b.text).join(' ');
-    expect(labels).toContain('Создать организацию');
-
-    // Нажали «Создать» -- бот спрашивает название, и только его человек печатает.
-    await press(env, 101, 'm:new');
+    await meet(env, 101, 'Директор Иванов');
+    await tap(env, 101, BTN.create);
     await hook(env, msg(101, 'Школа №7'));
     const code = sent(spy).map((m) => m.text).join(' ').match(/[A-Z2-9]{6}/)![0];
 
-    // Сотрудник: /start -> кнопка «Вступить» -> код.
-    await hook(env, msg(202, '/start'));
-    await press(env, 202, 'm:join');
+    await meet(env, 202, 'Азиз Каримов');
+    await tap(env, 202, BTN.join);
     await hook(env, msg(202, code));
 
+    // Заявка приходит ИНЛАЙНОВОЙ клавиатурой: кнопка привязана к этому человеку
+    // и к этой заявке, а не к навигации.
     const request = sent(spy).find((m) => m.chat_id === '101' && m.text.includes('просится'));
-    expect(request?.reply_markup).toBeDefined();
+    expect(request?.reply_markup).toHaveProperty('inline_keyboard');
+    expect(request!.text).toContain('Азиз Каримов');
 
-    // До подтверждения сотрудник ничего не видит.
     const joiner = await testEnv.DB.prepare("SELECT id FROM users WHERE telegram_user_id = '202'").first<{ id: string }>();
     expect(await resolveOrgId(testEnv.DB, joiner!.id)).toBeNull();
 
     const org = await testEnv.DB.prepare('SELECT id FROM orgs WHERE join_code = ?').bind(code).first<{ id: string }>();
-    await press(env, 101, `join_ok:${org!.id}:${joiner!.id}`);
+    await hook(env, { callback_query: { id: 'cb', from: { id: 101, first_name: 'Д' }, data: `join_ok:${org!.id}:${joiner!.id}`, message: { chat: { id: 101 }, message_id: 1 } } });
 
     expect(await resolveOrgId(testEnv.DB, joiner!.id)).toBe(org!.id);
     expect(sent(spy).some((m) => m.chat_id === '202' && m.text.includes('приняли'))).toBe(true);
   });
 
+  it('главный экран несёт кнопку мини-приложения', async () => {
+    const env = await blank();
+    const spy = tg();
+    await meet(env, 707, 'Пётр');
+    await tap(env, 707, BTN.create);
+    await hook(env, msg(707, 'Фирма'));
+
+    const main = sent(spy).at(-1)! as unknown as { reply_markup?: { keyboard: { text: string; web_app?: { url: string } }[][] } };
+    const app = (main.reply_markup?.keyboard ?? []).flat().find((b) => b.text === BTN.app);
+    // Веб-версия открывается прямо из Telegram, без браузера и без повторного входа.
+    expect(app?.web_app?.url).toContain('hando.alrevion.com');
+  });
+
+  it('профиль: имя правится кнопкой', async () => {
+    const env = await blank();
+    const spy = tg();
+    await meet(env, 808, 'Старое Имя');
+    await tap(env, 808, BTN.profile);
+    expect(sent(spy).at(-1)!.text).toContain('Старое Имя');
+
+    await tap(env, 808, BTN.editName);
+    await hook(env, msg(808, 'Новое Имя'));
+    const me = await testEnv.DB.prepare("SELECT name FROM users WHERE telegram_user_id = '808'").first<{ name: string }>();
+    expect(me!.name).toBe('Новое Имя');
+  });
+
   it('переключение, переименование и удаление -- кнопками', async () => {
     const env = await blank();
-    tg();
-    await hook(env, msg(303, '/start'));
-    await press(env, 303, 'm:new');
+    const spy = tg();
+    await meet(env, 303, 'Владелец');
+    await tap(env, 303, BTN.create);
     await hook(env, msg(303, 'Первая'));
-    await press(env, 303, 'm:new');
+    await tap(env, 303, BTN.create);
     await hook(env, msg(303, 'Вторая'));
 
     const me = await testEnv.DB.prepare("SELECT id FROM users WHERE telegram_user_id = '303'").first<{ id: string }>();
     const first = await testEnv.DB.prepare("SELECT id FROM orgs WHERE name = 'Первая'").first<{ id: string }>();
 
-    // Переключение: липкий контекст меняется.
-    await press(env, 303, `m:sw:${first!.id}`);
+    // Список организаций -> выбор по названию -> карточка.
+    await tap(env, 303, BTN.orgs);
+    expect(kbOf(sent(spy).at(-1)!)).toContain('Первая');
+    await tap(env, 303, '○ Первая');
+    await tap(env, 303, BTN.switch);
     expect(await resolveOrgId(testEnv.DB, me!.id)).toBe(first!.id);
 
-    // Переименование: кнопка ставит ожидание, следующее сообщение его закрывает.
-    await press(env, 303, `m:ren:${first!.id}`);
+    await tap(env, 303, BTN.orgs);
+    await tap(env, 303, '● Первая');
+    await tap(env, 303, BTN.rename);
     await hook(env, msg(303, 'Школа №1'));
     expect((await testEnv.DB.prepare('SELECT name FROM orgs WHERE id = ?').bind(first!.id).first<{ name: string }>())!.name).toBe('Школа №1');
 
-    // Удаление -- через подтверждение, и МЯГКОЕ: строки остаются.
-    await press(env, 303, `m:del:${first!.id}`);
-    await press(env, 303, `m:delok:${first!.id}`);
+    await tap(env, 303, BTN.orgs);
+    await tap(env, 303, '● Школа №1');
+    await tap(env, 303, BTN.remove);
+    await tap(env, 303, BTN.yes);
     const org = await testEnv.DB.prepare('SELECT archived_at FROM orgs WHERE id = ?').bind(first!.id).first<{ archived_at: string | null }>();
     expect(org!.archived_at).not.toBeNull();
     // Человека не выбросило в никуда: контекст переехал на вторую организацию.
@@ -244,26 +298,19 @@ describe('регистрация целиком через бота -- КНОП�
     expect(await resolveOrgId(testEnv.DB, me!.id)).toBe(second!.id);
   });
 
-  it('чужую организацию не переименовать и не удалить', async () => {
+  it('чужой организации в списке просто нет -- нажать не на что', async () => {
     const env = await blank();
-    tg();
-    await hook(env, msg(404, '/start'));
-    await press(env, 404, 'm:new');
+    const spy = tg();
+    await meet(env, 404, 'Владелец');
+    await tap(env, 404, BTN.create);
     await hook(env, msg(404, 'Чужая фирма'));
-    const org = await testEnv.DB.prepare("SELECT id FROM orgs WHERE name = 'Чужая фирма'").first<{ id: string }>();
 
-    // Посторонний знает id и жмёт кнопку переименования: сообщение с кнопкой
-    // живёт в Telegram и может быть переслано.
-    await hook(env, msg(505, '/start'));
-    await press(env, 505, `m:ren:${org!.id}`);
-    await hook(env, msg(505, 'Моя теперь'));
-    expect((await testEnv.DB.prepare('SELECT name FROM orgs WHERE id = ?').bind(org!.id).first<{ name: string }>())!.name).toBe('Чужая фирма');
-
-    await press(env, 505, `m:delok:${org!.id}`);
-    expect((await testEnv.DB.prepare('SELECT archived_at FROM orgs WHERE id = ?').bind(org!.id).first<{ archived_at: string | null }>())!.archived_at).toBeNull();
+    await meet(env, 505, 'Посторонний');
+    await tap(env, 505, BTN.orgs);
+    // Меню строится из СВОИХ организаций, поэтому чужая недостижима в принципе.
+    expect(kbOf(sent(spy).at(-1)!)).not.toContain('Чужая фирма');
   });
 });
-
 
 describe('права на организацию проверяются В САМИХ функциях', () => {
   // Меню отсекает чужую организацию раньше -- оно показывает только свои. Но

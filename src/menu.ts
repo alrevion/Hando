@@ -1,22 +1,51 @@
-// Кнопочное меню бота.
+// Меню бота на ПОСТОЯННОЙ клавиатуре.
 //
-// Команды вида «/создать Название» -- интерфейс для разработчика, а не для
-// человека: их надо помнить и печатать без ошибок. Здесь всё то же самое
-// делается кнопками, а печатать нужно только то, что бот и так не мог бы знать
-// -- название организации или код.
+// Почему не инлайновая. Инлайновая клавиатура живёт внутри одного сообщения:
+// оно уезжает вверх под уведомлениями, и меню исчезает вместе с ним. Reply-
+// клавиатура закреплена внизу экрана -- это навигация приложения, доступная
+// всегда. Инлайновая остаётся там, где кнопка привязана к ОБЪЕКТУ: «Принял» на
+// этой задаче, «Принять» на этой заявке. Такие кнопки и должны жить при своём
+// сообщении.
 //
-// Диалог состоит из двух шагов: нажатие ставит ОЖИДАНИЕ (users.bot_state),
-// следующее сообщение это ожидание закрывает. Больше состояний не нужно:
-// длинных сценариев в меню нет намеренно, каждый шаг завершается сам.
+// Reply-кнопка присылает боту свой ТЕКСТ, поэтому подписи -- часть протокола, а
+// не оформление. Они собраны в BTN: строка в двух местах однажды разойдётся, и
+// кнопка перестанет работать молча.
 import type { Env, Role } from './types';
 import { nowIso } from './db';
-import type { InlineKeyboard } from './telegram';
+import type { ReplyKeyboard } from './telegram';
 
-export type Awaiting = { await: 'new' } | { await: 'join' } | { await: 'ren'; org: string };
+export const BTN = {
+  tasks: '📋 Мои задачи',
+  app: '🌐 Приложение',
+  orgs: '🏢 Организации',
+  profile: '👤 Профиль',
+  create: '➕ Создать организацию',
+  join: '🔑 Вступить по коду',
+  createShort: '➕ Создать',
+  joinShort: '🔑 Вступить',
+  rename: '✏️ Переименовать',
+  remove: '🗑 Удалить',
+  switch: '↪️ Переключиться сюда',
+  leave: '🚪 Выйти из организации',
+  editName: '✏️ Изменить имя',
+  back: '‹ Назад',
+  yes: '❌ Да, удалить',
+} as const;
 
-export type OrgRow = { id: string; name: string; role: Role; is_current: number; join_code: string | null; owner_user_id: string | null };
+/** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
+export type BotState = {
+  await?: 'name' | 'new' | 'join' | 'rename';
+  /** Экран: по нему разбирается нажатие, потому что подписи повторяются. */
+  screen?: 'main' | 'orgs' | 'org' | 'profile' | 'confirm_delete';
+  /** Организация, открытая в карточке. */
+  org?: string;
+};
 
-/** Организации человека: только действующие членства и неудалённые организации. */
+export type OrgRow = {
+  id: string; name: string; role: Role; is_current: number;
+  join_code: string | null; owner_user_id: string | null;
+};
+
 export async function myOrgs(env: Env, userId: string): Promise<OrgRow[]> {
   const { results } = await env.DB.prepare(
     `SELECT o.id, o.name, m.role AS role, o.join_code, o.owner_user_id,
@@ -30,93 +59,110 @@ export async function myOrgs(env: Env, userId: string): Promise<OrgRow[]> {
   return results;
 }
 
-export async function setAwaiting(env: Env, userId: string, state: Awaiting | null): Promise<void> {
+export async function setState(env: Env, userId: string, state: BotState | null): Promise<void> {
   await env.DB.prepare('UPDATE users SET bot_state = ? WHERE id = ?')
-    .bind(state ? JSON.stringify(state) : null, userId)
-    .run();
+    .bind(state ? JSON.stringify(state) : null, userId).run();
 }
 
-export async function getAwaiting(env: Env, userId: string): Promise<Awaiting | null> {
+export async function getState(env: Env, userId: string): Promise<BotState> {
   const row = await env.DB.prepare('SELECT bot_state FROM users WHERE id = ?').bind(userId).first<{ bot_state: string | null }>();
-  if (!row?.bot_state) return null;
+  if (!row?.bot_state) return {};
   try {
-    return JSON.parse(row.bot_state) as Awaiting;
+    return JSON.parse(row.bot_state) as BotState;
   } catch {
-    return null;
+    return {};
   }
 }
 
 // --------------------------------------------------------------------- экраны
 
-export type Screen = { text: string; keyboard: InlineKeyboard };
+export type Screen = { text: string; keyboard: ReplyKeyboard; state: BotState };
 
-/** Главный экран. Вид зависит от того, есть ли у человека организации. */
-export function mainScreen(name: string, orgs: OrgRow[]): Screen {
+const kb = (rows: { text: string; web_app?: { url: string } }[][], placeholder?: string): ReplyKeyboard => ({
+  keyboard: rows,
+  resize_keyboard: true,
+  // Клавиатура не прячется после нажатия: она и есть навигация.
+  is_persistent: true,
+  input_field_placeholder: placeholder,
+});
+
+/** Знакомство: единственный экран без кнопок -- ответ тут произвольный. */
+export function askNameScreen(): Screen {
+  return {
+    text: 'Здравствуйте! Как к Вам обращаться?\n\nНапишите имя и фамилию — их будут видеть коллеги в поручениях.',
+    keyboard: { keyboard: [], resize_keyboard: true, input_field_placeholder: 'Например: Азиз Каримов' },
+    state: { await: 'name' },
+  };
+}
+
+export function mainScreen(name: string, orgs: OrgRow[], appUrl: string): Screen {
   if (orgs.length === 0) {
     return {
-      text: `Здравствуйте, ${name}.\n\nЧтобы начать, создайте организацию или вступите в существующую по коду.`,
-      keyboard: { inline_keyboard: [
-        [{ text: '➕ Создать организацию', callback_data: 'm:new' }],
-        [{ text: '🔑 Вступить по коду', callback_data: 'm:join' }],
-      ] },
+      text: `${name}, чтобы начать — создайте организацию или вступите в существующую по коду.`,
+      keyboard: kb([[{ text: BTN.create }], [{ text: BTN.join }], [{ text: BTN.profile }]]),
+      state: { screen: 'main' },
     };
   }
   const current = orgs.find((o) => o.is_current) ?? orgs[0];
   return {
-    text: `Здравствуйте, ${name}.\n\nСейчас вы в «${current.name}».`,
-    keyboard: { inline_keyboard: [
-      [{ text: '📋 Мои задачи', callback_data: 'm:tasks' }],
-      [{ text: '🏢 Организации', callback_data: 'm:orgs' }],
-    ] },
+    text: `Сейчас Вы в «${current.name}».\n\nНапишите или наговорите поручение — я поставлю задачу.`,
+    keyboard: kb(
+      [
+        // web_app открывает мини-приложение прямо в Telegram, без браузера.
+        [{ text: BTN.tasks }, { text: BTN.app, web_app: { url: appUrl } }],
+        [{ text: BTN.orgs }, { text: BTN.profile }],
+      ],
+      'Поручение или сообщение…',
+    ),
+    state: { screen: 'main' },
   };
 }
 
-/** Список организаций: текущая помечена, каждая -- кнопка. */
 export function orgsScreen(orgs: OrgRow[]): Screen {
-  const rows = orgs.map((o) => [{
-    text: `${o.is_current ? '● ' : '○ '}${o.name}`,
-    callback_data: `m:org:${o.id}`,
-  }]);
   return {
-    text: orgs.length ? 'Ваши организации:' : 'У вас пока нет организаций.',
-    keyboard: { inline_keyboard: [
-      ...rows,
-      [{ text: '➕ Создать', callback_data: 'm:new' }, { text: '🔑 Вступить', callback_data: 'm:join' }],
-      [{ text: '‹ Назад', callback_data: 'm:main' }],
-    ] },
+    text: orgs.length ? 'Ваши организации. Текущая отмечена ●' : 'У Вас пока нет организаций.',
+    keyboard: kb([
+      ...orgs.map((o) => [{ text: `${o.is_current ? '● ' : '○ '}${o.name}` }]),
+      [{ text: BTN.createShort }, { text: BTN.joinShort }],
+      [{ text: BTN.back }],
+    ]),
+    state: { screen: 'orgs' },
   };
 }
 
-/**
- * Карточка организации. Набор кнопок зависит от прав:
- * переименование и удаление -- только владельцу, иначе сотрудник переименовал бы
- * чужую фирму.
- */
+/** Карточка организации. Кнопки зависят от прав: чужую фирму не переименовать. */
 export function orgScreen(org: OrgRow, userId: string): Screen {
   const isOwner = org.owner_user_id === userId || org.role === 'creator';
   const lines = [`«${org.name}»`, `Ваша роль: ${roleName(org.role)}`];
   if (isOwner && org.join_code) lines.push('', `Код для сотрудников: ${org.join_code}`);
 
-  const buttons: InlineKeyboard['inline_keyboard'] = [];
-  if (!org.is_current) buttons.push([{ text: '↪️ Переключиться сюда', callback_data: `m:sw:${org.id}` }]);
-  if (isOwner) {
-    buttons.push([{ text: '✏️ Переименовать', callback_data: `m:ren:${org.id}` }]);
-    buttons.push([{ text: '🗑 Удалить', callback_data: `m:del:${org.id}` }]);
-  } else {
-    buttons.push([{ text: '🚪 Выйти', callback_data: `m:leave:${org.id}` }]);
-  }
-  buttons.push([{ text: '‹ Назад', callback_data: 'm:orgs' }]);
-  return { text: lines.join('\n'), keyboard: { inline_keyboard: buttons } };
+  const rows: { text: string }[][] = [];
+  if (!org.is_current) rows.push([{ text: BTN.switch }]);
+  if (isOwner) rows.push([{ text: BTN.rename }, { text: BTN.remove }]);
+  else rows.push([{ text: BTN.leave }]);
+  rows.push([{ text: BTN.back }]);
+
+  return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'org', org: org.id } };
 }
 
-/** Подтверждение удаления. Отдельным экраном: удаление необратимо для владельца. */
 export function confirmDeleteScreen(org: OrgRow): Screen {
   return {
     text: `Удалить «${org.name}»?\n\nЗадачи и история сохранятся, но организация исчезнет у всех её сотрудников.`,
-    keyboard: { inline_keyboard: [
-      [{ text: '❌ Да, удалить', callback_data: `m:delok:${org.id}` }],
-      [{ text: '‹ Отмена', callback_data: `m:org:${org.id}` }],
-    ] },
+    keyboard: kb([[{ text: BTN.yes }], [{ text: BTN.back }]]),
+    state: { screen: 'confirm_delete', org: org.id },
+  };
+}
+
+export function profileScreen(name: string, orgs: OrgRow[]): Screen {
+  const lines = [`Вас зовут: ${name}`];
+  if (orgs.length) {
+    lines.push('', 'Организации:');
+    for (const o of orgs) lines.push(`${o.is_current ? '● ' : '○ '}${o.name} — ${roleName(o.role)}`);
+  }
+  return {
+    text: lines.join('\n'),
+    keyboard: kb([[{ text: BTN.editName }], [{ text: BTN.back }]]),
+    state: { screen: 'profile' },
   };
 }
 
@@ -126,7 +172,20 @@ function roleName(role: Role): string {
 
 // --------------------------------------------------------------------- действия
 
-/** Переключение текущей организации. Только на ту, где человек действительно состоит. */
+/** Имя для обращения. Его видят коллеги в поручениях, поэтому оно обязательно. */
+export async function setDisplayName(env: Env, userId: string, name: string): Promise<boolean> {
+  const clean = name.trim().replace(/\s+/g, ' ').slice(0, 60);
+  if (clean.length < 2) return false;
+  await env.DB.prepare('UPDATE users SET name = ?, onboarded_at = COALESCE(onboarded_at, ?) WHERE id = ?')
+    .bind(clean, nowIso(), userId).run();
+  return true;
+}
+
+export async function isOnboarded(env: Env, userId: string): Promise<boolean> {
+  const row = await env.DB.prepare('SELECT onboarded_at FROM users WHERE id = ?').bind(userId).first<{ onboarded_at: string | null }>();
+  return Boolean(row?.onboarded_at);
+}
+
 export async function switchOrg(env: Env, userId: string, orgId: string): Promise<boolean> {
   const ok = await env.DB.prepare(
     `SELECT 1 FROM org_memberships m JOIN orgs o ON o.id = m.org_id
@@ -137,7 +196,6 @@ export async function switchOrg(env: Env, userId: string, orgId: string): Promis
   return true;
 }
 
-/** Переименование. Только владельцу. */
 export async function renameOrg(env: Env, userId: string, orgId: string, name: string): Promise<boolean> {
   const res = await env.DB.prepare(
     `UPDATE orgs SET name = ? WHERE id = ? AND archived_at IS NULL AND (
@@ -152,7 +210,7 @@ export async function renameOrg(env: Env, userId: string, orgId: string, name: s
  * Мягкое удаление организации.
  *
  * Строки не стираются: на организацию ссылаются задачи, события и вложения --
- * вся история работы. Удаляется видимость, а не труд. Липкий контекст всех, кто
+ * вся история работы. Убирается видимость, а не труд. Липкий контекст всех, кто
  * там был, переставляется, иначе они упрутся в 401 на следующем же запросе.
  */
 export async function deleteOrg(env: Env, userId: string, orgId: string): Promise<boolean> {
@@ -164,11 +222,8 @@ export async function deleteOrg(env: Env, userId: string, orgId: string): Promis
   ).bind(orgId, userId, userId).first();
   if (!owner) return false;
 
-  const now = nowIso();
   await env.DB.batch([
-    env.DB.prepare('UPDATE orgs SET archived_at = ? WHERE id = ?').bind(now, orgId),
-    // Всем, кто там работал, контекст переставляется на любую оставшуюся
-    // организацию либо обнуляется -- то же правило, что при отзыве членства.
+    env.DB.prepare('UPDATE orgs SET archived_at = ? WHERE id = ?').bind(nowIso(), orgId),
     env.DB.prepare(
       `UPDATE users SET current_org_id = (
          SELECT m.org_id FROM org_memberships m JOIN orgs o ON o.id = m.org_id
