@@ -501,7 +501,7 @@ describe('шаг 2a: предикаты, до которых загрузчик 
     // роль правит creator организации А, а цель -- человек с двумя членствами.
     // Для этого нужен второй creator в А.
     await testEnv.DB.prepare("INSERT INTO users (id, phone, name, current_org_id) VALUES ('boss','+9','Босс А',?)").bind(ORG_A).run();
-    await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role) VALUES ('m-boss',?, 'boss','creator')").bind(ORG_A).run();
+    await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES ('m-boss',?, 'boss','creator',datetime('now'))").bind(ORG_A).run();
 
     const res = await apiRoutes.request('/users/a1', {
       method: 'PATCH', headers: { Cookie: await cookie('boss', 'creator', ORG_A), 'Content-Type': 'application/json' },
@@ -566,7 +566,7 @@ describe('шаг 2a: ветка «участник» и записи по чле
   it('понижение роли человека двух организаций не трогает вторую', async () => {
     const env = await world();
     await testEnv.DB.prepare("INSERT INTO users (id, phone, name, current_org_id) VALUES ('boss2','+91','Босс',?)").bind(ORG_A).run();
-    await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role) VALUES ('m-boss2',?,'boss2','creator')").bind(ORG_A).run();
+    await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES ('m-boss2',?,'boss2','creator',datetime('now'))").bind(ORG_A).run();
 
     const res = await apiRoutes.request('/users/w', {
       method: 'PATCH', headers: { Cookie: await cookie('boss2', 'creator', ORG_A), 'Content-Type': 'application/json' },

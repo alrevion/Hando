@@ -161,7 +161,9 @@ apiRoutes.post('/users', requireRole('super_admin', 'creator'), async (c) => {
     // которое человек гасит сам.
     if (!already) return c.json({ error: 'this phone already belongs to a person; send them an invite instead', code: 'INVITE_REQUIRED' }, 409);
 
-    await c.env.DB.prepare('UPDATE org_memberships SET left_at = NULL, role = ? WHERE org_id = ? AND user_id = ?').bind(role, orgId, existing.id).run();
+    // confirmed_at проставляется сразу: заводит человека сам владелец, и он же
+    // подтверждающий. Ожидание одобрения нужно только тому, кто вступил ПО КОДУ.
+    await c.env.DB.prepare("UPDATE org_memberships SET left_at = NULL, role = ?, confirmed_at = ? WHERE org_id = ? AND user_id = ?").bind(role, nowIso(), orgId, existing.id).run();
     await logEvent(c.env.DB, { actorId: c.get('userId'), orgId, targetType: 'user', targetId: existing.id, action: 'membership_restored' });
     return c.json({ id: existing.id, phone: trimmed, name, role, telegram_username: username }, 201);
   }
@@ -174,7 +176,8 @@ apiRoutes.post('/users', requireRole('super_admin', 'creator'), async (c) => {
     await c.env.DB.batch([
       // users.role снята пересборкой 2b: роль живёт только в членстве.
       c.env.DB.prepare('INSERT INTO users (id, phone, name, telegram_username, current_org_id) VALUES (?, ?, ?, ?, ?)').bind(id, trimmed, name, username, orgId),
-      c.env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role) VALUES (?, ?, ?, ?)').bind(uuid(), orgId, id, role),
+      // confirmed_at сразу -- см. выше: подтверждает тот, кто заводит.
+      c.env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?, ?, ?, ?, ?)').bind(uuid(), orgId, id, role, nowIso()),
     ]);
   } catch {
     return c.json({ error: 'could not create user' }, 500);

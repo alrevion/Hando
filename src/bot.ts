@@ -19,6 +19,7 @@ import { nowIso, uuid } from './db';
 import { myAssignee, transitionAssignee } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage } from './telegram';
 import { drainOutbox } from './outbox';
+import { approveJoin, createOrg, ensureUser, joinByCode, rejectJoin } from './signup';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -26,7 +27,7 @@ const enc = new TextEncoder();
 
 export const botApp = new Hono<{ Bindings: Env }>();
 
-type TgUser = { id: number; username?: string };
+type TgUser = { id: number; username?: string; first_name?: string; last_name?: string };
 type Update = {
   message?: { chat: { id: number; type?: string }; from?: TgUser; text?: string };
   callback_query?: { id: string; from: TgUser; data?: string; message?: { chat: { id: number }; message_id: number } };
@@ -83,7 +84,29 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
 
-    const [action, taskId] = (cq.data ?? '').split(':');
+    const parts = (cq.data ?? '').split(':');
+    const [action] = parts;
+
+    // Заявки на вступление разбираются ОТДЕЛЬНО и раньше: у них второй сегмент
+    // -- организация, а не задача, и загрузчик задачи их бы отверг.
+    if (action === 'join_ok' || action === 'join_no') {
+      const [, orgId, applicantId] = parts;
+      const done = action === 'join_ok'
+        ? await approveJoin(c.env, who.userId, orgId, applicantId)
+        : await rejectJoin(c.env, who.userId, orgId, applicantId);
+      // Право подтверждать проверяется ВНУТРИ approveJoin/rejectJoin, а не
+      // здесь: сообщение с кнопкой живёт в Telegram и может быть переслано
+      // кому угодно.
+      await answerCallbackQuery(c.env, cq.id, done ? (action === 'join_ok' ? 'Принят' : 'Отклонён') : 'Заявка недоступна');
+      if (done && cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
+      if (done && action === 'join_ok') {
+        const tg = await c.env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?').bind(applicantId).first<{ telegram_user_id: string | null }>();
+        if (tg?.telegram_user_id) await sendMessage(c.env, tg.telegram_user_id, 'Вас приняли. /moe -- ваши задачи.');
+      }
+      return c.json({ ok: true });
+    }
+
+    const taskId = parts[1];
     const task = taskId
       ? await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').bind(taskId, who.orgId).first<import('./types').Task>()
       : null;
@@ -198,8 +221,76 @@ botApp.post('/webhook', async (c) => {
     return c.json({ ok: true });
   }
 
+  // ------------------------------------------------------- авторегистрация
+  //
+  // ВАЖНО: эта ветка идёт ДО whoIs, потому что регистрируется как раз тот, кого
+  // whoIs не находит. Прежнее правило «неизвестному -- молчание» защищало от
+  // оракула существования и здесь СНЯТО осознанно: без ответа незнакомцу
+  // регистрация невозможна в принципе. Оракула не возникает -- предложение
+  // зарегистрироваться одинаково для всех и не подтверждает ничьего наличия.
+  const text = (msg.text ?? '').trim();
+  const tgName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || msg.from.username || 'Без имени';
+
+  if (text === '/start' || text === '/начать') {
+    const userId = await ensureUser(c.env, String(msg.from.id), tgName, msg.from.username ?? null);
+    const known = await whoIs(c.env, msg.from);
+    await sendMessage(c.env, String(msg.chat.id), known
+      ? `Здравствуйте, ${tgName}. Вы уже подключены. /moe -- ваши задачи.`
+      : [
+          `Здравствуйте, ${tgName}.`,
+          '',
+          'Создать свою организацию: /создать Название',
+          'Вступить в существующую: /вступить КОД',
+        ].join('\n'));
+    void userId;
+    return c.json({ ok: true });
+  }
+
+  const createCmd = text.match(/^\/(?:создать|create)\s+(.{2,60})$/i);
+  if (createCmd) {
+    const userId = await ensureUser(c.env, String(msg.from.id), tgName, msg.from.username ?? null);
+    const { code } = await createOrg(c.env, userId, createCmd[1].trim());
+    await sendMessage(c.env, String(msg.chat.id), [
+      `Организация «${createCmd[1].trim()}» создана. Вы её владелец.`,
+      '',
+      `Код для сотрудников: ${code}`,
+      'Они вступают командой /вступить ' + code + ' -- и вы подтверждаете каждого.',
+    ].join('\n'));
+    return c.json({ ok: true });
+  }
+
+  const joinCmd = text.match(/^\/(?:вступить|join)\s+([A-Za-z0-9]{4,12})$/i);
+  if (joinCmd) {
+    const userId = await ensureUser(c.env, String(msg.from.id), tgName, msg.from.username ?? null);
+    const res = await joinByCode(c.env, userId, joinCmd[1]);
+    if (!res.ok) {
+      // Неизвестный код и «вы уже подали заявку» отвечаются РАЗНО намеренно:
+      // первое -- про код, второе -- про самого спрашивающего, и про себя он и
+      // так всё знает. Оракула организаций это не создаёт.
+      await sendMessage(c.env, String(msg.chat.id),
+        res.reason === 'unknown_code' ? 'Код не подошёл. Проверьте у того, кто его дал.'
+        : res.reason === 'already_member' ? 'Вы уже в этой организации.'
+        : 'Заявка уже подана, ждём подтверждения.');
+      return c.json({ ok: true });
+    }
+    await sendMessage(c.env, String(msg.chat.id), `Заявка в «${res.orgName}» отправлена. Ждём подтверждения.`);
+    if (res.ownerTgId) {
+      await sendMessage(c.env, res.ownerTgId, `К вам просится: ${res.applicantName}`, {
+        inline_keyboard: [[
+          { text: '✅ Принять', callback_data: `join_ok:${res.orgId}:${userId}` },
+          { text: '✖️ Отклонить', callback_data: `join_no:${res.orgId}:${userId}` },
+        ]],
+      });
+    }
+    return c.json({ ok: true });
+  }
+
   const who = await whoIs(c.env, msg.from);
-  if (!who) return c.json({ ok: true }); // неизвестный -- молчим
+  if (!who) {
+    // Подключился, но организации ещё нет -- подсказываем, а не молчим.
+    await sendMessage(c.env, String(msg.chat.id), 'Сначала создайте организацию (/создать Название) или вступите по коду (/вступить КОД).');
+    return c.json({ ok: true });
+  }
 
   if (msg.text === '/moe' || msg.text === '/мое' || msg.text === '/моё') {
     // «Моё» -- ОДИН список на человека, а не по одному на организацию: у него

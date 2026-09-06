@@ -54,13 +54,37 @@ describe('шаг 4a: границы третьей двери', () => {
     expect(res.status).toBe(200);
   });
 
-  it('неизвестный отправитель не порождает ответа -- молчание, а не «вы не зарегистрированы»', async () => {
+  it('незнакомцу предлагают зарегистрироваться, и это НЕ оракул существования', async () => {
+    // Правило «неизвестному -- молчание» СНЯТО 2026-09-06 вместе с введением
+    // авторегистрации: без ответа незнакомцу зарегистрироваться невозможно.
+    //
+    // Оракула при этом не возникает, и вот его определение: ответ не должен
+    // зависеть от того, заведён ли отправитель в системе. Ниже это и
+    // проверяется -- два РАЗНЫХ незнакомца получают одно и то же.
     const env = await world();
     const spy = tg();
-    await (hook(env, { message: { chat: { id: 777, type: 'private' }, from: { id: 777 }, text: '/moe' } }));
-    // Ответ «вы не зарегистрированы» -- оракул существования: по нему перебором
-    // узнают, какие telegram_user_id заведены в системе.
-    expect(calls(spy).filter(([u]) => u.includes('/sendMessage'))).toHaveLength(0);
+    await hook(env, { message: { chat: { id: 777, type: 'private' }, from: { id: 777 }, text: '/start' } });
+    await hook(env, { message: { chat: { id: 888, type: 'private' }, from: { id: 888 }, text: '/start' } });
+
+    const texts = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)).text as string);
+    expect(texts).toHaveLength(2);
+    // Ответ не содержит ничьих имён и не подтверждает наличия кого-либо.
+    for (const t of texts) {
+      expect(t).toContain('создать');
+      expect(t).not.toContain('Директор');
+      expect(t).not.toContain('не зарегистрированы');
+    }
+  });
+
+  it('незнакомец без организации не получает НИЧЕГО из чужих данных', async () => {
+    const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss', title: 'Секретное поручение' }]);
+    const spy = tg();
+    // Подключился, но организации нет: команда «мои задачи» не должна ничего
+    // показать -- resolveOrgId вернёт null, потому что членства нет.
+    await hook(env, { message: { chat: { id: 777, type: 'private' }, from: { id: 777 }, text: '/start' } });
+    await hook(env, { message: { chat: { id: 777, type: 'private' }, from: { id: 777 }, text: '/moe' } });
+    const texts = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)).text as string);
+    expect(texts.join(' ')).not.toContain('Секретное');
   });
 
   it('подключение по одноразовой ссылке: токен гасится, накопленное доставляется', async () => {

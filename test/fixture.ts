@@ -69,7 +69,9 @@ export async function envWith(data: FakeData): Promise<Env> {
     );
     for (const org of orgs) {
       stmts.push(
-        db.prepare('INSERT INTO org_memberships (id, org_id, user_id, role) VALUES (?,?,?,?)')
+        // confirmed_at проставлен: это ДЕЙСТВУЮЩИЙ сотрудник, а не заявка на
+        // вступление. Заявки заводятся тестами регистрации явно, с NULL.
+        db.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?,?,?,?,datetime('now'))")
           .bind(`${org}:${u.id}`, org, u.id, u.role),
       );
     }
@@ -100,7 +102,7 @@ export async function envWith(data: FakeData): Promise<Env> {
     // ссылается задача, принадлежала бы никому и org-предикаты вели бы себя
     // непредсказуемо.
     stmts.push(db.prepare('INSERT INTO users (id, phone, name, telegram_user_id, current_org_id) VALUES (?,?,?,?,?)').bind(id, `+00${phone++}`, id, `tg-${id}`, ORG_A));
-    stmts.push(db.prepare('INSERT INTO org_memberships (id, org_id, user_id, role) VALUES (?,?,?,?)').bind(`${ORG_A}:${id}`, ORG_A, id, 'admin'));
+    stmts.push(db.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?,?,?,?,datetime('now'))").bind(`${ORG_A}:${id}`, ORG_A, id, 'admin'));
   }
   for (const p of projects.values()) {
     stmts.push(db.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id, archived_at) VALUES (?,?,?,?,?,?)').bind(p.id, p.org, p.id, p.by, p.chat, p.archived));

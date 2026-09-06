@@ -76,22 +76,29 @@ export async function resolveOrgId(db: Env['DB'], userId: string): Promise<strin
   if (u?.current_org_id) {
     // current мог указывать на организацию, из которой человека уже отозвали.
     const still = await db
-      .prepare('SELECT 1 FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL')
+      .prepare('SELECT 1 FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
       .bind(u.current_org_id, userId)
       .first();
     if (still) return u.current_org_id;
   }
   const { results } = await db
-    .prepare('SELECT org_id FROM org_memberships WHERE user_id = ? AND left_at IS NULL')
+    .prepare('SELECT org_id FROM org_memberships WHERE user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
     .bind(userId)
     .all<{ org_id: string }>();
   return results.length === 1 ? results[0].org_id : null;
 }
 
-/** Роль человека В ЗАДАННОЙ организации. null -- членства нет или оно отозвано. */
+/**
+ * Роль человека В ЗАДАННОЙ организации.
+ * null -- членства нет, оно отозвано ИЛИ ещё не подтверждено.
+ *
+ * confirmed_at обязателен здесь, а не только на экране заявок: вступивший по
+ * коду получал бы доступ мгновенно, и подтверждение владельцем стало бы
+ * декорацией. Код раздают в общем чате -- сам по себе он не должен пускать.
+ */
 export async function membershipRole(db: Env['DB'], orgId: string, userId: string): Promise<Role | null> {
   const row = await db
-    .prepare('SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL')
+    .prepare('SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
     .bind(orgId, userId)
     .first<{ role: Role }>();
   return row?.role ?? null;
