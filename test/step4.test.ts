@@ -66,13 +66,16 @@ describe('шаг 4a: границы третьей двери', () => {
     await hook(env, { message: { chat: { id: 777, type: 'private' }, from: { id: 777 }, text: '/start' } });
     await hook(env, { message: { chat: { id: 888, type: 'private' }, from: { id: 888 }, text: '/start' } });
 
-    const texts = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)).text as string);
-    expect(texts).toHaveLength(2);
-    // Ответ не содержит ничьих имён и не подтверждает наличия кого-либо.
-    for (const t of texts) {
-      expect(t).toContain('создать');
-      expect(t).not.toContain('Директор');
-      expect(t).not.toContain('не зарегистрированы');
+    const bodies = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)));
+    expect(bodies).toHaveLength(2);
+    for (const b of bodies) {
+      // Регистрация предлагается КНОПКАМИ, а не диктовкой команд.
+      const labels = (b.reply_markup?.inline_keyboard ?? []).flat().map((x: { text: string }) => x.text).join(' ');
+      expect(labels).toContain('Создать организацию');
+      expect(labels).toContain('Вступить по коду');
+      // Ответ не содержит ничьих имён и не подтверждает наличия кого-либо.
+      expect(b.text).not.toContain('Директор');
+      expect(b.text).not.toContain('не зарегистрированы');
     }
   });
 

@@ -17,9 +17,13 @@ import { Hono } from 'hono';
 import type { Env, Role } from './types';
 import { nowIso, uuid } from './db';
 import { myAssignee, transitionAssignee } from './assignees';
-import { answerCallbackQuery, editMessageReplyMarkup, sendMessage } from './telegram';
+import { answerCallbackQuery, editMessageReplyMarkup, editMessageText, sendMessage } from './telegram';
 import { drainOutbox } from './outbox';
 import { approveJoin, createOrg, ensureUser, joinByCode, rejectJoin } from './signup';
+import {
+  confirmDeleteScreen, deleteOrg, getAwaiting, leaveOrg, mainScreen, myOrgs,
+  orgScreen, orgsScreen, renameOrg, setAwaiting, switchOrg, type Screen,
+} from './menu';
 import { download, extractMedia, storeByFileId, type Media } from './media';
 import { parseTask, transcribe, type Draft } from './parse';
 import { buildAssignees } from './assignees';
@@ -144,6 +148,43 @@ async function createFromDraft(
   return taskId;
 }
 
+/**
+ * «Моё» -- ОДИН список на человека, а не по одному на организацию: у него один
+ * Telegram-аккаунт, и разделять список по арендаторам значило бы заставлять
+ * переключаться, чтобы увидеть свой день целиком.
+ */
+async function myTasksText(env: Env, userId: string): Promise<string> {
+  const { results } = await env.DB.prepare(
+    `SELECT t.title, o.name AS org_name, a.due_at
+     FROM task_assignees a
+     JOIN tasks t ON t.id = a.task_id
+     JOIN orgs o ON o.id = a.org_id
+     -- Действующее членство обязательно: уволенный не должен видеть задачи
+     -- бывшего работодателя. Строка task_assignees отзыв не переживает по
+     -- смыслу, но физически остаётся -- задачи и события на неё ссылаются.
+     JOIN org_memberships m ON m.org_id = a.org_id AND m.user_id = a.user_id AND m.left_at IS NULL
+     WHERE a.user_id = ? AND a.state IN ('pending','accepted','rejected') AND t.status <> 'archived'
+     ORDER BY a.due_at IS NULL, a.due_at`,
+  ).bind(userId).all<{ title: string; org_name: string; due_at: string | null }>();
+
+  return results.length
+    ? ['Ваши задачи:', ...results.map((r) => `• ${r.title} — ${r.org_name}${r.due_at ? ` (до ${r.due_at.slice(0, 10)})` : ''}`)].join('\n')
+    : 'Активных задач нет.';
+}
+
+/**
+ * Показывает экран меню: правит прежнее сообщение или шлёт новое.
+ *
+ * Правка на месте -- не украшение: без неё каждое нажатие оставляет в чате ещё
+ * одно меню, и через минуту переписка состоит из них. Если прежнее сообщение
+ * удалено человеком, правка не пройдёт -- тогда шлём новое и запоминаем его.
+ */
+async function showMenu(env: Env, chatId: string, userId: string, screen: Screen, editId?: string): Promise<void> {
+  if (editId && (await editMessageText(env, chatId, editId, screen.text, screen.keyboard))) return;
+  const id = await sendMessage(env, chatId, screen.text, screen.keyboard);
+  if (id) await env.DB.prepare('UPDATE users SET menu_message_id = ? WHERE id = ?').bind(id, userId).run();
+}
+
 botApp.post('/webhook', async (c) => {
   // Секрет проверяется constant-time и ПЕРВЫМ: без него роут -- открытая дверь
   // для кого угодно, кто знает адрес воркера.
@@ -160,6 +201,82 @@ botApp.post('/webhook', async (c) => {
     const cq = update.callback_query;
     // answerCallbackQuery отправляется НА КАЖДОЕ нажатие, включая отвергнутые:
     // без него у нажавшего крутится спиннер до таймаута.
+    // Меню разбирается ДО whoIs: у человека может ещё не быть организации, а
+    // кнопки «создать» и «вступить» нужны именно ему.
+    if ((cq.data ?? '').startsWith('m:')) {
+      const uid = await c.env.DB.prepare('SELECT id, name FROM users WHERE telegram_user_id = ?')
+        .bind(String(cq.from.id)).first<{ id: string; name: string }>();
+      if (!uid) {
+        await answerCallbackQuery(c.env, cq.id);
+        return c.json({ ok: true });
+      }
+      const chatId = String(cq.message?.chat.id ?? cq.from.id);
+      const editId = cq.message ? String(cq.message.message_id) : undefined;
+      const [, verb, arg] = (cq.data ?? '').split(':');
+      const orgs = await myOrgs(c.env, uid.id);
+      const org = arg ? orgs.find((o) => o.id === arg) : undefined;
+
+      // Все действия ниже проверяют право ВНУТРИ своих функций: сообщение с
+      // кнопкой живёт в Telegram и может быть переслано кому угодно.
+      switch (verb) {
+        case 'main':
+          await showMenu(c.env, chatId, uid.id, mainScreen(uid.name, orgs), editId);
+          break;
+        case 'orgs':
+          await showMenu(c.env, chatId, uid.id, orgsScreen(orgs), editId);
+          break;
+        case 'org':
+          if (org) await showMenu(c.env, chatId, uid.id, orgScreen(org, uid.id), editId);
+          break;
+        case 'new':
+          await setAwaiting(c.env, uid.id, { await: 'new' });
+          await showMenu(c.env, chatId, uid.id, { text: 'Как назвать организацию? Напишите название.', keyboard: { inline_keyboard: [[{ text: '‹ Отмена', callback_data: 'm:main' }]] } }, editId);
+          break;
+        case 'join':
+          await setAwaiting(c.env, uid.id, { await: 'join' });
+          await showMenu(c.env, chatId, uid.id, { text: 'Пришлите код организации.', keyboard: { inline_keyboard: [[{ text: '‹ Отмена', callback_data: 'm:main' }]] } }, editId);
+          break;
+        case 'ren':
+          if (org) {
+            await setAwaiting(c.env, uid.id, { await: 'ren', org: org.id });
+            await showMenu(c.env, chatId, uid.id, { text: `Новое название для «${org.name}»?`, keyboard: { inline_keyboard: [[{ text: '‹ Отмена', callback_data: `m:org:${org.id}` }]] } }, editId);
+          }
+          break;
+        case 'sw':
+          if (arg && (await switchOrg(c.env, uid.id, arg))) {
+            await answerCallbackQuery(c.env, cq.id, 'Переключено');
+            await showMenu(c.env, chatId, uid.id, mainScreen(uid.name, await myOrgs(c.env, uid.id)), editId);
+            return c.json({ ok: true });
+          }
+          break;
+        case 'del':
+          if (org) await showMenu(c.env, chatId, uid.id, confirmDeleteScreen(org), editId);
+          break;
+        case 'delok':
+          if (arg && (await deleteOrg(c.env, uid.id, arg))) {
+            await answerCallbackQuery(c.env, cq.id, 'Удалено');
+            await showMenu(c.env, chatId, uid.id, mainScreen(uid.name, await myOrgs(c.env, uid.id)), editId);
+            return c.json({ ok: true });
+          }
+          break;
+        case 'leave':
+          if (arg && (await leaveOrg(c.env, uid.id, arg))) {
+            await answerCallbackQuery(c.env, cq.id, 'Вы вышли');
+            await showMenu(c.env, chatId, uid.id, mainScreen(uid.name, await myOrgs(c.env, uid.id)), editId);
+            return c.json({ ok: true });
+          }
+          break;
+        case 'tasks': {
+          await answerCallbackQuery(c.env, cq.id);
+          const me = await whoIs(c.env, cq.from);
+          if (me) await sendMessage(c.env, chatId, await myTasksText(c.env, me.userId));
+          return c.json({ ok: true });
+        }
+      }
+      await answerCallbackQuery(c.env, cq.id);
+      return c.json({ ok: true });
+    }
+
     const who = await whoIs(c.env, cq.from);
     if (!who) {
       await answerCallbackQuery(c.env, cq.id);
@@ -313,49 +430,53 @@ botApp.post('/webhook', async (c) => {
   const text = (msg.text ?? '').trim();
   const tgName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || msg.from.username || 'Без имени';
 
-  if (text === '/start' || text === '/начать') {
-    const userId = await ensureUser(c.env, String(msg.from.id), tgName, msg.from.username ?? null);
-    const known = await whoIs(c.env, msg.from);
-    await sendMessage(c.env, String(msg.chat.id), known
-      ? `Здравствуйте, ${tgName}. Вы уже подключены. /moe -- ваши задачи.`
-      : [
-          `Здравствуйте, ${tgName}.`,
-          '',
-          'Создать свою организацию: /создать Название',
-          'Вступить в существующую: /вступить КОД',
-        ].join('\n'));
-    void userId;
+  const userId = await ensureUser(c.env, String(msg.from.id), tgName, msg.from.username ?? null);
+
+  if (text === '/start' || text === '/начать' || text === '/menu' || text === '/меню') {
+    await setAwaiting(c.env, userId, null);
+    await showMenu(c.env, String(msg.chat.id), userId, mainScreen(tgName, await myOrgs(c.env, userId)));
     return c.json({ ok: true });
   }
 
-  const createCmd = text.match(/^\/(?:создать|create)\s+(.{2,60})$/i);
-  if (createCmd) {
-    const userId = await ensureUser(c.env, String(msg.from.id), tgName, msg.from.username ?? null);
-    const { code } = await createOrg(c.env, userId, createCmd[1].trim());
-    await sendMessage(c.env, String(msg.chat.id), [
-      `Организация «${createCmd[1].trim()}» создана. Вы её владелец.`,
-      '',
-      `Код для сотрудников: ${code}`,
-      'Они вступают командой /вступить ' + code + ' -- и вы подтверждаете каждого.',
-    ].join('\n'));
-    return c.json({ ok: true });
-  }
+  // ------------------------------------------------- ответ на вопрос меню
+  //
+  // Печатать человеку приходится только то, чего бот знать не может: название
+  // организации или код. Всё остальное -- кнопки.
+  const awaiting = await getAwaiting(c.env, userId);
+  if (awaiting && text) {
+    await setAwaiting(c.env, userId, null);
+    const chatId = String(msg.chat.id);
 
-  const joinCmd = text.match(/^\/(?:вступить|join)\s+([A-Za-z0-9]{4,12})$/i);
-  if (joinCmd) {
-    const userId = await ensureUser(c.env, String(msg.from.id), tgName, msg.from.username ?? null);
-    const res = await joinByCode(c.env, userId, joinCmd[1]);
+    if (awaiting.await === 'new') {
+      const { code } = await createOrg(c.env, userId, text.slice(0, 60));
+      await sendMessage(c.env, chatId, [
+        `Организация «${text.slice(0, 60)}» создана. Вы её владелец.`,
+        '',
+        `Код для сотрудников: ${code}`,
+        'Каждого вступившего вы подтверждаете кнопкой.',
+      ].join('\n'));
+      await showMenu(c.env, chatId, userId, mainScreen(tgName, await myOrgs(c.env, userId)));
+      return c.json({ ok: true });
+    }
+
+    if (awaiting.await === 'ren') {
+      const ok = await renameOrg(c.env, userId, awaiting.org, text);
+      await sendMessage(c.env, chatId, ok ? 'Переименовано.' : 'Переименовать не удалось.');
+      await showMenu(c.env, chatId, userId, orgsScreen(await myOrgs(c.env, userId)));
+      return c.json({ ok: true });
+    }
+
+    // awaiting.await === 'join'
+    const res = await joinByCode(c.env, userId, text);
     if (!res.ok) {
-      // Неизвестный код и «вы уже подали заявку» отвечаются РАЗНО намеренно:
-      // первое -- про код, второе -- про самого спрашивающего, и про себя он и
-      // так всё знает. Оракула организаций это не создаёт.
-      await sendMessage(c.env, String(msg.chat.id),
+      await sendMessage(c.env, chatId,
         res.reason === 'unknown_code' ? 'Код не подошёл. Проверьте у того, кто его дал.'
         : res.reason === 'already_member' ? 'Вы уже в этой организации.'
         : 'Заявка уже подана, ждём подтверждения.');
+      await showMenu(c.env, chatId, userId, mainScreen(tgName, await myOrgs(c.env, userId)));
       return c.json({ ok: true });
     }
-    await sendMessage(c.env, String(msg.chat.id), `Заявка в «${res.orgName}» отправлена. Ждём подтверждения.`);
+    await sendMessage(c.env, chatId, `Заявка в «${res.orgName}» отправлена. Ждём подтверждения.`);
     if (res.ownerTgId) {
       await sendMessage(c.env, res.ownerTgId, `К вам просится: ${res.applicantName}`, {
         inline_keyboard: [[
@@ -369,32 +490,14 @@ botApp.post('/webhook', async (c) => {
 
   const who = await whoIs(c.env, msg.from);
   if (!who) {
-    // Подключился, но организации ещё нет -- подсказываем, а не молчим.
-    await sendMessage(c.env, String(msg.chat.id), 'Сначала создайте организацию (/создать Название) или вступите по коду (/вступить КОД).');
+    // Подключился, но организации ещё нет -- показываем меню с кнопками, а не
+    // молчим и не диктуем команды.
+    await showMenu(c.env, String(msg.chat.id), userId, mainScreen(tgName, []));
     return c.json({ ok: true });
   }
 
   if (msg.text === '/moe' || msg.text === '/мое' || msg.text === '/моё') {
-    // «Моё» -- ОДИН список на человека, а не по одному на организацию: у него
-    // один Telegram-аккаунт, и разделять его список по арендаторам значило бы
-    // заставлять переключаться, чтобы увидеть свой день целиком.
-    const { results } = await c.env.DB.prepare(
-      `SELECT t.title, o.name AS org_name, a.due_at
-       FROM task_assignees a
-       JOIN tasks t ON t.id = a.task_id
-       JOIN orgs o ON o.id = a.org_id
-       -- Действующее членство обязательно: уволенный не должен видеть задачи
-       -- бывшего работодателя. Строка task_assignees отзыв не переживает по
-       -- смыслу, но физически остаётся -- задачи и события на неё ссылаются.
-       JOIN org_memberships m ON m.org_id = a.org_id AND m.user_id = a.user_id AND m.left_at IS NULL
-       WHERE a.user_id = ? AND a.state IN ('pending','accepted','rejected') AND t.status <> 'archived'
-       ORDER BY a.due_at IS NULL, a.due_at`,
-    ).bind(who.userId).all<{ title: string; org_name: string; due_at: string | null }>();
-
-    const text = results.length
-      ? ['Ваши задачи:', ...results.map((r) => `• ${r.title} — ${r.org_name}${r.due_at ? ` (до ${r.due_at.slice(0, 10)})` : ''}`)].join('\n')
-      : 'Активных задач нет.';
-    await sendMessage(c.env, String(msg.chat.id), text);
+    await sendMessage(c.env, String(msg.chat.id), await myTasksText(c.env, who.userId));
     return c.json({ ok: true });
   }
 

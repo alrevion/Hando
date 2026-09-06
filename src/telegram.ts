@@ -58,6 +58,31 @@ export async function answerCallbackQuery(env: Env, callbackQueryId: string, tex
   }
 }
 
+/**
+ * Правит текст и клавиатуру уже отправленного сообщения.
+ *
+ * Меню правится НА МЕСТЕ, а не пересылается: иначе каждое нажатие оставляет в
+ * чате ещё одно одинаковое меню, и через минуту переписка состоит из них.
+ */
+export async function editMessageText(
+  env: Env,
+  chatId: string,
+  messageId: string,
+  text: string,
+  replyMarkup?: InlineKeyboard,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: Number(messageId), text, reply_markup: replyMarkup ?? { inline_keyboard: [] } }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function deleteMessage(env: Env, chatId: string, messageId: string): Promise<void> {
   try {
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/deleteMessage`, {
