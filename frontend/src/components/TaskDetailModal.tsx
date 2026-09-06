@@ -6,6 +6,7 @@ import { userBadgeColor } from '../lib/badgeColor';
 import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
 import { formatDeadlineDays, isReviewOverdue, isTaskOverdue } from '../lib/overdue';
 import { Lightbox } from './Lightbox';
+import { assigneeKey } from '../lib/tasks';
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -94,7 +95,7 @@ export function TaskDetailModal({ task, responsible, onClose }: TaskDetailModalP
             {PRIORITY_LABEL[task.priority]}
           </span>
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${userBadgeColor(task.responsible_user_id)}`}
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${userBadgeColor(assigneeKey(task))}`}
           >
             <UserIcon className="h-3.5 w-3.5" aria-hidden="true" />
             {responsible ? responsible.name : 'Unassigned'}

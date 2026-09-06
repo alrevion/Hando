@@ -5,6 +5,7 @@ import { useOrgTasks } from '../hooks/useOrgTasks';
 import { PRIORITIES, PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
 import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
 import { TaskDetailModal } from './TaskDetailModal';
+import { isMine } from '../lib/tasks';
 
 // Порядок срочности берётся из самого PRIORITIES: он уже перечислен от «Срочно»
 // к «Низко». Отдельная таблица порядка означала бы вторую копию, которую однажды
@@ -43,7 +44,7 @@ export function MyTasksView({ user }: { user: User }) {
 
   const queue = useMemo(() => {
     const rows = tasks
-      .filter(({ task }) => task.responsible_user_id === user.id && (task.status === 'todo' || task.status === 'in_progress'))
+      .filter(({ task }) => isMine(task, user.id) && (task.status === 'todo' || task.status === 'in_progress'))
       .map((row) => {
         const dep = row.task.depends_on_task_id ? byId.get(row.task.depends_on_task_id) : undefined;
         // То же правило, что на доске: нет строки, done или archived -- не держит.
@@ -67,7 +68,7 @@ export function MyTasksView({ user }: { user: User }) {
   // Сданное на проверку из очереди убрано (делать там нечего), но счётчик нужен:
   // иначе задача исчезает с экрана и выглядит потерянной.
   const awaitingReview = tasks.filter(
-    ({ task }) => task.responsible_user_id === user.id && task.status === 'done' && !task.confirmed_at,
+    ({ task }) => isMine(task, user.id) && task.status === 'done' && !task.confirmed_at,
   ).length;
 
   return (

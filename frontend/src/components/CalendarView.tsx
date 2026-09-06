@@ -5,6 +5,7 @@ import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
 import { PRIORITY_DOT } from '../lib/priority';
 import { isTaskOverdue } from '../lib/overdue';
 import { TaskDetailModal } from './TaskDetailModal';
+import { assigneeKey } from '../lib/tasks';
 
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const MAX_CHIPS_PER_DAY = 3;
@@ -166,7 +167,7 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
       {viewing ? (
         <TaskDetailModal
           task={viewing}
-          responsible={usersById.get(viewing.responsible_user_id)}
+          responsible={usersById.get(assigneeKey(viewing))}
           onClose={() => setViewing(null)}
         />
       ) : null}

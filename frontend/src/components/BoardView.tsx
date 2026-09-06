@@ -22,6 +22,7 @@ import { TaskCard } from './TaskCard';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskFormModal } from './TaskFormModal';
 import { RejectTaskModal } from './RejectTaskModal';
+import { assigneeKey } from '../lib/tasks';
 
 type DeadlineSort = 'asc' | 'desc' | null;
 
@@ -328,7 +329,7 @@ export function BoardView({ project, user, initialTask }: BoardViewProps) {
                   <TaskCard
                     key={task.id}
                     task={task}
-                    responsible={memberById.get(task.responsible_user_id)}
+                    responsible={memberById.get(assigneeKey(task))}
                     canManage={canManage}
                     currentUserId={user.id}
                     blockedByTitle={blockedByTitle(task)}
@@ -349,7 +350,7 @@ export function BoardView({ project, user, initialTask }: BoardViewProps) {
       {viewingTask ? (
         <TaskDetailModal
           task={viewingTask}
-          responsible={memberById.get(viewingTask.responsible_user_id)}
+          responsible={memberById.get(assigneeKey(viewingTask))}
           onClose={() => setViewingTask(null)}
         />
       ) : null}

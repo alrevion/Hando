@@ -555,8 +555,33 @@ apiRoutes.get('/projects/:projectId/tasks', requireProjectAccess('project'), asy
     "SELECT * FROM tasks WHERE project_id = ? AND org_id = ? AND status IN ('todo','in_progress','done') ORDER BY created_at",
   )
     .bind(c.req.param('projectId'), c.get('orgId'))
-    .all();
-  return c.json(results);
+    .all<Record<string, unknown>>();
+
+  // Адресаты приезжают ВМЕСТЕ с задачами, одним запросом на доску.
+  //
+  // До contract-релиза шага 3 исполнитель был колонкой tasks.responsible_user_id,
+  // и фронту хватало её. Колонки больше нет -- «кто делает» живёт строками
+  // task_assignees, потому что адресатов бывает много. Отдавать их отдельным
+  // запросом на каждую карточку значило бы N+1 на доске, которую опрашивают
+  // каждые 5 секунд.
+  const { results: rows } = await c.env.DB.prepare(
+    `SELECT a.task_id, a.user_id, a.state, a.due_at, u.name AS user_name
+     FROM task_assignees a
+     JOIN tasks t ON t.id = a.task_id
+     JOIN users u ON u.id = a.user_id
+     WHERE t.project_id = ? AND a.org_id = ?
+     ORDER BY a.created_at`,
+  )
+    .bind(c.req.param('projectId'), c.get('orgId'))
+    .all<{ task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }>();
+
+  const byTask = new Map<string, unknown[]>();
+  for (const r of rows) {
+    const list = byTask.get(r.task_id) ?? [];
+    list.push({ user_id: r.user_id, user_name: r.user_name, state: r.state, due_at: r.due_at });
+    byTask.set(r.task_id, list);
+  }
+  return c.json(results.map((t) => ({ ...t, assignees: byTask.get(t.id as string) ?? [] })));
 });
 
 // ------------------------------------------------------------------------- tasks

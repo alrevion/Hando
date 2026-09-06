@@ -6,6 +6,7 @@ import { userBadgeColor } from '../lib/badgeColor';
 import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
 import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
 import { TaskDetailModal } from './TaskDetailModal';
+import { isMine } from '../lib/tasks';
 
 const STAGE_LABEL: Record<'todo' | 'in_progress' | 'done', string> = {
   todo: 'Не начато',
@@ -38,7 +39,7 @@ export function PeopleView() {
 
   const rows = useMemo<PersonRow[]>(() => {
     const list = users.map((user) => {
-      const own = tasks.filter(({ task }) => task.responsible_user_id === user.id);
+      const own = tasks.filter(({ task }) => isMine(task, user.id));
       return {
         user,
         todo: own.filter(({ task }) => task.status === 'todo'),

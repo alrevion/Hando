@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar, type NavView } from './components/Sidebar';
+import { MobileShell } from './components/MobileShell';
+import { useIsMobile } from './hooks/useIsMobile';
 import { MyTasksView } from './components/MyTasksView';
 import { PeopleView } from './components/PeopleView';
 import { CalendarView } from './components/CalendarView';
@@ -24,6 +26,7 @@ function AuthenticatedApp() {
   // забытое гашение давало два экрана одновременно.
   const [view, setView] = useState<NavView>('board');
   const [deepLinkTask, setDeepLinkTask] = useState<Task | null>(null);
+  const isMobile = useIsMobile();
 
   function loadProjects(selectId?: string) {
     getProjects()
@@ -55,6 +58,21 @@ function AuthenticatedApp() {
   }, []);
 
   if (!user) return null; // AppShell guarantees user is set here
+
+  // Раскладка выбирается по ШИРИНЕ, а не по тому, открыто ли из Telegram:
+  // приложение бывает и в браузере на телефоне, и на планшете в мессенджере.
+  // Ниже 1024px -- колонка с нижней навигацией, выше -- боковая панель.
+  if (isMobile) {
+    return (
+      <MobileShell
+        user={user}
+        projects={projects}
+        selectedProject={projects.find((p) => p.id === selectedProjectId) ?? null}
+        deepLinkTask={deepLinkTask}
+        onReloadProjects={() => loadProjects()}
+      />
+    );
+  }
 
   const canManage = user.role === 'creator' || user.role === 'super_admin';
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? null;

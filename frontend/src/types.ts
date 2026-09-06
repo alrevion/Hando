@@ -25,6 +25,14 @@ export interface User {
   org_name?: string;
 }
 
+/** Строка адресата: у каждого своё состояние и свой срок. */
+export interface Assignee {
+  user_id: string;
+  user_name: string;
+  state: 'pending' | 'accepted' | 'done' | 'confirmed' | 'rejected' | 'declined';
+  due_at: string | null;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -40,7 +48,11 @@ export interface Task {
   title: string;
   description: string;
   content_blocks: string | null;
-  responsible_user_id: string;
+  // Кто делает. Адресатов бывает много (рассылка на 14 человек), поэтому это
+  // список, а не колонка: tasks.responsible_user_id снята contract-релизом.
+  assignees: Assignee[];
+  author_id: string | null;
+  kind: 'single' | 'each' | 'any' | 'ack';
   status: TaskStatus;
   priority: Priority;
   deadline: string | null;

@@ -46,7 +46,9 @@ function toComposeBlocks(task: Task | undefined): ComposeBlock[] {
 
 export function TaskFormModal({ task, members, otherTasks, onClose, onSubmit }: TaskFormModalProps) {
   const [title, setTitle] = useState(task?.title ?? '');
-  const [responsibleId, setResponsibleId] = useState(task?.responsible_user_id ?? '');
+  // Форма правит ОДНОГО адресата: рассылку на нескольких ставят голосом или
+  // текстом в боте, а доска остаётся простой. Берём первого из списка.
+  const [responsibleId, setResponsibleId] = useState(task?.assignees?.[0]?.user_id ?? '');
   const [deadline, setDeadline] = useState(task?.deadline ?? '');
   const [priority, setPriority] = useState<Priority>(task?.priority ?? 'medium');
   const [dependsOn, setDependsOn] = useState(task?.depends_on_task_id ?? '');

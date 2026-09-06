@@ -4,6 +4,7 @@ import type { Task, User } from '../types';
 import { userBadgeColor } from '../lib/badgeColor';
 import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
 import { formatDeadlineDays, isReviewOverdue, isTaskOverdue } from '../lib/overdue';
+import { assigneeKey, isMine } from '../lib/tasks';
 
 interface TaskCardProps {
   task: Task;
@@ -59,7 +60,9 @@ export function TaskCard({
   // The "blocked" arrow is ALSO responsible-person-only: a bystander (or
   // Creator just looking at someone else's card) shouldn't see any advance
   // affordance at all, whether it's actionable or blocked.
-  const isResponsible = currentUserId === task.responsible_user_id;
+  // «Моя ли это задача» -- есть ли моя строка среди адресатов. У рассылки их
+  // много, и сравнение с одним человеком тут больше не работает.
+  const isResponsible = isMine(task, currentUserId);
   const canMove = isResponsible && !blockedByTitle;
   const advanceLabel = !isResponsible
     ? undefined
@@ -105,7 +108,7 @@ export function TaskCard({
 
       <div className="flex min-w-0 items-center gap-1.5">
         <span
-          className={`inline-flex min-w-0 items-center gap-1 truncate rounded-full px-2 py-0.5 text-xs font-medium ${userBadgeColor(task.responsible_user_id)}`}
+          className={`inline-flex min-w-0 items-center gap-1 truncate rounded-full px-2 py-0.5 text-xs font-medium ${userBadgeColor(assigneeKey(task))}`}
         >
           <UserIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
           <span className="truncate">{responsible ? responsible.name : 'Unassigned'}</span>

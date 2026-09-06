@@ -23,6 +23,43 @@ export function initData(): string | null {
   return webApp()?.initData ?? null;
 }
 
+/**
+ * Переносит тему Telegram в CSS-переменные.
+ *
+ * Мини-приложение обязано выглядеть частью мессенджера: у человека там тёмная
+ * тема -- значит и здесь тёмная, причём ТЕХ ЖЕ оттенков. Своя палитра поверх
+ * чужой темы читается как чужеродное окно.
+ *
+ * Значения по умолчанию -- на случай открытия в браузере, где themeParams нет.
+ */
+export function applyTelegramTheme(): void {
+  const w = (window as unknown as { Telegram?: { WebApp?: WebApp } }).Telegram?.WebApp;
+  const p = w?.themeParams;
+  const dark = w?.colorScheme === 'dark';
+  const root = document.documentElement;
+
+  // color-scheme нужен браузеру, чтобы системные элементы (скроллбары, поля
+  // ввода) не остались светлыми на тёмном фоне.
+  root.style.colorScheme = dark ? 'dark' : 'light';
+  root.dataset.theme = dark ? 'dark' : 'light';
+  if (!p) return;
+
+  const map: Record<string, string | undefined> = {
+    '--tg-bg': p.bg_color,
+    '--tg-text': p.text_color,
+    '--tg-hint': p.hint_color,
+    '--tg-link': p.link_color,
+    '--tg-button': p.button_color,
+    '--tg-button-text': p.button_text_color,
+    '--tg-secondary-bg': p.secondary_bg_color,
+    '--tg-section-bg': p.section_bg_color ?? p.bg_color,
+    '--tg-separator': p.section_separator_color,
+  };
+  for (const [name, value] of Object.entries(map)) {
+    if (value) root.style.setProperty(name, value);
+  }
+}
+
 /** Сообщает Telegram, что приложение готово, и разворачивает его на весь экран. */
 export function announceReady(): void {
   const w = webApp();
@@ -30,6 +67,7 @@ export function announceReady(): void {
   try {
     w.ready();
     w.expand();
+    applyTelegramTheme();
   } catch {
     // Старые клиенты могут не знать expand(); это не повод падать.
   }
