@@ -30,7 +30,9 @@ export type Assignee = {
   created_at: string;
 };
 
-export type TaskKind = 'single' | 'each' | 'any';
+// ack -- «ознакомиться, а не выполнить»: приказ, расписание, объявление.
+// Делать нечего, нужно знать, что прочитали.
+export type TaskKind = 'single' | 'each' | 'any' | 'ack';
 
 // Разрешённые переходы строки адресата.
 //
@@ -50,6 +52,38 @@ const ALLOWED: Record<AssigneeState, AssigneeState[]> = {
 
 export function canTransition(from: AssigneeState, to: AssigneeState): boolean {
   return (ALLOWED[from] ?? []).includes(to);
+}
+
+/**
+ * Сбрасывает ВСЕХ адресатов в исходное состояние -- «задача пришла заново».
+ *
+ * Правило владельца (2026-09-06): правка задачи -- это НОВАЯ задача, а не
+ * изменённая старая, «так честнее по отношению ко всем». Азиз принимал ТУ
+ * задачу, не эту: его «Принял» аннулируется вместе со всеми остальными.
+ *
+ * Гасятся и таймеры: у новой задачи новый срок, и он обязан получить
+ * собственный цикл напоминаний, а не доедать предыдущий.
+ *
+ * Отказы тоже сбрасываются: отказ был от прежней формулировки. Иначе человек,
+ * отказавшийся от «покрасить забор», не увидел бы «покрасить забор до пятницы,
+ * краска оплачена».
+ */
+export function resetAssignees(env: Env, taskId: string, dueAt: string | null): D1PreparedStatement {
+  return env.DB.prepare(
+    `UPDATE task_assignees SET state = 'pending', accepted_at = NULL, acknowledged_at = NULL,
+       done_at = NULL, declined_reason = NULL, due_at = ?,
+       last_escalated_at = NULL, reminder_sent_at = NULL, review_reminded_at = NULL
+     WHERE task_id = ?`,
+  ).bind(dueAt, taskId);
+}
+
+/**
+ * Отмечает работу принятой. Без этого состояние 'confirmed' недостижимо, и
+ * строки навсегда остаются в 'done' -- из-за чего cron слал «пора проверить»
+ * по задачам, которые автор уже принял.
+ */
+export function confirmAssignees(env: Env, taskId: string): D1PreparedStatement {
+  return env.DB.prepare("UPDATE task_assignees SET state = 'confirmed' WHERE task_id = ? AND state = 'done'").bind(taskId);
 }
 
 /** Строки адресатов задачи. */
@@ -94,7 +128,11 @@ export function rollup(kind: TaskKind, states: AssigneeState[]): TaskStatus {
   const live = states.filter((s) => s !== 'declined');
   if (live.length === 0) return 'archived'; // отказались все -- см. комментарий выше
 
-  const closed = (s: AssigneeState) => s === 'done' || s === 'confirmed';
+  // Для 'ack' «принял» И ЕСТЬ закрытие: человека просили прочитать, он прочитал.
+  // Требовать от него ещё и «Готово» значило бы заставлять отчитываться о работе,
+  // которой не было.
+  const closed = (s: AssigneeState) =>
+    s === 'done' || s === 'confirmed' || (kind === 'ack' && s === 'accepted');
   if (kind === 'any') {
     if (live.some(closed)) return 'done';
   } else if (live.every(closed)) {

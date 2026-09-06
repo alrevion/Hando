@@ -8,7 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, getFileUrl, resolveChatId, sendDocument } from './telegram';
 import { applyTransition, buildNotification } from './transition';
-import { buildAssignees, myAssignee, transitionAssignee, type Assignee, type TaskKind } from './assignees';
+import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
@@ -571,7 +571,7 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
   // до шага 5 шлёт именно его.
   const assignees = b.assignee_ids?.length ? b.assignee_ids : b.responsible_user_id ? [b.responsible_user_id] : [];
   if (!b.title || assignees.length === 0) return c.json({ error: 'title and at least one assignee required' }, 400);
-  const kind = b.kind && ['single', 'each', 'any'].includes(b.kind) ? (b.kind as TaskKind) : assignees.length > 1 ? 'each' : 'single';
+  const kind = b.kind && ['single', 'each', 'any', 'ack'].includes(b.kind) ? (b.kind as TaskKind) : assignees.length > 1 ? 'each' : 'single';
   if (kind === 'single' && assignees.length > 1) return c.json({ error: 'kind=single takes exactly one assignee' }, 400);
   // Границу «поручает только директор» держала социальная норма; R1-1 её снял
   // (поручать может кто угодно кому угодно), а R1-2 сделал users глобальными.
@@ -694,9 +694,15 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
     return c.json({ success: true });
   }
 
-  // Переход делается ПОСЛЕ правки содержимого, чтобы уведомление ушло с новым
-  // заголовком и сроком, а не с тем, что было до редактирования.
+  // ПРАВКА = НОВАЯ ЗАДАЧА. Все исполнители сбрасываются в «не принял»: Азиз
+  // принимал ТУ задачу, не эту. Без сброса строка Азиза оставалась «принял»,
+  // задача падала в Todo -- и он не мог взять её снова, получая «вы уже
+  // принимали». Карточка застревала навсегда.
   const updated = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').bind(task.id, c.get('orgId')).first<Task>();
+  await c.env.DB.batch([resetAssignees(c.env, task.id, (updated ?? task).deadline ?? null)]);
+
+  // Переход делается ПОСЛЕ правки содержимого и сброса строк, чтобы уведомление
+  // ушло с новым заголовком и сроком, а статус сошёлся со строками.
   await applyTransition(c.env, {
     task: updated ?? task,
     to: 'todo',
@@ -822,6 +828,9 @@ apiRoutes.post('/tasks/:id/restore', requireProjectAccess('task'), requireRole('
   const { comment } = await c.req.json<{ comment?: string }>().catch(() => ({ comment: undefined }));
   if (!comment || !comment.trim()) return c.json({ error: 'comment required' }, 400);
   if (task.status !== 'archived') return c.json({ error: 'only archived tasks can be restored' }, 409);
+  // Восстановление -- тот же чистый лист, что и правка: задача возвращается к
+  // людям заново, а не с чужими отметками полугодовой давности.
+  await c.env.DB.batch([resetAssignees(c.env, task.id, task.deadline ?? null)]);
   await applyTransition(c.env, {
     task, to: 'todo', actorId: c.get('userId'), action: 'restored', comment,
     set: { done_at: null },
@@ -851,6 +860,10 @@ apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), async (c) => 
   // Статус не меняется: подтверждение живёт в confirmed_at. Но это переход
   // жизненного цикла, и идти он обязан тем же путём -- иначе «единая точка»
   // становится «единой точкой, кроме одного случая».
+  // Строки исполнителей помечаются принятыми. Без этого состояние 'confirmed'
+  // недостижимо, строки навсегда остаются в 'done' -- и cron слал «пора
+  // проверить» по задачам, которые автор уже принял.
+  await c.env.DB.batch([confirmAssignees(c.env, task.id)]);
   await applyTransition(c.env, {
     task, to: task.status, actorId: c.get('userId'), action: 'confirmed', overdueBy,
     set: { confirmed_at: nowIso() },

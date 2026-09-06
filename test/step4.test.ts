@@ -251,15 +251,22 @@ describe('ревью: у cron нет своего пути отправки', ()
   });
 
   it('напоминания cron подчиняются тихим часам, а срочность их пробивает', async () => {
+    // Время подменяется ДО постройки мира, а не после. Прежняя редакция считала
+    // done_at от НАСТОЯЩЕГО «сейчас», а проверяла при подменённом -- и разошлась
+    // сама собой, когда календарная дата сменилась: 3 дня назад от реального дня
+    // оказались 1,6 дня назад от подменённого, и окно проверки не наступало.
+    // Тест, зависящий от того, какой сегодня день, ловит календарь, а не код.
+    const NIGHT = new Date('2026-09-04T16:00:00Z'); // 21:00 в Ташкенте
+    vi.setSystemTime(NIGHT);
+
     const env = await world([
       { id: 'late', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss', deadline: '2020-01-01T00:00:00.000Z' },
-      { id: 'stale', project_id: 'p1', status: 'done', responsible_user_id: 'w1', author_id: 'boss', done_at: new Date(Date.now() - 3 * 86400_000).toISOString() },
+      { id: 'stale', project_id: 'p1', status: 'done', responsible_user_id: 'w1', author_id: 'boss', done_at: new Date(NIGHT.getTime() - 3 * 86400_000).toISOString() },
     ]);
     await testEnv.DB.prepare('UPDATE orgs SET quiet_hours = 1 WHERE id = ?').bind(ORG_A).run();
     await testEnv.DB.prepare("UPDATE task_assignees SET due_at = '2020-01-01T00:00:00.000Z' WHERE task_id = 'late'").run();
     await testEnv.DB.prepare("UPDATE task_assignees SET state = 'done', done_at = (SELECT done_at FROM tasks WHERE id='stale') WHERE task_id = 'stale'").run();
 
-    vi.setSystemTime(new Date('2026-09-04T16:00:00Z')); // 21:00 в Ташкенте
     const spy = tg();
     await scheduled({} as ScheduledController, env, {} as ExecutionContext);
     const sent = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)));
