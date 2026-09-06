@@ -236,17 +236,49 @@ describe('регистрация целиком через бота -- ПОСТ�
     expect(sent(spy).some((m) => m.chat_id === '202' && m.text.includes('приняли'))).toBe(true);
   });
 
-  it('главный экран несёт кнопку мини-приложения', async () => {
+  it('у директора первой стоит «Мои поручения», у сотрудника — «Мои задачи»', async () => {
     const env = await blank();
     const spy = tg();
-    await meet(env, 707, 'Пётр');
+
+    // Директор открывает бота, чтобы узнать, как идут ЕГО поручения.
+    await meet(env, 707, 'Директор');
     await tap(env, 707, BTN.create);
     await hook(env, msg(707, 'Фирма'));
+    const rows = (sent(spy).at(-1)! as unknown as { reply_markup?: { keyboard: { text: string }[][] } }).reply_markup!.keyboard;
+    expect(rows[0].map((b) => b.text)).toEqual([BTN.assigned, BTN.tasks]);
+    // Кнопки мини-приложения в клавиатуре нет: у Telegram для этого своя кнопка
+    // меню слева от строки ввода.
+    expect(rows.flat().map((b) => b.text)).not.toContain('🌐 Приложение');
+    // Организации, подписка и профиль -- по одной кнопке в ряд.
+    expect(rows.slice(1).map((r) => r.map((b) => b.text))).toEqual([[BTN.orgs], [BTN.billing], [BTN.profile]]);
 
-    const main = sent(spy).at(-1)! as unknown as { reply_markup?: { keyboard: { text: string; web_app?: { url: string } }[][] } };
-    const app = (main.reply_markup?.keyboard ?? []).flat().find((b) => b.text === BTN.app);
-    // Веб-версия открывается прямо из Telegram, без браузера и без повторного входа.
-    expect(app?.web_app?.url).toContain('hando.alrevion.com');
+    // Сотрудник приходит узнать, что делать ЕМУ.
+    const code = sent(spy).map((m) => m.text).join(' ').match(/[A-Z2-9]{6}/)![0];
+    await meet(env, 909, 'Сотрудник');
+    await tap(env, 909, BTN.join);
+    await hook(env, msg(909, code));
+    const worker = await testEnv.DB.prepare("SELECT id FROM users WHERE telegram_user_id = '909'").first<{ id: string }>();
+    const org = await testEnv.DB.prepare('SELECT id FROM orgs WHERE join_code = ?').bind(code).first<{ id: string }>();
+    await hook(env, { callback_query: { id: 'cb', from: { id: 707, first_name: 'Д' }, data: `join_ok:${org!.id}:${worker!.id}`, message: { chat: { id: 707 }, message_id: 1 } } });
+
+    await hook(env, msg(909, '/start'));
+    const workerRows = (sent(spy).at(-1)! as unknown as { reply_markup?: { keyboard: { text: string }[][] } }).reply_markup!.keyboard;
+    expect(workerRows[0].map((b) => b.text)).toEqual([BTN.tasks, BTN.assigned]);
+  });
+
+  it('подписка говорит, за что человек платит, и не рисует несуществующих тарифов', async () => {
+    const env = await blank();
+    const spy = tg();
+    await meet(env, 606, 'Владелец');
+    await tap(env, 606, BTN.create);
+    await hook(env, msg(606, 'Моя фирма'));
+    await tap(env, 606, BTN.billing);
+
+    const text = sent(spy).at(-1)!.text;
+    expect(text).toContain('Моя фирма');
+    // Честно про то, что биллинга ещё нет: рисовать тарифы, которых нет, хуже
+    // чем сказать прямо.
+    expect(text).toContain('оплата ещё не подключена');
   });
 
   it('профиль: имя правится кнопкой', async () => {

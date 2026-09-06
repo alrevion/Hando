@@ -1,4 +1,4 @@
-// Thin fetch wrapper for the Sayn API. Sessions are an HttpOnly cookie, so
+// Thin fetch wrapper for the Hando API. Sessions are an HttpOnly cookie, so
 // every call just needs `credentials: 'include'` -- no token handling here.
 //
 // ASSUMPTION (backend not visible while this was written -- reconcile against
@@ -164,3 +164,11 @@ export const uploadAttachment = (taskId: string, file: File) => {
 
 export const deleteAttachment = (attachmentId: string) => del<void>(`/attachments/${attachmentId}`);
 // Inline <img src="/api/attachments/:id/download"> renders it directly -- no JS blob needed.
+
+/**
+ * Вход по подписи Telegram. Номер телефона не нужен: подпись мессенджера
+ * доказывает, что это тот самый аккаунт, который уже подключён к боту.
+ */
+export function authTelegram(initData: string): Promise<{ user: User }> {
+  return request<{ user: User }>('/auth/telegram', { method: 'POST', body: JSON.stringify({ initData }) });
+}

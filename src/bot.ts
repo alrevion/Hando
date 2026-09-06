@@ -22,7 +22,7 @@ import { drainOutbox } from './outbox';
 import { approveJoin, createOrg, ensureUser, joinByCode, rejectJoin } from './signup';
 import {
   askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
-  mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
+  billingScreen, mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
   setState, switchOrg, type OrgRow, type Screen,
 } from './menu';
 import { download, extractMedia, storeByFileId, type Media } from './media';
@@ -150,6 +150,33 @@ async function createFromDraft(
 }
 
 /**
+ * «Мои поручения» -- то, что человек раздал другим, с состоянием каждого.
+ *
+ * Отдельно от «Моих задач» по смыслу: директор смотрит сюда, чтобы узнать, кто
+ * на каком этапе, а не что делать самому. Свои же задачи (адресат = автор) сюда
+ * не попадают -- они и так в «Моих задачах».
+ */
+async function assignedByMeText(env: Env, userId: string): Promise<string> {
+  const { results } = await env.DB.prepare(
+    `SELECT t.title, u.name AS who, a.state, a.due_at
+     FROM tasks t
+     JOIN task_assignees a ON a.task_id = t.id
+     JOIN users u ON u.id = a.user_id
+     JOIN org_memberships m ON m.org_id = a.org_id AND m.user_id = a.user_id AND m.left_at IS NULL
+     WHERE t.author_id = ? AND a.user_id <> ? AND t.status <> 'archived'
+     ORDER BY a.due_at IS NULL, a.due_at`,
+  ).bind(userId, userId).all<{ title: string; who: string; state: string; due_at: string | null }>();
+
+  if (!results.length) return 'Вы пока ничего не поручали.';
+  const mark: Record<string, string> = {
+    pending: '⏳ не принял', accepted: '🚀 в работе', done: '✅ сдал',
+    confirmed: '✔️ принято', rejected: '❌ вернули', declined: '🚫 отказался',
+  };
+  return ['Ваши поручения:', ...results.map((r) =>
+    `• ${r.title} — ${r.who}, ${mark[r.state] ?? r.state}${r.due_at ? ` (до ${r.due_at.slice(0, 10)})` : ''}`)].join('\n');
+}
+
+/**
  * «Моё» -- ОДИН список на человека, а не по одному на организацию: у него один
  * Telegram-аккаунт, и разделять список по арендаторам значило бы заставлять
  * переключаться, чтобы увидеть свой день целиком.
@@ -185,9 +212,6 @@ async function show(env: Env, chatId: string, userId: string, screen: Screen): P
   await setState(env, userId, screen.state);
   await sendMessage(env, chatId, screen.text, screen.keyboard);
 }
-
-/** Адрес мини-приложения: он же домен воркера. */
-const APP_URL = 'https://hando.alrevion.com';
 
 botApp.post('/webhook', async (c) => {
   // Секрет проверяется constant-time и ПЕРВЫМ: без него роут -- открытая дверь
@@ -371,7 +395,7 @@ botApp.post('/webhook', async (c) => {
   // А имя видят коллеги в поручениях. Спрашиваем один раз.
   if (text === '/start' || text === '/начать' || text === '/menu' || text === '/меню') {
     await show(c.env, chatId, userId, (await isOnboarded(c.env, userId))
-      ? mainScreen(myName, orgs, APP_URL)
+      ? mainScreen(myName, orgs)
       : askNameScreen());
     return c.json({ ok: true });
   }
@@ -382,7 +406,7 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     await sendMessage(c.env, chatId, `Приятно познакомиться, ${text.trim()}.`);
-    await show(c.env, chatId, userId, mainScreen(text.trim(), await myOrgs(c.env, userId), APP_URL));
+    await show(c.env, chatId, userId, mainScreen(text.trim(), await myOrgs(c.env, userId)));
     return c.json({ ok: true });
   }
 
@@ -405,7 +429,7 @@ botApp.post('/webhook', async (c) => {
         `Код для сотрудников: ${code}`,
         'Каждого вступившего Вы подтверждаете кнопкой.',
       ].join('\n'));
-      await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId), APP_URL));
+      await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
       return c.json({ ok: true });
     }
     if (st.await === 'rename' && st.org) {
@@ -421,7 +445,7 @@ botApp.post('/webhook', async (c) => {
         res.reason === 'unknown_code' ? 'Код не подошёл. Проверьте у того, кто его дал.'
         : res.reason === 'already_member' ? 'Вы уже в этой организации.'
         : 'Заявка уже подана, ждём подтверждения.');
-      await show(c.env, chatId, userId, mainScreen(myName, orgs, APP_URL));
+      await show(c.env, chatId, userId, mainScreen(myName, orgs));
       return c.json({ ok: true });
     }
     await sendMessage(c.env, chatId, `Заявка в «${res.orgName}» отправлена. Ждём подтверждения.`);
@@ -449,6 +473,12 @@ botApp.post('/webhook', async (c) => {
     case BTN.tasks:
       await sendMessage(c.env, chatId, await myTasksText(c.env, userId));
       return c.json({ ok: true });
+    case BTN.assigned:
+      await sendMessage(c.env, chatId, await assignedByMeText(c.env, userId));
+      return c.json({ ok: true });
+    case BTN.billing:
+      await show(c.env, chatId, userId, billingScreen(orgs, userId));
+      return c.json({ ok: true });
     case BTN.orgs:
       await show(c.env, chatId, userId, orgsScreen(orgs));
       return c.json({ ok: true });
@@ -473,11 +503,11 @@ botApp.post('/webhook', async (c) => {
       // «Назад» зависит от экрана: из карточки -- в список, иначе на главный.
       await show(c.env, chatId, userId, st.screen === 'org' || st.screen === 'confirm_delete'
         ? orgsScreen(orgs)
-        : mainScreen(myName, orgs, APP_URL));
+        : mainScreen(myName, orgs));
       return c.json({ ok: true });
     case BTN.switch:
       if (current && (await switchOrg(c.env, userId, current.id))) {
-        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId), APP_URL));
+        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
       }
       return c.json({ ok: true });
     case BTN.rename:
@@ -492,13 +522,13 @@ botApp.post('/webhook', async (c) => {
     case BTN.yes:
       if (st.screen === 'confirm_delete' && st.org && (await deleteOrg(c.env, userId, st.org))) {
         await sendMessage(c.env, chatId, 'Организация удалена.');
-        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId), APP_URL));
+        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
       }
       return c.json({ ok: true });
     case BTN.leave:
       if (current && (await leaveOrg(c.env, userId, current.id))) {
         await sendMessage(c.env, chatId, 'Вы вышли из организации.');
-        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId), APP_URL));
+        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
       }
       return c.json({ ok: true });
   }
@@ -516,7 +546,7 @@ botApp.post('/webhook', async (c) => {
   if (!who) {
     // Подключился, но организации ещё нет -- показываем меню с кнопками, а не
     // молчим и не диктуем команды.
-    await show(c.env, chatId, userId, mainScreen(myName, [], APP_URL));
+    await show(c.env, chatId, userId, mainScreen(myName, []));
     return c.json({ ok: true });
   }
 

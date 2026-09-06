@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { ApiError, authLogout, getMe } from '../lib/api';
+import { ApiError, authLogout, authTelegram, getMe } from '../lib/api';
+import { announceReady, initData } from '../lib/telegram';
 import type { User } from '../types';
 
 interface AuthContextValue {
@@ -16,13 +17,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    announceReady();
+
+    // Порядок: сначала действующая сессия, потом вход по подписи Telegram.
+    //
+    // Сессия проверяется первой намеренно: человек мог открыть приложение из
+    // Telegram, уже войдя по телефону, и повторный вход сбросил бы его на
+    // другую организацию (initData знает только про Telegram-аккаунт).
+    //
+    // Внутри мессенджера номер телефона НЕ спрашивается: подпись Telegram и
+    // есть доказательство личности. Экран входа по телефону остаётся для тех,
+    // кто открыл сайт в браузере.
     getMe()
       .then((res) => setUser(res.user))
-      .catch((err) => {
+      .catch(async (err) => {
         if (!(err instanceof ApiError) || err.status !== 401) {
           console.error('Failed to load session', err);
+          setUser(null);
+          return;
         }
-        setUser(null);
+        const data = initData();
+        if (!data) {
+          setUser(null);
+          return;
+        }
+        try {
+          const res = await authTelegram(data);
+          setUser(res.user);
+        } catch (e) {
+          // 403 CONNECT_BOT_FIRST / NO_ORG -- человек открыл приложение раньше,
+          // чем закончил регистрацию в боте. Показываем экран входа: он объяснит.
+          if (!(e instanceof ApiError)) console.error('Telegram sign-in failed', e);
+          setUser(null);
+        }
       })
       .finally(() => setLoading(false));
   }, []);

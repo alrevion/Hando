@@ -16,8 +16,9 @@ import type { ReplyKeyboard } from './telegram';
 
 export const BTN = {
   tasks: '📋 Мои задачи',
-  app: '🌐 Приложение',
+  assigned: '📤 Мои поручения',
   orgs: '🏢 Организации',
+  billing: '💳 Подписка',
   profile: '👤 Профиль',
   create: '➕ Создать организацию',
   join: '🔑 Вступить по коду',
@@ -36,7 +37,7 @@ export const BTN = {
 export type BotState = {
   await?: 'name' | 'new' | 'join' | 'rename';
   /** Экран: по нему разбирается нажатие, потому что подписи повторяются. */
-  screen?: 'main' | 'orgs' | 'org' | 'profile' | 'confirm_delete';
+  screen?: 'main' | 'orgs' | 'org' | 'profile' | 'billing' | 'confirm_delete';
   /** Организация, открытая в карточке. */
   org?: string;
 };
@@ -95,7 +96,18 @@ export function askNameScreen(): Screen {
   };
 }
 
-export function mainScreen(name: string, orgs: OrgRow[], appUrl: string): Screen {
+/**
+ * Главный экран.
+ *
+ * Порядок первого ряда зависит от РОЛИ, и это не косметика. Директор открывает
+ * бота, чтобы посмотреть, как идут его поручения; сотрудник -- чтобы увидеть,
+ * что делать ему. Первой кнопкой у каждого стоит то, ради чего он пришёл.
+ *
+ * Кнопки мини-приложения здесь НЕТ намеренно: у Telegram для этого есть своя
+ * кнопка меню слева от строки ввода. Дублировать её в клавиатуре -- значит
+ * занимать место под то, что и так на экране.
+ */
+export function mainScreen(name: string, orgs: OrgRow[]): Screen {
   if (orgs.length === 0) {
     return {
       text: `${name}, чтобы начать — создайте организацию или вступите в существующую по коду.`,
@@ -104,18 +116,38 @@ export function mainScreen(name: string, orgs: OrgRow[], appUrl: string): Screen
     };
   }
   const current = orgs.find((o) => o.is_current) ?? orgs[0];
+  const boss = current.role === 'creator' || current.role === 'super_admin';
   return {
     text: `Сейчас Вы в «${current.name}».\n\nНапишите или наговорите поручение — я поставлю задачу.`,
     keyboard: kb(
       [
-        // web_app открывает мини-приложение прямо в Telegram, без браузера.
-        [{ text: BTN.tasks }, { text: BTN.app, web_app: { url: appUrl } }],
-        [{ text: BTN.orgs }, { text: BTN.profile }],
+        boss ? [{ text: BTN.assigned }, { text: BTN.tasks }] : [{ text: BTN.tasks }, { text: BTN.assigned }],
+        [{ text: BTN.orgs }],
+        [{ text: BTN.billing }],
+        [{ text: BTN.profile }],
       ],
       'Поручение или сообщение…',
     ),
     state: { screen: 'main' },
   };
+}
+
+/**
+ * Подписка. Биллинга ещё нет, и экран об этом говорит прямо, а не рисует
+ * несуществующие тарифы: платит владелец организации, и когда оплата появится,
+ * ему важно понимать, за что именно.
+ */
+export function billingScreen(orgs: OrgRow[], userId: string): Screen {
+  const owned = orgs.filter((o) => o.owner_user_id === userId || o.role === 'creator');
+  const lines = ['Подписка', ''];
+  if (owned.length === 0) {
+    lines.push('Вы не владеете организациями — за них платит их владелец.');
+  } else {
+    lines.push('Вы платите за:');
+    for (const o of owned) lines.push(`• ${o.name}`);
+    lines.push('', 'Сейчас всё бесплатно: оплата ещё не подключена.');
+  }
+  return { text: lines.join('\n'), keyboard: kb([[{ text: BTN.back }]]), state: { screen: 'billing' } };
 }
 
 export function orgsScreen(orgs: OrgRow[]): Screen {
