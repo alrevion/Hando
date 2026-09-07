@@ -80,7 +80,18 @@ export function matchPeople(text: string, people: Person[]): { ids: string[]; am
 
 // ------------------------------------------------------------------ сроки
 
-const WEEKDAYS = ['воскресень', 'понедельник', 'вторник', 'сред', 'четверг', 'пятниц', 'суббот'];
+// Полное слово ИЛИ сокращение. Сокращения обязаны стоять за границами слова:
+// без них «ср» совпало бы внутри «срочно» и «сроки», а «вс» -- внутри «всё».
+// Индекс массива -- номер дня недели у getUTCDay().
+const WEEKDAYS = [
+  'воскресень[а-яё]*|вс',
+  'понедельник[а-яё]*|пн',
+  'вторник[а-яё]*|вт',
+  'сред[а-яё]*|ср',
+  'четверг[а-яё]*|чт',
+  'пятниц[а-яё]*|пт',
+  'суббот[а-яё]*|сб',
+];
 
 /**
  * Срок из фразы. Возвращает ISO и слова, которые его задали (их надо убрать из
@@ -145,9 +156,9 @@ export function matchDeadline(text: string, now: Date, timeZone: string): { iso:
 
   if (!base) {
     for (let i = 0; i < WEEKDAYS.length; i++) {
-      // [а-яё]*, а не \\w*: «пятницы» кончается на «ы», которую ASCII-\\w не знает,
-      // и совпадение обрывалось на «пятниц» -- слово из фразы не вычёркивалось.
-      const re = new RegExp(`(?:в|во|до|к)?\\s*${WEEKDAYS[i]}[а-яё]*`, 'i');
+      // Границы слова -- явные (B/E), а не \\b: в JS \\b определена через ASCII и
+      // на кириллице не работает. Без них «ср» совпадало бы внутри «срочно».
+      const re = new RegExp(`${B}(?:(?:в|во|до|к)\\s+)?(?:${WEEKDAYS[i]})${E}`, 'i');
       const m = lower.match(re);
       if (!m) continue;
       // Ближайший такой день недели, считая от завтра: «в пятницу», сказанное в
@@ -155,7 +166,8 @@ export function matchDeadline(text: string, now: Date, timeZone: string): { iso:
       const cur = midnight.getUTCDay();
       const delta = ((i - cur + 7) % 7) || 7;
       base = new Date(midnight.getTime() + delta * 864e5);
-      mark(...m[0].trim().split(/\s+/));
+      // m[0] может начинаться со знака препинания, съеденного границей B.
+      mark(...m[0].split(/\s+/).map((w) => w.replace(/^[^а-яё\w]+/i, '')).filter(Boolean));
       break;
     }
   }
@@ -226,9 +238,13 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
     return { title: '', assigneeIds: [], deadline: iso, kind: 'single', source: 'pattern', ambiguous };
   }
 
-  const isSelf = ids.length === 0 && SELF.test(clean);
+  // Адресат не назван, но назван СРОК -- это напоминание себе: «сдать отчёт в
+  // пятницу». Ровно то, ради чего человек пишет боту в личку, и то, из-за чего
+  // раньше фраза уезжала в модель: та возвращала пустоту, и оставался сырой
+  // текст без срока -- то есть без напоминания вообще.
+  const isSelf = ids.length === 0 && (SELF.test(clean) || iso !== null);
   const assignees = isSelf ? [selfId] : ids;
-  if (assignees.length === 0) return null; // адресата нет -- пусть решает модель
+  if (assignees.length === 0) return null; // ни адресата, ни срока -- решает модель
 
   // Заголовок -- то, что осталось: убираем имена, слова даты и служебные слова.
   const drop = new Set([...usedWords, ...dateWords].map((w) => w.toLowerCase()));

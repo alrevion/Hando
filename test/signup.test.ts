@@ -258,7 +258,6 @@ describe('регистрация целиком через бота -- ПОСТ�
     await tap(env, 909, BTN.join);
     await hook(env, msg(909, code));
     const worker = await testEnv.DB.prepare("SELECT id FROM users WHERE telegram_user_id = '909'").first<{ id: string }>();
-    const org = await testEnv.DB.prepare('SELECT id FROM orgs WHERE join_code = ?').bind(code).first<{ id: string }>();
     await hook(env, { callback_query: { id: 'cb', from: { id: 707, first_name: 'Д' }, data: `join_ok:${worker!.id}`, message: { chat: { id: 707 }, message_id: 1 } } });
 
     await hook(env, msg(909, '/start'));

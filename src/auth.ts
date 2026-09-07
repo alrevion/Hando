@@ -76,13 +76,17 @@ export async function resolveOrgId(db: Env['DB'], userId: string): Promise<strin
   if (u?.current_org_id) {
     // current мог указывать на организацию, из которой человека уже отозвали.
     const still = await db
-      .prepare('SELECT 1 FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
+      .prepare(`SELECT 1 FROM org_memberships m JOIN orgs o ON o.id = m.org_id
+                WHERE m.org_id = ? AND m.user_id = ? AND m.left_at IS NULL
+                  AND m.confirmed_at IS NOT NULL AND o.archived_at IS NULL`)
       .bind(u.current_org_id, userId)
       .first();
     if (still) return u.current_org_id;
   }
   const { results } = await db
-    .prepare('SELECT org_id FROM org_memberships WHERE user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
+    .prepare(`SELECT m.org_id FROM org_memberships m JOIN orgs o ON o.id = m.org_id
+              WHERE m.user_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
+                AND o.archived_at IS NULL`)
     .bind(userId)
     .all<{ org_id: string }>();
   return results.length === 1 ? results[0].org_id : null;
@@ -97,8 +101,15 @@ export async function resolveOrgId(db: Env['DB'], userId: string): Promise<strin
  * декорацией. Код раздают в общем чате -- сам по себе он не должен пускать.
  */
 export async function membershipRole(db: Env['DB'], orgId: string, userId: string): Promise<Role | null> {
+  // archived_at обязателен здесь наравне с left_at. Удаление организации гасит
+  // саму организацию, но строки членства остаются -- и без этой проверки уже
+  // выданная кука продолжала пускать в УДАЛЁННУЮ организацию: в приложении
+  // висели её заявки и её задачи. Проверка стоит в одной функции, через которую
+  // ходит каждый роут, а не в каждом роуте по отдельности.
   const row = await db
-    .prepare('SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
+    .prepare(`SELECT m.role FROM org_memberships m JOIN orgs o ON o.id = m.org_id
+              WHERE m.org_id = ? AND m.user_id = ? AND m.left_at IS NULL
+                AND m.confirmed_at IS NOT NULL AND o.archived_at IS NULL`)
     .bind(orgId, userId)
     .first<{ role: Role }>();
   return row?.role ?? null;

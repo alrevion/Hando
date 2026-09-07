@@ -84,6 +84,15 @@ async function connectByInvite(env: Env, tg: TgUser, token: string): Promise<str
  * не сохранится, задача всё равно останется -- вложение это дополнение к
  * поручению, а не его условие.
  */
+/** Срок по-русски в поясе организации: «пятница, 12 сентября, 18:00». */
+function formatWhen(iso: string, timeZone: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const day = new Intl.DateTimeFormat('ru-RU', { timeZone, weekday: 'long', day: 'numeric', month: 'long' }).format(d);
+  const time = new Intl.DateTimeFormat('ru-RU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+  return `${day}, ${time}`;
+}
+
 async function createFromDraft(
   env: Env,
   who: { userId: string; orgId: string },
@@ -652,6 +661,25 @@ botApp.post('/webhook', async (c) => {
   }
 
   const created = await createFromDraft(c.env, who, draft, media, phrase);
+  if (created) {
+    // ПОДТВЕРЖДЕНИЕ АВТОРУ -- обязательное, а не украшение.
+    //
+    // Раньше на успех бот не отвечал ничего: уведомления уходят адресатам, а
+    // автор из рассылки исключён (он это и продиктовал). Поручение самому себе
+    // не порождало вообще ни одного сообщения, и человек видел молчание --
+    // неотличимое от «бот сломался». Здесь же видно, КАК фраза понята: кому и
+    // на когда. Не тому понятый адресат ловится сразу, а не через неделю.
+    const names = draft.assigneeIds.length === 0 ? [] : (await c.env.DB.prepare(
+      `SELECT name FROM users WHERE id IN (${draft.assigneeIds.map(() => '?').join(',')})`,
+    ).bind(...draft.assigneeIds).all<{ name: string }>()).results.map((r) => r.name);
+    const self = draft.assigneeIds.length === 1 && draft.assigneeIds[0] === who.userId;
+    await sendMessage(c.env, String(msg.chat.id), [
+      `✅ ${draft.title}`,
+      `Кому: ${self ? 'вам' : names.join(', ') || '—'}`,
+      `Срок: ${draft.deadline ? formatWhen(draft.deadline, org?.timezone ?? 'Asia/Tashkent') : 'не указан'}`,
+      draft.deadline ? 'Напомню за день до срока.' : 'Скажите «до пятницы» или «завтра» — и я напомню.',
+    ].join('\n'));
+  }
   if (!created) {
     // Единственная оставшаяся причина отказа: доски в организации есть, а
     // человека не добавили ни на одну. Говорим прямо, что делать.
