@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ArrowRight, Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { ContentBlock, Priority, Project, Task, TaskStatus, User } from '../types';
 import { parseContentBlocks } from '../types';
@@ -8,15 +8,13 @@ import {
   createTask,
   deleteAttachment,
   deleteTask,
-  getProjectMembers,
-  getTasks,
   moveTask,
   rejectTask,
   updateTask,
   uploadAttachment,
   type TaskInput,
 } from '../lib/api';
-import { usePolling } from '../hooks/usePolling';
+import { useData } from '../context/DataContext';
 import { PRIORITIES } from '../lib/priority';
 import type { ComposeBlock } from './ContentEditor';
 import { TaskCard } from './TaskCard';
@@ -50,9 +48,14 @@ interface BoardViewProps {
 }
 
 export function BoardView({ project, user, initialTask, projectSwitcher }: BoardViewProps) {
-  const [tasks, setTasks] = useState<Task[]>([]);
+  // Задачи берутся из общего склада, а не грузятся заново: открытие доски
+  // больше не поход в сеть, и «Загрузка…» на уже виденном не мигает.
+  const { tasks: allTasks, error: loadError, ready, refresh, membersOf } = useData();
+  const tasks = useMemo(
+    () => allTasks.filter((t) => t.project_id === project.id && t.status !== 'archived'),
+    [allTasks, project.id],
+  );
   const [members, setMembers] = useState<User[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionInfo, setActionInfo] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -90,22 +93,13 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
     });
   }, [tasks, priorityFilter, deadlineSort]);
 
-  const fetchTasks = useCallback(() => {
-    getTasks(project.id)
-      .then((data) => {
-        setTasks(data.filter((t) => t.status !== 'archived'));
-        setLoadError(null);
-      })
-      .catch((err) => setLoadError(err instanceof ApiError ? err.message : 'Could not load tasks.'));
-  }, [project.id]);
-
-  usePolling(fetchTasks, 5000);
-
+  // Люди доски нужны форме создания, а не ленте: склад отдаёт их из кэша, так
+  // что повторное открытие доски запроса не делает.
   useEffect(() => {
-    getProjectMembers(project.id)
-      .then(setMembers)
-      .catch(() => setMembers([]));
-  }, [project.id]);
+    let alive = true;
+    membersOf(project.id).then((list) => { if (alive) setMembers(list); });
+    return () => { alive = false; };
+  }, [project.id, membersOf]);
 
   async function runAction(taskId: string, action: () => Promise<unknown>) {
     setActionError(null);
@@ -113,7 +107,8 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
     setBusyId(taskId);
     try {
       await action();
-      fetchTasks();
+      // Своё изменение подтягивается сразу, а не ждёт следующего опроса.
+      await refresh();
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'The action could not be completed.');
     } finally {
@@ -142,7 +137,7 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
     try {
       const { overdue_by } = await confirmTask(task.id);
       setActionInfo(`Confirmed "${task.title}" -- ${overdue_by == null ? 'no deadline was set.' : describeOverdue(overdue_by)}`);
-      fetchTasks();
+      await refresh();
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'The action could not be completed.');
     } finally {
@@ -158,7 +153,7 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
     setActionError(null);
     setActionInfo(null);
     await rejectTask(rejectingTask.id, comment, extraDays);
-    fetchTasks();
+    await refresh();
   }
 
   function handleDelete(task: Task) {
@@ -209,10 +204,10 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
   async function handleCreateSubmit(input: TaskInput, blocks: ComposeBlock[]) {
     const { id } = await createTask(project.id, input);
     setCreating(false);
-    fetchTasks();
+    await refresh();
     const { persisted, failed } = await resolveBlocks(id, blocks);
     await updateTask(id, { content_blocks: JSON.stringify(persisted) });
-    fetchTasks();
+    await refresh();
     if (failed) setActionError(`Task saved, but ${failed} photo/file(s) failed to upload.`);
   }
 
@@ -228,7 +223,7 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
     await Promise.allSettled(removed.map((id) => deleteAttachment(id)));
     await updateTask(editingTask.id, { ...input, content_blocks: JSON.stringify(persisted) });
     setEditingTask(null);
-    fetchTasks();
+    await refresh();
     if (failed) setActionError(`Task saved, but ${failed} photo/file(s) failed to upload.`);
   }
 
@@ -381,7 +376,7 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
             </h2>
             <div className="stack lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
               {visibleTasks.filter((t) => t.status === col.status).length === 0 ? (
-                <p className="muted" style={{ padding: '12px 4px' }}>Здесь пусто.</p>
+                <p className="muted" style={{ padding: '12px 4px' }}>{ready ? 'Здесь пусто.' : 'Загрузка…'}</p>
               ) : null}
               {visibleTasks
                 .filter((t) => t.status === col.status)

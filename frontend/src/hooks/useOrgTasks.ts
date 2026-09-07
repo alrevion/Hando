@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useMemo } from 'react';
 import type { Project, Task, User } from '../types';
-import { ApiError, getProjects, getTasks, getUsers } from '../lib/api';
-import { usePolling } from './usePolling';
+import { useData } from '../context/DataContext';
 
 // Задача вместе с названием своей доски. Сквозные экраны (Мои задачи, Люди,
 // Календарь) показывают задачи вне контекста доски, и без названия проекта
@@ -12,65 +11,35 @@ export interface OrgTask {
 }
 
 /**
- * Все активные задачи организации, доступные текущему человеку.
+ * Задачи организации, доступные текущему человеку.
  *
- * Сквозного эндпоинта «задачи организации» в API нет -- задачи отдаются только
- * по доскам (GET /projects/:id/tasks), поэтому список собирается здесь: один
- * запрос на доску поверх GET /projects. Досок у человека единицы, так что цена
- * приемлема; когда их станут десятки, это первое место, которое надо заменить
- * серверной выборкой, а не наращивать параллелизм здесь.
+ * Раньше здесь был свой запрос -- список досок плюс запрос на каждую, -- и своя
+ * копия данных у каждого экрана. Переключение вкладки означало N+1 запросов и
+ * «Загрузка…» поверх уже виденного. Теперь это ВЫБОРКА из общего склада
+ * (DataContext): переключение вкладок сети не касается вовсе.
  *
- * Ошибка одной доски НЕ глотается: молча исчезнувшая доска в планировщике
- * опаснее видимой ошибки -- человек решит, что задач нет.
+ * Архивные сюда не попадают: это планировщик, а не журнал -- журнал живёт в
+ * Archive/My completed tasks.
  */
 export function useOrgTasks() {
-  const [tasks, setTasks] = useState<OrgTask[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { projects, tasks, ready, error } = useData();
 
-  const load = useCallback(() => {
-    getProjects()
-      .then(async (list) => {
-        setProjects(list);
-        const perProject = await Promise.all(
-          list.map((project) =>
-            getTasks(project.id).then((rows) => rows.map((task) => ({ task, projectName: project.name }))),
-          ),
-        );
-        // Архивные сюда не попадают: это планировщик, а не журнал -- журнал
-        // живёт в Archive/My completed tasks.
-        setTasks(perProject.flat().filter(({ task }) => task.status !== 'archived'));
-        setLoadError(null);
-      })
-      .catch((err) => setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить задачи.'))
-      .finally(() => setLoading(false));
-  }, []);
+  const rows = useMemo<OrgTask[]>(() => {
+    const nameById = new Map(projects.map((p) => [p.id, p.name]));
+    return tasks
+      .filter((task) => task.status !== 'archived')
+      .map((task) => ({ task, projectName: nameById.get(task.project_id) ?? '' }));
+  }, [tasks, projects]);
 
-  // Реже, чем доска (5с): здесь на каждый цикл уходит N+1 запрос, а сквозной
-  // экран смотрят, чтобы спланировать день, а не следить за чужим кликом.
-  usePolling(load, 15000);
-
-  return { tasks, projects, loading, loadError };
+  return { tasks: rows, projects: projects as Project[], loading: !ready, loadError: error };
 }
 
 /**
- * Справочник организации для подстановки имён. Роли member он недоступен
- * (GET /api/users отвечает ей 403) -- это НАМЕРЕННО, поэтому 403 здесь не
- * ошибка экрана, а пустой справочник: подписи с именами просто не появятся.
+ * Справочник организации для подстановки имён. Роли member он недоступен --
+ * это НАМЕРЕННО, поэтому пустой справочник здесь не ошибка экрана: подписи с
+ * именами просто не появятся.
  */
-export function useOrgUsers() {
-  const [users, setUsers] = useState<User[]>([]);
-  const [forbidden, setForbidden] = useState(false);
-
-  useEffect(() => {
-    getUsers()
-      .then(setUsers)
-      .catch((err) => {
-        setUsers([]);
-        setForbidden(err instanceof ApiError && err.status === 403);
-      });
-  }, []);
-
-  return { users, forbidden };
+export function useOrgUsers(): { users: User[]; forbidden: boolean } {
+  const { users, canSeeUsers, ready } = useData();
+  return { users, forbidden: ready && !canSeeUsers };
 }

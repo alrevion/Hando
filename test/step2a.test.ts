@@ -115,6 +115,7 @@ const FIXTURES: Record<string, Probe> = {
   'POST /users': { path: '/users', method: 'POST', body: { phone: '+3', name: 'x', role: 'admin' }, skip: 'штатно добавляет членство существующему телефону -- см. отдельный тест' },
 
   'GET /memberships/pending': { path: '/memberships/pending', skip: 'списочный: организация берётся из сессии, идентификаторов не принимает' },
+  'GET /org/snapshot': { path: '/org/snapshot', skip: 'списочный: организация берётся из сессии; содержимое проверяется отдельным тестом' },
 
   'PATCH /users/:id': { path: '/users/b1', method: 'PATCH', body: { name: 'взломан' } },
   // Заявку организации Б нельзя ни принять, ни отклонить сессией организации А:

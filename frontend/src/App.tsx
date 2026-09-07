@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { DataProvider, useData } from './context/DataContext';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar, type NavView } from './components/Sidebar';
 import { MobileShell } from './components/MobileShell';
@@ -12,13 +13,14 @@ import { ArchiveTab } from './components/ArchiveTab';
 import { PersonalArchiveTab } from './components/PersonalArchiveTab';
 import { ArchivedProjectsView } from './components/ArchivedProjectsView';
 import { AccessTab } from './components/AccessTab';
-import { ApiError, getProjects, getTask } from './lib/api';
-import type { Project, Task } from './types';
+import { getTask } from './lib/api';
+import type { Task } from './types';
 
 function AuthenticatedApp() {
   const { user, logout } = useAuth();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // Доски и задачи живут в общем складе выше вкладок: переключение экрана --
+  // это перерисовка, а не новая загрузка.
+  const { projects, error: loadError, refresh } = useData();
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectTab, setProjectTab] = useState<'board' | 'archive' | 'access'>('board');
   // Один экран за раз вместо четырёх независимых булевых флагов: с флагами
@@ -28,17 +30,15 @@ function AuthenticatedApp() {
   const [deepLinkTask, setDeepLinkTask] = useState<Task | null>(null);
   const isMobile = useIsMobile();
 
-  function loadProjects(selectId?: string) {
-    getProjects()
-      .then((data) => {
-        setProjects(data);
-        setLoadError(null);
-        setSelectedProjectId((current) => selectId ?? current ?? data[0]?.id ?? null);
-      })
-      .catch((err) => setLoadError(err instanceof ApiError ? err.message : 'Could not load projects.'));
+  async function loadProjects(selectId?: string) {
+    await refresh();
+    if (selectId) setSelectedProjectId(selectId);
   }
 
-  useEffect(() => loadProjects(), []);
+  // Первая доска выбирается сама, как только склад её принесёт.
+  useEffect(() => {
+    setSelectedProjectId((current) => current ?? projects[0]?.id ?? null);
+  }, [projects]);
 
   // Telegram notifications link to /?task=<id> so tapping one opens straight
   // to that task instead of just the board. Resolve it once on mount; an
@@ -95,8 +95,8 @@ function AuthenticatedApp() {
           setView('board');
         }}
         onProjectDeleted={(projectId) => {
-          setProjects((prev) => prev.filter((p) => p.id !== projectId));
           setSelectedProjectId((current) => (current === projectId ? null : current));
+          void refresh();
         }}
         onLogout={logout}
       />
@@ -193,7 +193,11 @@ function AppShell() {
     return <div className="app-frame" style={{ alignItems: 'center', justifyContent: 'center' }}><span className="muted">Загрузка…</span></div>;
   }
   if (!user) return <LoginPage />;
-  return <AuthenticatedApp />;
+  return (
+    <DataProvider>
+      <AuthenticatedApp />
+    </DataProvider>
+  );
 }
 
 function App() {

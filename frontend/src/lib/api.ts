@@ -192,3 +192,17 @@ export function approveMember(userId: string): Promise<{ ok: true }> {
 export function rejectMember(userId: string): Promise<{ ok: true }> {
   return request<{ ok: true }>(`/memberships/${userId}/reject`, { method: 'POST' });
 }
+
+/** Один снимок организации: доски, задачи и (только при полной загрузке) люди.
+ *  `since` -- курсор `at` из прошлого ответа; тогда приедут только изменения. */
+export interface OrgSnapshot {
+  at: string;
+  projects: Project[];
+  tasks: Task[];
+  users: User[] | null;
+  can_see_users: boolean;
+}
+
+export function getOrgSnapshot(since?: string): Promise<OrgSnapshot> {
+  return request<OrgSnapshot>(`/org/snapshot${since ? `?since=${encodeURIComponent(since)}` : ''}`);
+}

@@ -351,6 +351,92 @@ apiRoutes.post('/memberships/:userId/reject', requireRole('super_admin', 'creato
   return ok ? c.json({ ok: true }) : c.json({ error: 'no pending request' }, 404);
 });
 
+// ОДИН снимок всей организации вместо «список досок плюс запрос на каждую».
+//
+// Раньше каждый сквозной экран (Мои задачи, Поручения, Календарь, Люди) держал
+// свою копию данных и грузил её с нуля при появлении: переключение вкладки
+// означало N+1 запросов и надпись «Загрузка…» на уже виденных данных. Здесь
+// приложение берёт всё разом и дальше просит только ИЗМЕНЕНИЯ.
+//
+// `since` -- метка времени прошлого ответа. Сравнение обязано идти через
+// datetime(), а не строками: updated_at лежит в базе в ДВУХ форматах --
+// «2026-09-07 08:22:06» от DEFAULT datetime('now') и «2026-09-07T08:22:06.000Z»
+// от nowIso(). Строкой пробел (0x20) меньше «T», и все строки первого формата
+// всегда оказывались бы «старее» любого курсора. datetime() приводит оба к
+// одному виду. Запас в две секунды -- на потерю долей секунды при этом
+// приведении и на строки, записанные в ту же секунду, что и прошлый ответ:
+// лишняя строка безобидна, клиент кладёт её поверх своей по id.
+apiRoutes.get('/org/snapshot', async (c) => {
+  const orgId = c.get('orgId');
+  const userId = c.get('userId');
+  const role = c.get('role');
+  const since = c.req.query('since');
+  const at = nowIso();
+
+  // Те же правила видимости досок, что в GET /projects.
+  const { results: projects } = role === 'creator'
+    ? await c.env.DB.prepare('SELECT * FROM projects WHERE org_id = ? AND archived_at IS NULL ORDER BY created_at DESC')
+        .bind(orgId).all()
+    : await c.env.DB.prepare(
+        `SELECT DISTINCT p.* FROM projects p
+         LEFT JOIN project_memberships m ON m.project_id = p.id AND m.user_id = ?
+         WHERE p.org_id = ? AND p.archived_at IS NULL AND (m.user_id IS NOT NULL OR p.created_by = ?)
+         ORDER BY p.created_at DESC`,
+      ).bind(userId, orgId, userId).all();
+
+  const projectIds = (projects as { id: string }[]).map((p) => p.id);
+  const holes = projectIds.map(() => '?').join(',');
+
+  // Полная загрузка отдаёт только живые задачи -- архив в планировщике не нужен.
+  // Догрузка, наоборот, БЕЗ фильтра по статусу: ушедшая в архив задача обязана
+  // доехать до клиента, иначе она навсегда останется висеть у него на экране.
+  // Клиент выбрасывает её сам, увидев status = 'archived'.
+  const tasks = projectIds.length === 0 ? [] : (await c.env.DB.prepare(
+    since
+      ? `SELECT * FROM tasks WHERE org_id = ? AND project_id IN (${holes})
+           AND datetime(updated_at) >= datetime(?, '-2 seconds') ORDER BY created_at`
+      : `SELECT * FROM tasks WHERE org_id = ? AND project_id IN (${holes})
+           AND status IN ('todo','in_progress','done') ORDER BY created_at`,
+  ).bind(orgId, ...projectIds, ...(since ? [since] : [])).all<Record<string, unknown>>()).results;
+
+  // Адресаты -- одним запросом на весь снимок, а не по запросу на карточку.
+  const taskIds = (tasks as { id: string }[]).map((t) => t.id);
+  const aHoles = taskIds.map(() => '?').join(',');
+  const { results: rows } = taskIds.length === 0
+    ? { results: [] as { task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }[] }
+    : await c.env.DB.prepare(
+        `SELECT a.task_id, a.user_id, a.state, a.due_at, u.name AS user_name
+         FROM task_assignees a JOIN users u ON u.id = a.user_id
+         WHERE a.org_id = ? AND a.task_id IN (${aHoles}) ORDER BY a.created_at`,
+      ).bind(orgId, ...taskIds).all<{ task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }>();
+
+  const byTask = new Map<string, unknown[]>();
+  for (const r of rows) {
+    const list = byTask.get(r.task_id);
+    const one = { user_id: r.user_id, user_name: r.user_name, state: r.state, due_at: r.due_at };
+    if (list) list.push(one);
+    else byTask.set(r.task_id, [one]);
+  }
+
+  // Справочник людей едет только с ПОЛНЫМ снимком: он меняется на порядки реже
+  // задач, а опрос идёт каждые несколько секунд. После своих изменений клиент
+  // просит полный снимок и получает справочник заново.
+  const canSeeUsers = role === 'admin' || role === 'super_admin' || role === 'creator';
+  const users = since || !canSeeUsers ? null : (await c.env.DB.prepare(
+    `SELECT u.id, u.name, m.role AS role, m.position AS position, u.telegram_username, u.phone
+     FROM users u JOIN org_memberships m ON m.user_id = u.id
+     WHERE m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL ORDER BY u.name`,
+  ).bind(orgId).all()).results;
+
+  return c.json({
+    at,
+    projects,
+    tasks: (tasks as Record<string, unknown>[]).map((t) => ({ ...t, assignees: byTask.get(t.id as string) ?? [] })),
+    users,
+    can_see_users: canSeeUsers,
+  });
+});
+
 apiRoutes.get('/projects', async (c) => {
   const role = c.get('role');
   const orgId = c.get('orgId');
