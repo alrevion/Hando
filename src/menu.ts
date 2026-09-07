@@ -24,6 +24,7 @@ export const BTN = {
   join: '🔑 Вступить по коду',
   createShort: '➕ Создать',
   joinShort: '🔑 Вступить',
+  requests: '📨 Заявки',
   rename: '✏️ Переименовать',
   remove: '🗑 Удалить',
   switch: '↪️ Переключиться сюда',
@@ -163,13 +164,18 @@ export function orgsScreen(orgs: OrgRow[]): Screen {
 }
 
 /** Карточка организации. Кнопки зависят от прав: чужую фирму не переименовать. */
-export function orgScreen(org: OrgRow, userId: string): Screen {
+export function orgScreen(org: OrgRow, userId: string, pending = 0): Screen {
   const isOwner = org.owner_user_id === userId || org.role === 'creator';
   const lines = [`«${org.name}»`, `Ваша роль: ${roleName(org.role)}`];
   if (isOwner && org.join_code) lines.push('', `Код для сотрудников: ${org.join_code}`);
+  // Число в тексте, а не в подписи кнопки: подпись reply-кнопки -- это то, что
+  // бот получит обратно текстом, и счётчик в ней превратил бы её в подвижную
+  // мишень для сравнения.
+  if (isOwner && pending > 0) lines.push('', `Заявок на вступление: ${pending}`);
 
   const rows: { text: string }[][] = [];
   if (!org.is_current) rows.push([{ text: BTN.switch }]);
+  if (isOwner && pending > 0) rows.push([{ text: BTN.requests }]);
   if (isOwner) rows.push([{ text: BTN.rename }, { text: BTN.remove }]);
   else rows.push([{ text: BTN.leave }]);
   rows.push([{ text: BTN.back }]);

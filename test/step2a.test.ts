@@ -114,7 +114,13 @@ const FIXTURES: Record<string, Probe> = {
   'POST /projects': { path: '/projects', method: 'POST', body: { name: 'x', telegram_group_id: '111' }, skip: 'создаёт в своей организации; чужих идентификаторов не принимает' },
   'POST /users': { path: '/users', method: 'POST', body: { phone: '+3', name: 'x', role: 'admin' }, skip: 'штатно добавляет членство существующему телефону -- см. отдельный тест' },
 
+  'GET /memberships/pending': { path: '/memberships/pending', skip: 'списочный: организация берётся из сессии, идентификаторов не принимает' },
+
   'PATCH /users/:id': { path: '/users/b1', method: 'PATCH', body: { name: 'взломан' } },
+  // Заявку организации Б нельзя ни принять, ни отклонить сессией организации А:
+  // организация в адресе не участвует вовсе, она берётся из сессии.
+  'POST /memberships/:userId/approve': { path: '/memberships/b1/approve', method: 'POST', body: {} },
+  'POST /memberships/:userId/reject': { path: '/memberships/b1/reject', method: 'POST', body: {} },
   // pb-arch добавлен в мир -- значит и в карту, иначе она перестала бы быть полной.
   'DELETE /projects/:projectId': { path: '/projects/pb', method: 'DELETE' },
   'POST /projects/:projectId/restore': { path: '/projects/pb-arch/restore', method: 'POST', body: {} },

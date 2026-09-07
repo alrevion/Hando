@@ -43,7 +43,13 @@ export async function sendMessage(env: Env, chatId: string, text: string, replyM
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(replyMarkup ? { chat_id: chatId, text, reply_markup: replyMarkup } : { chat_id: chatId, text }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Раньше отказ Telegram проглатывался молча, и заявка на вступление
+      // пропадала без следа: кнопка с двумя UUID превышала предел
+      // callback_data в 64 байта, Telegram отвечал 400, а мы -- ничем.
+      console.error('sendMessage failed', res.status, await res.text().catch(() => ''));
+      return null;
+    }
     const data = (await res.json()) as { result?: { message_id?: number } };
     return data.result?.message_id != null ? String(data.result.message_id) : null;
   } catch {

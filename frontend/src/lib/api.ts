@@ -172,3 +172,23 @@ export const deleteAttachment = (attachmentId: string) => del<void>(`/attachment
 export function authTelegram(initData: string): Promise<{ user: User }> {
   return request<{ user: User }>('/auth/telegram', { method: 'POST', body: JSON.stringify({ initData }) });
 }
+
+/** Заявка на вступление в организацию (только creator/super_admin; иначе 403). */
+export interface PendingMember {
+  user_id: string;
+  name: string;
+  telegram_username: string | null;
+  created_at: string;
+}
+
+export function getPendingMembers(): Promise<PendingMember[]> {
+  return request<PendingMember[]>('/memberships/pending');
+}
+
+export function approveMember(userId: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/memberships/${userId}/approve`, { method: 'POST' });
+}
+
+export function rejectMember(userId: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/memberships/${userId}/reject`, { method: 'POST' });
+}

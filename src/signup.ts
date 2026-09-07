@@ -64,7 +64,29 @@ export async function createOrg(env: Env, userId: string, name: string): Promise
     // Липкий контекст: человек сразу оказывается в созданной организации.
     env.DB.prepare('UPDATE users SET current_org_id = ? WHERE id = ?').bind(orgId, userId),
   ]);
+  await ensureDefaultProject(env, orgId, userId);
   return { orgId, code };
+}
+
+/**
+ * Доска, на которую кладут задачи, пока других нет.
+ *
+ * Организация без доски -- тупик: tasks.project_id NOT NULL, класть задачу
+ * некуда, и бот на любую фразу отвечал «Не получилось создать задачу». Своей
+ * группы Telegram у этой доски нет (telegram_chat_id NULL) -- уведомления и
+ * так идут людям лично через очередь, а не в группу.
+ */
+export async function ensureDefaultProject(env: Env, orgId: string, createdBy: string): Promise<string> {
+  const existing = await env.DB
+    .prepare('SELECT id FROM projects WHERE org_id = ? AND archived_at IS NULL ORDER BY created_at LIMIT 1')
+    .bind(orgId)
+    .first<{ id: string }>();
+  if (existing) return existing.id;
+  const id = uuid();
+  await env.DB.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id) VALUES (?, ?, ?, ?, NULL)')
+    .bind(id, orgId, 'Задачи', createdBy)
+    .run();
+  return id;
 }
 
 export type JoinResult =
@@ -137,6 +159,16 @@ export async function approveJoin(
     .run();
   if (!res.meta.changes) return false;
 
+  // Доступ к доске, а не только к организации. И список досок, и задачи в
+  // приложении выбираются через project_memberships -- без строки человек
+  // видит пустое приложение, а бот отказывается принимать у него задачи.
+  // Поэтому подтверждение сразу сажает новичка на доску организации.
+  const projectId = await ensureDefaultProject(env, orgId, approverId);
+  await env.DB
+    .prepare('INSERT OR IGNORE INTO project_memberships (id, project_id, user_id, org_id) VALUES (?, ?, ?, ?)')
+    .bind(uuid(), projectId, applicantId, orgId)
+    .run();
+
   // Липкий контекст ставится только если человек ещё нигде не работает: у
   // состоящего в трёх организациях подтверждение четвёртой не должно
   // перебрасывать его туда без спроса.
@@ -160,4 +192,39 @@ export async function rejectJoin(env: Env, approverId: string, orgId: string, ap
     .bind(orgId, applicantId)
     .run();
   return Boolean(res.meta.changes);
+}
+
+/** Заявка, ожидающая решения владельца. */
+export type PendingRequest = { user_id: string; name: string; telegram_username: string | null; created_at: string };
+
+/** Заявки организации. Живут в базе, а не только в отправленном сообщении:
+ *  сообщение с кнопкой тонет среди уведомлений, и заявка пропадала вместе с ним. */
+export async function pendingRequests(env: Env, orgId: string): Promise<PendingRequest[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT u.id AS user_id, u.name, u.telegram_username, m.created_at
+     FROM org_memberships m JOIN users u ON u.id = m.user_id
+     WHERE m.org_id = ? AND m.confirmed_at IS NULL AND m.left_at IS NULL
+     ORDER BY m.created_at`,
+  ).bind(orgId).all<PendingRequest>();
+  return results;
+}
+
+/**
+ * Организация, в которой этот человек вправе решить эту заявку.
+ *
+ * Нужна из-за предела Telegram: в callback_data кнопки помещается 64 байта, а
+ * «join_ok:» с двумя UUID -- это 81, и Telegram отвергал ВСЁ сообщение с
+ * кнопками (заявка не доходила до владельца молча). Организацию в кнопку
+ * больше не кладём, она ищется здесь -- и поиск заодно есть проверка права:
+ * берутся только организации, где нажавший -- действующий creator/super_admin.
+ */
+export async function pendingOrgFor(env: Env, approverId: string, applicantId: string): Promise<string | null> {
+  const row = await env.DB.prepare(
+    `SELECT m.org_id FROM org_memberships m
+     JOIN org_memberships a ON a.org_id = m.org_id AND a.user_id = ?
+       AND a.left_at IS NULL AND a.confirmed_at IS NOT NULL AND a.role IN ('creator','super_admin')
+     WHERE m.user_id = ? AND m.confirmed_at IS NULL AND m.left_at IS NULL
+     ORDER BY m.created_at LIMIT 1`,
+  ).bind(approverId, applicantId).first<{ org_id: string }>();
+  return row?.org_id ?? null;
 }

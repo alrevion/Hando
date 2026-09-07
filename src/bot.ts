@@ -19,7 +19,7 @@ import { nowIso, uuid } from './db';
 import { myAssignee, transitionAssignee } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage } from './telegram';
 import { drainOutbox } from './outbox';
-import { approveJoin, createOrg, ensureUser, joinByCode, rejectJoin } from './signup';
+import { approveJoin, createOrg, ensureDefaultProject, ensureUser, joinByCode, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
 import {
   askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
   billingScreen, mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
@@ -97,12 +97,21 @@ async function createFromDraft(
      WHERE p.org_id = ? AND p.archived_at IS NULL AND (m.user_id IS NOT NULL OR p.created_by = ?)
      ORDER BY p.created_at LIMIT 1`,
   ).bind(who.userId, who.orgId, who.userId).first<{ id: string }>();
-  if (!project) return null;
+  // В только что созданной организации досок нет вовсе -- заводим первую, иначе
+  // класть задачу физически некуда (tasks.project_id NOT NULL). Если доски
+  // есть, а этой строки нет -- человека просто не добавили ни на одну, и это
+  // другой разговор: молча заводить ему личную доску нельзя.
+  const projectId = project?.id ?? (
+    (await env.DB.prepare('SELECT id FROM projects WHERE org_id = ? AND archived_at IS NULL LIMIT 1').bind(who.orgId).first())
+      ? null
+      : await ensureDefaultProject(env, who.orgId, who.userId)
+  );
+  if (!projectId) return null;
 
   const taskId = uuid();
   const now = nowIso();
   const task = {
-    id: taskId, org_id: who.orgId, project_id: project.id, title: draft.title,
+    id: taskId, org_id: who.orgId, project_id: projectId, title: draft.title,
     author_id: who.userId, kind: draft.kind, deadline: draft.deadline,
     telegram_message_id: null,
   } as import('./types').Task;
@@ -111,7 +120,7 @@ async function createFromDraft(
     env.DB.prepare(
       `INSERT INTO tasks (id, org_id, project_id, title, description, author_id, kind, source, status, deadline)
        VALUES (?, ?, ?, ?, '', ?, ?, ?, 'todo', ?)`,
-    ).bind(taskId, who.orgId, project.id, draft.title, who.userId, draft.kind,
+    ).bind(taskId, who.orgId, projectId, draft.title, who.userId, draft.kind,
       // source различает разбор паттернами и моделью -- это и есть замер для
       // порога-гейта шага 4b: сколько фраз обошлось без обращения к сети.
       media?.hasAudio ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.deadline),
@@ -241,8 +250,12 @@ botApp.post('/webhook', async (c) => {
     // Заявки на вступление разбираются ОТДЕЛЬНО и раньше: у них второй сегмент
     // -- организация, а не задача, и загрузчик задачи их бы отверг.
     if (action === 'join_ok' || action === 'join_no') {
-      const [, orgId, applicantId] = parts;
-      const done = action === 'join_ok'
+      // В кнопке только заявитель: «join_ok:» с ДВУМЯ UUID -- 81 байт, а предел
+      // callback_data у Telegram 64, и он отвергал всё сообщение целиком.
+      // Организация ищется по заявителю среди тех, где нажавший распоряжается.
+      const applicantId = parts[1] ?? '';
+      const orgId = applicantId ? await pendingOrgFor(c.env, who.userId, applicantId) : null;
+      const done = !orgId ? false : action === 'join_ok'
         ? await approveJoin(c.env, who.userId, orgId, applicantId)
         : await rejectJoin(c.env, who.userId, orgId, applicantId);
       // Право подтверждать проверяется ВНУТРИ approveJoin/rejectJoin, а не
@@ -454,8 +467,8 @@ botApp.post('/webhook', async (c) => {
       // человеку и к этой заявке, а не к навигации.
       await sendMessage(c.env, res.ownerTgId, `К Вам просится: ${res.applicantName}`, {
         inline_keyboard: [[
-          { text: '✅ Принять', callback_data: `join_ok:${res.orgId}:${userId}` },
-          { text: '✖️ Отклонить', callback_data: `join_no:${res.orgId}:${userId}` },
+          { text: '✅ Принять', callback_data: `join_ok:${userId}` },
+          { text: '✖️ Отклонить', callback_data: `join_no:${userId}` },
         ]],
       });
     }
@@ -466,7 +479,8 @@ botApp.post('/webhook', async (c) => {
   //
   // Reply-кнопка присылает свой текст, поэтому нажатие -- это совпадение с
   // подписью. Экран учитывается: «‹ Назад» на разных экранах ведёт в разное.
-  const openOrg = async (org: OrgRow) => show(c.env, chatId, userId, orgScreen(org, userId));
+  const openOrg = async (org: OrgRow) =>
+    show(c.env, chatId, userId, orgScreen(org, userId, (await pendingRequests(c.env, org.id)).length));
   const current = st.org ? orgs.find((o) => o.id === st.org) : undefined;
 
   switch (text) {
@@ -510,6 +524,25 @@ botApp.post('/webhook', async (c) => {
         await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
       }
       return c.json({ ok: true });
+    case BTN.requests: {
+      if (!current) return c.json({ ok: true });
+      const list = await pendingRequests(c.env, current.id);
+      if (list.length === 0) {
+        await sendMessage(c.env, chatId, 'Заявок нет.');
+        return c.json({ ok: true });
+      }
+      // По сообщению на заявку: кнопка привязана к человеку, а не к экрану, и
+      // должна жить при своём сообщении -- как и кнопки на задаче.
+      for (const r of list) {
+        await sendMessage(c.env, chatId, `Просится: ${r.name}${r.telegram_username ? ` (@${r.telegram_username})` : ''}`, {
+          inline_keyboard: [[
+            { text: '✅ Принять', callback_data: `join_ok:${r.user_id}` },
+            { text: '✖️ Отклонить', callback_data: `join_no:${r.user_id}` },
+          ]],
+        });
+      }
+      return c.json({ ok: true });
+    }
     case BTN.rename:
       if (current) {
         await setState(c.env, userId, { await: 'rename', screen: 'org', org: current.id });
@@ -620,7 +653,9 @@ botApp.post('/webhook', async (c) => {
 
   const created = await createFromDraft(c.env, who, draft, media, phrase);
   if (!created) {
-    await sendMessage(c.env, String(msg.chat.id), 'Не получилось создать задачу. Попробуйте ещё раз.');
+    // Единственная оставшаяся причина отказа: доски в организации есть, а
+    // человека не добавили ни на одну. Говорим прямо, что делать.
+    await sendMessage(c.env, String(msg.chat.id), 'Вас пока не добавили ни на одну доску — попросите руководителя.');
     return c.json({ ok: true });
   }
   await drainOutbox(c.env);

@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Check, ChevronDown, X } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
 import { PRIORITY_DOT } from '../lib/priority';
 import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
+import { approveMember, getPendingMembers, rejectMember, type PendingMember } from '../lib/api';
 import { TaskDetailModal } from './TaskDetailModal';
 import { isMine } from '../lib/tasks';
 
@@ -39,6 +40,22 @@ export function PeopleView() {
   const { users, forbidden } = useOrgUsers();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [viewing, setViewing] = useState<{ task: Task; responsible: User | undefined } | null>(null);
+  // Заявки на вступление. 403 -- это не ошибка, а ответ «вы не владелец»:
+  // список просто не появляется.
+  const [pending, setPending] = useState<PendingMember[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const loadPending = useCallback(() => { getPendingMembers().then(setPending).catch(() => setPending([])); }, []);
+  useEffect(loadPending, [loadPending]);
+
+  async function decide(userId: string, ok: boolean) {
+    setBusyId(userId);
+    try {
+      await (ok ? approveMember(userId) : rejectMember(userId));
+    } finally {
+      setBusyId(null);
+      loadPending();
+    }
+  }
 
   const rows = useMemo<PersonRow[]>(() => {
     const list = users.map((user) => {
@@ -68,6 +85,37 @@ export function PeopleView() {
 
       {loadError ? <div role="alert" className="alert alert-err">{loadError}</div> : null}
       {forbidden ? <div role="alert" className="alert alert-warn">Справочник организации доступен только руководителям.</div> : null}
+
+      {/* Заявки выше списка: это единственное, что здесь требует решения. */}
+      {pending.length > 0 ? (
+        <>
+          <h2 className="sec-title" style={{ marginTop: 0 }}>Просятся в организацию</h2>
+          <ul className="stack" style={{ marginBottom: 6 }}>
+            {pending.map((p) => (
+              <li key={p.user_id} className="card">
+                <div className="t-row" style={{ alignItems: 'center' }}>
+                  <span className="avatar avatar-lg">{initials(p.name) || '·'}</span>
+                  <span className="grow">
+                    <span className="t-title">{p.name}</span>
+                    {p.telegram_username ? <span className="t-meta"><span>@{p.telegram_username}</span></span> : null}
+                  </span>
+                </div>
+                <div className="btn-row">
+                  <button type="button" className="btn btn-primary" disabled={busyId === p.user_id} onClick={() => decide(p.user_id, true)}>
+                    <Check aria-hidden="true" style={{ width: 16, height: 16 }} />
+                    Принять
+                  </button>
+                  <button type="button" className="btn" disabled={busyId === p.user_id} onClick={() => decide(p.user_id, false)}>
+                    <X aria-hidden="true" style={{ width: 16, height: 16 }} />
+                    Отклонить
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <h2 className="sec-title">В организации</h2>
+        </>
+      ) : null}
 
       {loading ? (
         <p className="muted">Загрузка…</p>

@@ -8,7 +8,7 @@ import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it } from 'vitest';
 import { botApp } from '../src/bot';
 import { apiRoutes } from '../src/routes';
-import { approveJoin, createOrg, ensureUser, generateJoinCode, joinByCode, rejectJoin } from '../src/signup';
+import { approveJoin, createOrg, ensureDefaultProject, ensureUser, generateJoinCode, joinByCode, pendingOrgFor, rejectJoin } from '../src/signup';
 import { BTN, deleteOrg, leaveOrg, myOrgs, renameOrg, switchOrg } from '../src/menu';
 import { membershipRole, resolveOrgId } from '../src/auth';
 import { cookie, envWith, stubTelegram } from './fixture';
@@ -230,7 +230,7 @@ describe('регистрация целиком через бота -- ПОСТ�
     expect(await resolveOrgId(testEnv.DB, joiner!.id)).toBeNull();
 
     const org = await testEnv.DB.prepare('SELECT id FROM orgs WHERE join_code = ?').bind(code).first<{ id: string }>();
-    await hook(env, { callback_query: { id: 'cb', from: { id: 101, first_name: 'Д' }, data: `join_ok:${org!.id}:${joiner!.id}`, message: { chat: { id: 101 }, message_id: 1 } } });
+    await hook(env, { callback_query: { id: 'cb', from: { id: 101, first_name: 'Д' }, data: `join_ok:${joiner!.id}`, message: { chat: { id: 101 }, message_id: 1 } } });
 
     expect(await resolveOrgId(testEnv.DB, joiner!.id)).toBe(org!.id);
     expect(sent(spy).some((m) => m.chat_id === '202' && m.text.includes('приняли'))).toBe(true);
@@ -259,7 +259,7 @@ describe('регистрация целиком через бота -- ПОСТ�
     await hook(env, msg(909, code));
     const worker = await testEnv.DB.prepare("SELECT id FROM users WHERE telegram_user_id = '909'").first<{ id: string }>();
     const org = await testEnv.DB.prepare('SELECT id FROM orgs WHERE join_code = ?').bind(code).first<{ id: string }>();
-    await hook(env, { callback_query: { id: 'cb', from: { id: 707, first_name: 'Д' }, data: `join_ok:${org!.id}:${worker!.id}`, message: { chat: { id: 707 }, message_id: 1 } } });
+    await hook(env, { callback_query: { id: 'cb', from: { id: 707, first_name: 'Д' }, data: `join_ok:${worker!.id}`, message: { chat: { id: 707 }, message_id: 1 } } });
 
     await hook(env, msg(909, '/start'));
     const workerRows = (sent(spy).at(-1)! as unknown as { reply_markup?: { keyboard: { text: string }[][] } }).reply_markup!.keyboard;
@@ -401,5 +401,121 @@ describe('права на организацию проверяются В СА�
     // вся история работы. Убирается видимость, а не труд.
     const still = await testEnv.DB.prepare('SELECT archived_at FROM orgs WHERE id = ?').bind(orgId).first<{ archived_at: string | null }>();
     expect(still!.archived_at).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Живая проверка: заявка была подана, а владелец о ней не узнавал.
+//
+// Причина -- предел Telegram: в callback_data помещается 64 байта, а
+// «join_ok:» с ДВУМЯ UUID -- это 81. Telegram отвергал всё сообщение целиком, а
+// sendMessage молча возвращал null. Снаружи это выглядело как «заявок нет».
+// ---------------------------------------------------------------------------
+describe('заявка доходит до владельца', () => {
+  const tap = (env: Env, tgId: number, label: string) => hook(env, msg(tgId, label));
+  const onboard = async (env: Env, tgId: number, name: string) => {
+    await hook(env, msg(tgId, '/start'));
+    await hook(env, msg(tgId, name));
+  };
+
+  it('владелец получает сообщение с кнопками, и они укладываются в 64 байта', async () => {
+    const env = await blank();
+    const spy = tg();
+    await onboard(env, 501, 'Директор Директоров');
+    await tap(env, 501, BTN.create);
+    await hook(env, msg(501, 'Тестовая среда'));
+    const org = await testEnv.DB.prepare('SELECT id, join_code FROM orgs WHERE name = ?').bind('Тестовая среда').first<{ id: string; join_code: string }>();
+
+    await onboard(env, 502, 'Артур Заявитель');
+    await tap(env, 502, BTN.join);
+    await hook(env, msg(502, org!.join_code));
+
+    // Сообщение ушло ИМЕННО владельцу, а не только заявителю.
+    const toOwner = sent(spy).filter((m) => m.chat_id === '501' && /просится/i.test(m.text));
+    expect(toOwner).toHaveLength(1);
+
+    const kb = toOwner[0].reply_markup as { inline_keyboard: { callback_data: string }[][] };
+    const datas = kb.inline_keyboard.flat().map((b) => b.callback_data);
+    expect(datas).toHaveLength(2);
+    for (const d of datas) {
+      // Тот самый предел. Раньше здесь было 81 байт.
+      expect(new TextEncoder().encode(d).length).toBeLessThanOrEqual(64);
+    }
+
+    // И кнопка работает: нажатие владельца подтверждает заявку.
+    await hook(env, { callback_query: { id: 'cb', from: { id: 501, first_name: 'Д' }, data: datas[0], message: { chat: { id: 501 }, message_id: 7 } } });
+    const joiner = await testEnv.DB.prepare('SELECT id FROM users WHERE telegram_user_id = ?').bind('502').first<{ id: string }>();
+    expect(await membershipRole(testEnv.DB, org!.id, joiner!.id)).toBe('member');
+  });
+
+  it('нажатие постороннего заявку не подтверждает: кнопку можно переслать', async () => {
+    const env = await blank();
+    const owner = await ensureUser(env, 'tg-own', 'Владелец', null);
+    const { orgId, code } = await createOrg(env, owner, 'Кафе');
+    const joiner = await ensureUser(env, 'tg-joi', 'Новичок', null);
+    await joinByCode(env, joiner, code);
+    // Организация в кнопке больше не передаётся -- значит право обязано
+    // проверяться по членству нажавшего, а не по содержимому кнопки.
+    expect(await pendingOrgFor(env, owner, joiner)).toBe(orgId);
+    const stranger = await ensureUser(env, 'tg-str', 'Посторонний', null);
+    expect(await pendingOrgFor(env, stranger, joiner)).toBeNull();
+  });
+
+  it('заявитель не показан среди сотрудников, пока его не приняли', async () => {
+    const env = await blank();
+    const owner = await ensureUser(env, 'tg-o2', 'Владелец', null);
+    const { orgId, code } = await createOrg(env, owner, 'Кафе');
+    const joiner = await ensureUser(env, 'tg-j2', 'Новичок', null);
+    await joinByCode(env, joiner, code);
+
+    const c = await cookie(owner, 'creator', orgId);
+    const listed = async () => (await (await apiRoutes.request('/users', { headers: { Cookie: c } }, env)).json()) as { id: string }[];
+    // Заявитель -- ещё не коллега: ему нельзя поручать и его нельзя показывать
+    // в справочнике. Ровно это и вылезло вживую как «в людях два человека».
+    expect((await listed()).map((u) => u.id)).toEqual([owner]);
+
+    // Зато он виден там, где его судьбу решают.
+    const pending = (await (await apiRoutes.request('/memberships/pending', { headers: { Cookie: c } }, env)).json()) as { user_id: string }[];
+    expect(pending.map((p) => p.user_id)).toEqual([joiner]);
+
+    await apiRoutes.request(`/memberships/${joiner}/approve`, { method: 'POST', headers: { Cookie: c } }, env);
+    expect((await listed()).map((u) => u.id).sort()).toEqual([owner, joiner].sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Организация без доски -- тупик: tasks.project_id NOT NULL, класть задачу
+// некуда, и бот на любую фразу отвечал «Не получилось создать задачу».
+// ---------------------------------------------------------------------------
+describe('доска есть всегда', () => {
+  it('созданная организация сразу с доской', async () => {
+    const env = await blank();
+    const uid = await ensureUser(env, 'tg-b1', 'Директор', null);
+    const { orgId } = await createOrg(env, uid, 'Фирма');
+    const { n } = (await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM projects WHERE org_id = ? AND archived_at IS NULL').bind(orgId).first<{ n: number }>())!;
+    expect(n).toBe(1);
+  });
+
+  it('второй вызов доску не плодит', async () => {
+    const env = await blank();
+    const uid = await ensureUser(env, 'tg-b2', 'Директор', null);
+    const { orgId } = await createOrg(env, uid, 'Фирма');
+    const first = await ensureDefaultProject(env, orgId, uid);
+    expect(await ensureDefaultProject(env, orgId, uid)).toBe(first);
+  });
+
+  it('принятый сотрудник видит доску, а не пустое приложение', async () => {
+    const env = await blank();
+    const owner = await ensureUser(env, 'tg-b3', 'Владелец', null);
+    const { orgId, code } = await createOrg(env, owner, 'Фирма');
+    const worker = await ensureUser(env, 'tg-b4', 'Сотрудник', null);
+    await joinByCode(env, worker, code);
+    await approveJoin(env, owner, orgId, worker);
+
+    // И список досок, и задачи выбираются через project_memberships: без строки
+    // человек входит в приложение и не видит ровно ничего.
+    const res = await apiRoutes.request('/projects', { headers: { Cookie: await cookie(worker, 'member', orgId) } }, env);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as unknown[]).length).toBe(1);
   });
 });

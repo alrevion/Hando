@@ -6,10 +6,11 @@ import type { Role, Task, TaskStatus } from './types';
 import { logEvent, nowIso, uuid } from './db';
 import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyInitData, verifyOtp, verifySession } from './auth';
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
-import { deleteMessage, getFileUrl, resolveChatId, sendDocument } from './telegram';
+import { deleteMessage, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, buildNotification } from './transition';
 import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
+import { approveJoin, pendingRequests, rejectJoin } from './signup';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
 // larger, but would then be permanently unretrievable). Enforce the download cap
@@ -314,7 +315,7 @@ apiRoutes.get('/users', requireRole('admin', 'super_admin', 'creator'), async (c
   const { results } = await c.env.DB.prepare(
     `SELECT u.id, u.name, m.role AS role, u.telegram_username${extra}
      FROM users u JOIN org_memberships m ON m.user_id = u.id
-     WHERE m.org_id = ? AND m.left_at IS NULL ORDER BY u.name`,
+     WHERE m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL ORDER BY u.name`,
   )
     .bind(c.get('orgId'))
     .all();
@@ -326,6 +327,30 @@ apiRoutes.get('/users', requireRole('admin', 'super_admin', 'creator'), async (c
 // creator видит все доски СВОЕЙ организации. super_admin/admin -- только те, куда
 // их добавили, или (super_admin) созданные ими самими: у каждой доски свои люди,
 // роль не даёт членства автоматически.
+// Заявки на вступление. Отдельно от /users НАМЕРЕННО: подавший заявку ещё не
+// сотрудник -- ему нельзя поручать и его нельзя показывать среди коллег, пока
+// владелец не решил. Экран нужен потому, что сообщение с кнопкой в Telegram
+// теряется среди уведомлений, а заявка обязана дождаться ответа.
+apiRoutes.get('/memberships/pending', requireRole('super_admin', 'creator'), async (c) =>
+  c.json(await pendingRequests(c.env, c.get('orgId'))));
+
+apiRoutes.post('/memberships/:userId/approve', requireRole('super_admin', 'creator'), async (c) => {
+  const applicantId = c.req.param('userId');
+  // Право проверяется ВНУТРИ approveJoin по членству, а не только по роли из
+  // сессии: организация в адресе не участвует, она берётся из сессии.
+  const ok = await approveJoin(c.env, c.get('userId'), c.get('orgId'), applicantId);
+  if (!ok) return c.json({ error: 'no pending request' }, 404);
+  const tg = await c.env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?')
+    .bind(applicantId).first<{ telegram_user_id: string | null }>();
+  if (tg?.telegram_user_id) await sendMessage(c.env, tg.telegram_user_id, 'Вас приняли. /moe -- ваши задачи.');
+  return c.json({ ok: true });
+});
+
+apiRoutes.post('/memberships/:userId/reject', requireRole('super_admin', 'creator'), async (c) => {
+  const ok = await rejectJoin(c.env, c.get('userId'), c.get('orgId'), c.req.param('userId'));
+  return ok ? c.json({ ok: true }) : c.json({ error: 'no pending request' }, 404);
+});
+
 apiRoutes.get('/projects', async (c) => {
   const role = c.get('role');
   const orgId = c.get('orgId');
