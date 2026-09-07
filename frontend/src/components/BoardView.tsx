@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { ArrowRight, Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { ContentBlock, Priority, Project, Task, TaskStatus, User } from '../types';
 import { parseContentBlocks } from '../types';
 import {
@@ -22,14 +23,14 @@ import { TaskCard } from './TaskCard';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskFormModal } from './TaskFormModal';
 import { RejectTaskModal } from './RejectTaskModal';
-import { assigneeKey } from '../lib/tasks';
+import { assigneeKey, isMine } from '../lib/tasks';
 
 type DeadlineSort = 'asc' | 'desc' | null;
 
 const COLUMNS: { status: TaskStatus; label: string }[] = [
-  { status: 'todo', label: 'Todo' },
-  { status: 'in_progress', label: 'In Progress' },
-  { status: 'done', label: 'Done' },
+  { status: 'todo', label: 'К выполнению' },
+  { status: 'in_progress', label: 'В работе' },
+  { status: 'done', label: 'Сдано' },
 ];
 
 const NEXT_STATUS: Partial<Record<TaskStatus, TaskStatus>> = {
@@ -43,9 +44,12 @@ interface BoardViewProps {
   // Set when arriving via a Telegram notification's deep link (?task=<id>) --
   // opens straight to that task's detail view instead of just the board.
   initialTask?: Task | null;
+  // Переключатель досок на телефоне (чипы из MobileShell) -- рисуется под
+  // заголовком, чтобы порядок был «что это -> какие ещё есть -> этапы».
+  projectSwitcher?: ReactNode;
 }
 
-export function BoardView({ project, user, initialTask }: BoardViewProps) {
+export function BoardView({ project, user, initialTask, projectSwitcher }: BoardViewProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [members, setMembers] = useState<User[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -53,6 +57,8 @@ export function BoardView({ project, user, initialTask }: BoardViewProps) {
   const [actionInfo, setActionInfo] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [viewingTask, setViewingTask] = useState<Task | null>(initialTask ?? null);
+  // Какая колонка видна на телефоне (на lg+ видны все три).
+  const [mobileCol, setMobileCol] = useState<TaskStatus>('todo');
   const [rejectingTask, setRejectingTask] = useState<Task | null>(null);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -238,91 +244,145 @@ export function BoardView({ project, user, initialTask }: BoardViewProps) {
     return dep.title;
   }
 
+  // Действия в шторке задачи. Правила те же, что на карточке (TaskCard):
+  // двигает только исполнитель, принимает/возвращает руководитель, правит
+  // todo -- любой, in_progress -- руководитель. Кнопки, которые прямо сейчас
+  // недоступны, не показываем вовсе -- шторка не место для серых кнопок.
+  function sheetActions(task: Task): ReactNode {
+    const blocked = blockedByTitle(task);
+    const canMove = isMine(task, user.id) && !blocked && (task.status === 'todo' || task.status === 'in_progress');
+    const editable = task.status === 'todo' || (task.status === 'in_progress' && canManage);
+    const review = task.status === 'done' && canManage && !task.confirmed_at;
+    const busy = busyId === task.id;
+    if (!canMove && !editable && !review && !canManage) return null;
+    const after = (fn: () => void) => () => { setViewingTask(null); fn(); };
+    return (
+      <>
+        {canMove ? (
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={after(() => handleAdvance(task))}>
+            <ArrowRight aria-hidden="true" style={{ width: 16, height: 16 }} />
+            {task.status === 'todo' ? 'Взять в работу' : 'Сдать'}
+          </button>
+        ) : null}
+        {review ? (
+          <div className="btn-row" style={{ marginTop: 0 }}>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={after(() => handleConfirm(task))}>
+              <Check aria-hidden="true" style={{ width: 16, height: 16 }} />
+              Принять
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={after(() => setRejectingTask(task))}>
+              <X aria-hidden="true" style={{ width: 16, height: 16 }} />
+              Вернуть
+            </button>
+          </div>
+        ) : null}
+        {editable || canManage ? (
+          <div className="btn-row" style={{ marginTop: 0 }}>
+            {editable ? (
+              <button type="button" className="btn" disabled={busy} onClick={after(() => setEditingTask(task))}>
+                <Pencil aria-hidden="true" style={{ width: 16, height: 16 }} />
+                Изменить
+              </button>
+            ) : null}
+            {canManage ? (
+              <button type="button" className="btn btn-danger" disabled={busy} onClick={after(() => handleDelete(task))}>
+                <Trash2 aria-hidden="true" style={{ width: 16, height: 16 }} />
+                В архив
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
   return (
-    <div className="flex h-full flex-col p-6">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-slate-900">{project.name}</h1>
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
-        >
-          New task
+    <div className="flex h-full flex-col lg:p-6">
+      <div className="h1-row">
+        {/* Когда рядом есть переключатель досок (телефон), имя доски пишет
+            он -- заголовок называет экран, иначе название стоит дважды. */}
+        <h1 className="h1">{projectSwitcher ? 'Доска' : project.name}</h1>
+        <button type="button" onClick={() => setCreating(true)} className="btn btn-sm btn-primary">
+          <Plus aria-hidden="true" style={{ width: 16, height: 16 }} />
+          Новая
         </button>
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-medium text-slate-500">Срочность:</span>
-          {PRIORITIES.map((p) => (
-            <button
-              key={p.value}
-              type="button"
-              onClick={() => togglePriorityFilter(p.value)}
-              aria-pressed={priorityFilter.has(p.value)}
-              className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs font-medium ${
-                priorityFilter.has(p.value) ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-300 text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${p.dot}`} aria-hidden="true" />
-              {p.label}
-            </button>
-          ))}
-        </div>
+      {projectSwitcher}
 
-        <div className="h-4 w-px bg-slate-300" aria-hidden="true" />
-
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-medium text-slate-500">Дедлайн:</span>
+      {/* Фильтры -- одна строка чипов: срочность (можно несколько) и порядок
+          по сроку (один из двух). Только на широком экране: на телефоне в
+          колонке единицы задач, и ряд фильтров -- шум перед списком. */}
+      <div className="chips only-wide" aria-label="Фильтры">
+        {PRIORITIES.map((p) => (
           <button
+            key={p.value}
             type="button"
-            onClick={() => setDeadlineSort((s) => (s === 'asc' ? null : 'asc'))}
-            aria-pressed={deadlineSort === 'asc'}
-            className={`rounded-full border px-2 py-1 text-xs font-medium ${
-              deadlineSort === 'asc' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-300 text-slate-600 hover:bg-slate-50'
-            }`}
+            onClick={() => togglePriorityFilter(p.value)}
+            aria-pressed={priorityFilter.has(p.value)}
+            className={priorityFilter.has(p.value) ? 'chip on' : 'chip'}
           >
-            Раньше
+            <span className={`dot ${p.dot}`} aria-hidden="true" />
+            {p.label}
           </button>
-          <button
-            type="button"
-            onClick={() => setDeadlineSort((s) => (s === 'desc' ? null : 'desc'))}
-            aria-pressed={deadlineSort === 'desc'}
-            className={`rounded-full border px-2 py-1 text-xs font-medium ${
-              deadlineSort === 'desc' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-300 text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            Позже
-          </button>
-        </div>
+        ))}
+        <span aria-hidden="true" style={{ width: 1, background: 'var(--sep)', margin: '8px 4px' }} />
+        <button
+          type="button"
+          onClick={() => setDeadlineSort((s) => (s === 'asc' ? null : 'asc'))}
+          aria-pressed={deadlineSort === 'asc'}
+          className={deadlineSort === 'asc' ? 'chip on' : 'chip'}
+        >
+          Срок: раньше
+        </button>
+        <button
+          type="button"
+          onClick={() => setDeadlineSort((s) => (s === 'desc' ? null : 'desc'))}
+          aria-pressed={deadlineSort === 'desc'}
+          className={deadlineSort === 'desc' ? 'chip on' : 'chip'}
+        >
+          Срок: позже
+        </button>
       </div>
 
-      {loadError ? (
-        <div role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
-          {loadError}
-        </div>
-      ) : null}
-      {actionError ? (
-        <div role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
-          {actionError}
-        </div>
-      ) : null}
-      {actionInfo ? (
-        <div role="status" className="mb-3 rounded-md border border-emerald-300 bg-emerald-50 p-2 text-sm text-emerald-800">
-          {actionInfo}
-        </div>
-      ) : null}
-
-      <div className="grid flex-1 grid-cols-1 gap-4 overflow-y-auto sm:grid-cols-3">
+      {/* На телефоне колонки не влезают рядом -- показываем одну, выбранную
+          сегментом; на широком экране (lg) сегмент прячется и видны все три. */}
+      <div className="chips only-narrow" role="tablist" aria-label="Этап">
         {COLUMNS.map((col) => (
-          <div key={col.status} className="flex min-h-0 flex-col rounded-lg bg-slate-50 p-3">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+          <button
+            key={col.status}
+            type="button"
+            role="tab"
+            aria-selected={mobileCol === col.status}
+            onClick={() => setMobileCol(col.status)}
+            className={mobileCol === col.status ? 'chip on' : 'chip'}
+          >
+            {col.label}
+            <span className="cnt">{visibleTasks.filter((t) => t.status === col.status).length}</span>
+          </button>
+        ))}
+      </div>
+
+      {loadError ? <div role="alert" className="alert alert-err">{loadError}</div> : null}
+      {actionError ? <div role="alert" className="alert alert-err">{actionError}</div> : null}
+      {actionInfo ? <div role="status" className="alert alert-ok">{actionInfo}</div> : null}
+
+      <div className="grid flex-1 grid-cols-1 gap-4 lg:min-h-0 lg:grid-cols-3 lg:overflow-y-auto">
+        {COLUMNS.map((col) => (
+          <div
+            key={col.status}
+            className={`${col.status === mobileCol ? 'flex' : 'hidden lg:flex'} min-h-0 flex-col lg:rounded-[14px] lg:bg-[var(--fill2)] lg:p-3`}
+          >
+            <h2 className="sec-title hidden lg:block" style={{ marginTop: 0 }}>
               {col.label}
-              <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-normal text-slate-600">
+              <span className="cnt" style={{ marginLeft: 8, fontWeight: 500, color: 'var(--label3)' }}>
                 {visibleTasks.filter((t) => t.status === col.status).length}
               </span>
             </h2>
-            <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
+            <div className="stack lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+              {visibleTasks.filter((t) => t.status === col.status).length === 0 ? (
+                <p className="muted" style={{ padding: '12px 4px' }}>Здесь пусто.</p>
+              ) : null}
               {visibleTasks
                 .filter((t) => t.status === col.status)
                 .map((task) => (
@@ -334,11 +394,9 @@ export function BoardView({ project, user, initialTask }: BoardViewProps) {
                     currentUserId={user.id}
                     blockedByTitle={blockedByTitle(task)}
                     busy={busyId === task.id}
-                    onEdit={() => setEditingTask(task)}
                     onAdvance={() => handleAdvance(task)}
                     onConfirm={() => handleConfirm(task)}
                     onReject={() => setRejectingTask(task)}
-                    onDelete={() => handleDelete(task)}
                     onView={() => setViewingTask(task)}
                   />
                 ))}
@@ -352,6 +410,7 @@ export function BoardView({ project, user, initialTask }: BoardViewProps) {
           task={viewingTask}
           responsible={memberById.get(assigneeKey(viewingTask))}
           onClose={() => setViewingTask(null)}
+          actions={sheetActions(viewingTask)}
         />
       ) : null}
 

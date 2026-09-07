@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import type { LucideIcon } from 'lucide-react';
 
 export interface NavTab {
@@ -8,55 +9,41 @@ export interface NavTab {
 }
 
 /**
- * Нижняя навигация -- основная на телефоне.
+ * Плавающая пилюля навигации -- та же, что в Ijoda: стекло с размытием над
+ * лентой, скользящая подложка под активной вкладкой.
  *
- * Почему не боковая панель: в Telegram приложение открывается на пол-экрана,
- * и панель слева съедает треть ширины под то, чем пользуются раз в сессию.
- * Внизу до кнопок дотягивается большой палец -- туда и вынесено главное.
+ * Подложка одна на всю панель, а не своя у каждой кнопки: тогда при
+ * переключении она ЕДЕТ от старой вкладки к новой, и глаз видит, откуда и
+ * куда ушёл. Ширина слота = (100% - поля) / число вкладок, сдвиг = индекс *
+ * 100% собственной ширины; цвет иконки и подложка идут с одной кривой.
  *
- * Правила, которые здесь соблюдены осознанно:
- *   -- не больше пяти вкладок (больше не помещается читаемо);
- *   -- иконка И подпись: одна иконка без подписи угадывается неверно;
- *   -- зона нажатия не меньше 44pt по высоте;
- *   -- отступ снизу под жестовую полосу iPhone (safe-area).
+ * Не больше пяти вкладок, у каждой иконка И подпись, зона нажатия во всю
+ * высоту дока (62px) -- см. index.css .bottom-nav.
  */
 export function BottomNav({
   tabs, active, onSelect,
 }: { tabs: NavTab[]; active: string; onSelect: (id: string) => void }) {
+  const index = Math.max(0, tabs.findIndex((t) => t.id === active));
   return (
-    <nav
-      aria-label="Основная навигация"
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--tg-separator,rgba(0,0,0,0.08))] bg-[var(--tg-bg,#fff)]"
-      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
-    >
-      <ul className="mx-auto flex max-w-lg">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const on = tab.id === active;
-          return (
-            <li key={tab.id} className="flex-1">
-              <button
-                type="button"
-                onClick={() => onSelect(tab.id)}
-                aria-current={on ? 'page' : undefined}
-                className={`relative flex h-14 w-full flex-col items-center justify-center gap-0.5 transition-colors ${
-                  on ? 'text-[var(--tg-link,#2563eb)]' : 'text-[var(--tg-hint,#64748b)]'
-                }`}
-              >
-                <span className="relative">
-                  <Icon className="h-5 w-5" strokeWidth={on ? 2.4 : 1.8} aria-hidden="true" />
-                  {tab.badge ? (
-                    <span className="absolute -right-2 -top-1 min-w-4 rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-4 text-white">
-                      {tab.badge > 99 ? '99+' : tab.badge}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="text-[11px] font-medium leading-none">{tab.label}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+    <nav aria-label="Основная навигация" className="bottom-nav" style={{ '--n': tabs.length } as CSSProperties}>
+      <div className="nav-indicator" aria-hidden="true" style={{ transform: `translateX(${index * 100}%)` }} />
+      {tabs.map((tab, i) => {
+        const Icon = tab.icon;
+        const on = i === index;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => onSelect(tab.id)}
+            aria-current={on ? 'page' : undefined}
+            className={on ? 'nav-btn active' : 'nav-btn'}
+          >
+            <Icon strokeWidth={on ? 2.2 : 1.9} aria-hidden="true" />
+            <span className="nav-label">{tab.label}</span>
+            {tab.badge ? <span className="nav-badge">{tab.badge > 99 ? '99+' : tab.badge}</span> : null}
+          </button>
+        );
+      })}
     </nav>
   );
 }

@@ -49,7 +49,7 @@ export function ArchivedProjectsView({ onRestored }: ArchivedProjectsViewProps) 
 
   return (
     <div className="flex h-full flex-col overflow-y-auto p-6">
-      <h1 className="mb-4 text-xl font-semibold text-slate-900">Archived projects</h1>
+      <h1 className="mb-4 text-xl font-semibold text-[var(--label)]">Archived projects</h1>
 
       {loadError ? (
         <div role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
@@ -58,25 +58,25 @@ export function ArchivedProjectsView({ onRestored }: ArchivedProjectsViewProps) 
       ) : null}
 
       {loading ? (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <p className="text-sm text-[var(--label3)]">Loading…</p>
       ) : projects.length === 0 ? (
-        <p className="text-sm text-slate-500">No archived projects.</p>
+        <p className="text-sm text-[var(--label3)]">No archived projects.</p>
       ) : (
         <ul className="space-y-2">
           {projects.map((p) => (
             <li
               key={p.id}
-              className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white p-4"
+              className="flex items-center justify-between gap-2 rounded-lg border border-[var(--hair)] bg-[var(--bg2)] p-4"
             >
               <div className="min-w-0">
-                <h2 className="truncate text-sm font-medium text-slate-900">{p.name}</h2>
-                {p.archived_at ? <p className="text-xs text-slate-500">Archived {formatDateTime(p.archived_at)}</p> : null}
+                <h2 className="truncate text-sm font-medium text-[var(--label)]">{p.name}</h2>
+                {p.archived_at ? <p className="text-xs text-[var(--label3)]">Archived {formatDateTime(p.archived_at)}</p> : null}
               </div>
               <button
                 type="button"
                 onClick={() => handleRestore(p)}
                 disabled={restoringId === p.id}
-                className="flex shrink-0 items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                className="flex shrink-0 items-center gap-1 rounded-md border border-[var(--hair)] px-3 py-1.5 text-sm text-[var(--label2)] hover:bg-[var(--fill2)] disabled:opacity-50"
               >
                 {restoringId === p.id ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Lock } from 'lucide-react';
-import type { Priority, Task, TaskStatus, User } from '../types';
+import type { Priority, Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
 import { PRIORITIES, PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
 import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
@@ -13,17 +13,6 @@ import { isMine } from '../lib/tasks';
 const PRIORITY_RANK: Record<Priority, number> = Object.fromEntries(
   PRIORITIES.map((p, index) => [p.value, index]),
 ) as Record<Priority, number>;
-
-const STATUS_LABEL: Partial<Record<TaskStatus, string>> = {
-  todo: 'К выполнению',
-  in_progress: 'В работе',
-};
-
-function formatDeadline(deadline: string) {
-  const d = new Date(deadline);
-  if (Number.isNaN(d.getTime())) return deadline;
-  return d.toLocaleDateString();
-}
 
 /**
  * Экран сотрудника: «что делать раньше, что позже». Один сквозной список своих
@@ -72,28 +61,23 @@ export function MyTasksView({ user }: { user: User }) {
   ).length;
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto p-6">
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <h1 className="text-xl font-semibold text-slate-900">Мои задачи</h1>
-        {awaitingReview > 0 ? (
-          <span className="rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700">
-            На проверке: {awaitingReview}
-          </span>
-        ) : null}
+    <div className="lg:h-full lg:overflow-y-auto lg:p-6">
+      <div className="h1-row">
+        <h1 className="h1">Мои задачи</h1>
+        {awaitingReview > 0 ? <span className="pill pill-green">На проверке · {awaitingReview}</span> : null}
       </div>
 
-      {loadError ? (
-        <div role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
-          {loadError}
-        </div>
-      ) : null}
+      {loadError ? <div role="alert" className="alert alert-err">{loadError}</div> : null}
 
       {loading ? (
-        <p className="text-sm text-slate-500">Загрузка…</p>
+        <p className="muted">Загрузка…</p>
       ) : queue.length === 0 ? (
-        <p className="text-sm text-slate-500">Активных задач нет.</p>
+        <div className="empty">
+          <b>Активных задач нет</b>
+          Новые поручения появятся здесь и в боте.
+        </div>
       ) : (
-        <ol className="space-y-2">
+        <ol className="stack">
           {queue.map(({ task, projectName, blockedBy }, index) => {
             const overdue = isTaskOverdue(task);
             return (
@@ -101,42 +85,33 @@ export function MyTasksView({ user }: { user: User }) {
                 <button
                   type="button"
                   onClick={() => setViewing(task)}
-                  className={`flex w-full items-start gap-3 rounded-lg border bg-white p-3 text-left hover:shadow-md ${
-                    overdue ? 'border-red-300' : 'border-slate-200'
-                  }`}
+                  className={`card card-tap${overdue ? ' is-overdue' : ''}`}
                 >
-                  <span className="mt-0.5 w-6 shrink-0 text-sm font-semibold tabular-nums text-slate-400">{index + 1}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-slate-900">{task.title}</span>
-                    <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                        <span className={`h-1.5 w-1.5 rounded-full ${PRIORITY_DOT[task.priority]}`} aria-hidden="true" />
-                        {PRIORITY_LABEL[task.priority]}
+                  <span className="t-row">
+                    <span className="num">{index + 1}</span>
+                    <span className="grow">
+                      <span className="t-title">{task.title}</span>
+                      <span className="t-meta">
+                        <span className={`dot ${PRIORITY_DOT[task.priority]}`} aria-hidden="true" />
+                        <span>{PRIORITY_LABEL[task.priority]}</span>
+                        <span>·</span>
+                        <span>{projectName}</span>
+                        {task.deadline ? (
+                          <>
+                            <span>·</span>
+                            <span className={overdue ? 'c-red' : undefined}>{formatDeadlineDays(task.deadline)}</span>
+                          </>
+                        ) : null}
                       </span>
-                      {task.deadline ? (
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                            overdue ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'
-                          }`}
-                        >
-                          {formatDeadline(task.deadline)} · {formatDeadlineDays(task.deadline)}
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
-                          без срока
-                        </span>
-                      )}
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                        {STATUS_LABEL[task.status]}
-                      </span>
-                      <span className="truncate text-xs text-slate-500">{projectName}</span>
-                      {blockedBy ? (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
-                          title={`Ждёт задачу «${blockedBy}»`}
-                        >
-                          <Lock className="h-3 w-3" aria-hidden="true" />
-                          Ждёт «{blockedBy}»
+                      {task.status === 'in_progress' || blockedBy ? (
+                        <span className="pills">
+                          {task.status === 'in_progress' ? <span className="pill pill-blue">В работе</span> : null}
+                          {blockedBy ? (
+                            <span className="pill pill-orange" title={`Ждёт задачу «${blockedBy}»`}>
+                              <Lock aria-hidden="true" />
+                              <span>Ждёт «{blockedBy}»</span>
+                            </span>
+                          ) : null}
                         </span>
                       ) : null}
                     </span>

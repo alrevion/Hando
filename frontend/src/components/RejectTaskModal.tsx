@@ -41,66 +41,50 @@ export function RejectTaskModal({ task, onClose, onReject }: RejectTaskModalProp
   }
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="reject-task-title"
-        className="w-full max-w-sm rounded-lg bg-white p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-4 flex items-center justify-between">
-          <h2 id="reject-task-title" className="text-lg font-semibold text-slate-900">
-            Reject "{task.title}"
-          </h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-slate-500 hover:bg-slate-100">
-            <X className="h-4 w-4" aria-hidden="true" />
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-labelledby="reject-task-title" className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-grab" aria-hidden="true" />
+        <div className="sheet-head">
+          <h2 id="reject-task-title" className="sheet-title">Вернуть «{task.title}»</h2>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">
+            <X aria-hidden="true" />
           </button>
         </div>
 
-        {error ? (
-          <div role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
-            {error}
-          </div>
-        ) : null}
+        {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
 
         <form onSubmit={handleSubmit} noValidate>
-          <label htmlFor="reject-comment" className="mb-1 block text-sm font-medium text-slate-700">
-            Reason
-          </label>
-          <textarea
-            id="reject-comment"
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            rows={3}
-            placeholder="What still needs fixing?"
-            className="mb-4 w-full resize-none rounded-md border border-slate-300 px-3 py-2 text-sm focus-visible:outline-blue-600"
-          />
+          <div className="field">
+            <label htmlFor="reject-comment" className="lbl">Что не так</label>
+            <textarea
+              id="reject-comment"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              rows={3}
+              placeholder="Что нужно доделать?"
+              className="inp"
+            />
+          </div>
 
-          <label htmlFor="reject-extra-days" className="mb-1 block text-sm font-medium text-slate-700">
-            Extra days until the new deadline
-          </label>
-          <input
-            id="reject-extra-days"
-            type="number"
-            min={1}
-            step={1}
-            value={extraDays}
-            onChange={(e) => setExtraDays(Number(e.target.value))}
-            className="mb-4 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus-visible:outline-blue-600"
-          />
+          <div className="field">
+            <label htmlFor="reject-extra-days" className="lbl">Дней на доработку</label>
+            <input
+              id="reject-extra-days"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              step={1}
+              value={extraDays}
+              onChange={(e) => setExtraDays(Number(e.target.value))}
+              className="inp"
+            />
+          </div>
 
-          <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose} className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex items-center gap-2 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-blue-300"
-            >
+          <div className="btn-row">
+            <button type="button" onClick={onClose} className="btn">Отмена</button>
+            <button type="submit" disabled={submitting} className="btn btn-danger">
               {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-              Reject
+              Вернуть
             </button>
           </div>
         </form>

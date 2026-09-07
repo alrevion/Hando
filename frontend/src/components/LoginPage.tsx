@@ -19,7 +19,7 @@ export function LoginPage() {
     setError(null);
     setNotRegistered(false);
     if (!phone.trim()) {
-      setError('Enter a phone number.');
+      setError('Введите номер телефона.');
       return;
     }
     setSubmitting(true);
@@ -34,7 +34,7 @@ export function LoginPage() {
       } else if (err instanceof ApiError) {
         setError(err.message);
       } else {
-        setError('Could not reach the server. Try again.');
+        setError('Сервер не отвечает. Попробуйте ещё раз.');
       }
     } finally {
       setSubmitting(false);
@@ -45,7 +45,7 @@ export function LoginPage() {
     e.preventDefault();
     setError(null);
     if (!code.trim()) {
-      setError('Enter the code you received.');
+      setError('Введите код из Telegram.');
       return;
     }
     setSubmitting(true);
@@ -53,41 +53,30 @@ export function LoginPage() {
       const { user } = await authVerify(phone.trim(), code.trim());
       setUser(user);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not verify the code. Try again.');
+      setError(err instanceof ApiError ? err.message : 'Код не подошёл. Попробуйте ещё раз.');
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-8 shadow-sm">
-        <h1 className="mb-6 text-xl font-semibold text-slate-900">Вход в Hando</h1>
+    <div className="app-frame" style={{ justifyContent: 'center', padding: '24px 20px' }}>
+      <div style={{ marginBottom: 22 }}>
+        <h1 className="h1" style={{ marginBottom: 6 }}>Вход в Hando</h1>
+        <p className="muted">Из Telegram вход происходит сам. Здесь -- для браузера.</p>
+      </div>
 
-        {notRegistered ? (
-          <div
-            role="alert"
-            className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
-          >
-            This phone number hasn't been set up yet. Ask a super-admin or the creator to add
-            your account, then try again.
-          </div>
-        ) : null}
+      {notRegistered ? (
+        <div role="alert" className="alert alert-warn">
+          Этот номер ещё не подключён. Откройте бота в Telegram и пройдите регистрацию, затем попробуйте снова.
+        </div>
+      ) : null}
+      {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
 
-        {error ? (
-          <div
-            role="alert"
-            className="mb-4 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800"
-          >
-            {error}
-          </div>
-        ) : null}
-
-        {step === 'phone' ? (
-          <form onSubmit={handleSendCode} noValidate>
-            <label htmlFor="phone" className="mb-1 block text-sm font-medium text-slate-700">
-              Phone number
-            </label>
+      {step === 'phone' ? (
+        <form onSubmit={handleSendCode} noValidate>
+          <div className="field">
+            <label htmlFor="phone" className="lbl">Номер телефона</label>
             <input
               id="phone"
               name="phone"
@@ -95,46 +84,42 @@ export function LoginPage() {
               autoComplete="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="+1 555 000 0000"
-              className="mb-4 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus-visible:outline-blue-600"
+              placeholder="+998 90 000 00 00"
+              className="inp"
             />
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+          </div>
+          <button type="submit" disabled={submitting} className="btn btn-primary">
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            Получить код
+          </button>
+        </form>
+      ) : (
+        <form onSubmit={handleVerify} noValidate>
+          <p className="muted" style={{ marginBottom: 12 }}>
+            Код отправлен на <b style={{ color: 'var(--label)' }}>{phone}</b>.
+          </p>
+
+          <div className="card" style={{ marginBottom: 16 }}>
+            {/* ?start=login is Telegram's deep-link param -- opening this fires
+                /start automatically, so there's no separate Start tap needed. */}
+            <a
+              href={`https://t.me/${VERIFICATION_BOT}?start=login`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn"
+              style={{ textDecoration: 'none' }}
             >
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-              Send code
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={handleVerify} noValidate>
-            <p className="mb-3 text-sm text-slate-600">
-              Code sent to <span className="font-medium">{phone}</span>.
+              <Send aria-hidden="true" style={{ width: 16, height: 16 }} />
+              Открыть @{VERIFICATION_BOT}
+            </a>
+            <p className="hint" style={{ marginTop: 10 }}>
+              Впервые? Нажмите кнопку и поделитесь контактом, когда бот попросит -- так код придёт в Telegram.
+              Уже подключены? Код уже в чате с ботом.
             </p>
+          </div>
 
-            <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 p-3">
-              {/* ?start=login is Telegram's deep-link param -- opening this fires
-                  /start automatically, so there's no separate Start tap needed. */}
-              <a
-                href={`https://t.me/${VERIFICATION_BOT}?start=login`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-              >
-                <Send className="h-4 w-4" aria-hidden="true" />
-                Open @{VERIFICATION_BOT} in Telegram
-              </a>
-              <p className="mt-2 text-xs text-blue-900">
-                First time signing in? Tap the button above and share your contact when the bot
-                asks -- that's how the code reaches you in Telegram. Already set up? The code
-                should already be in your chat with the bot.
-              </p>
-            </div>
-
-            <label htmlFor="code" className="mb-1 block text-sm font-medium text-slate-700">
-              Verification code
-            </label>
+          <div className="field">
+            <label htmlFor="code" className="lbl">Код из Telegram</label>
             <input
               id="code"
               name="code"
@@ -143,30 +128,27 @@ export function LoginPage() {
               autoComplete="one-time-code"
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              className="mb-4 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus-visible:outline-blue-600"
+              className="inp"
             />
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
-            >
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-              Verify
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setStep('phone');
-                setCode('');
-                setError(null);
-              }}
-              className="mt-3 w-full text-center text-sm text-slate-500 underline hover:text-slate-700"
-            >
-              Use a different number
-            </button>
-          </form>
-        )}
-      </div>
+          </div>
+          <button type="submit" disabled={submitting} className="btn btn-primary">
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            Войти
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setStep('phone');
+              setCode('');
+              setError(null);
+            }}
+            className="link"
+            style={{ display: 'block', margin: '16px auto 0', fontSize: 14 }}
+          >
+            Другой номер
+          </button>
+        </form>
+      )}
     </div>
   );
 }

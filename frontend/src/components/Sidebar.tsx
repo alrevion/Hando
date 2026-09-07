@@ -93,13 +93,13 @@ export function Sidebar({
   return (
     <nav
       aria-label="Projects"
-      className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white"
+      className="flex h-full w-64 shrink-0 flex-col border-r border-[var(--hair)] bg-[var(--bg2)]"
     >
       <OrgSwitcher user={user} />
 
-      <div className="border-b border-slate-200 p-4">
-        <p className="truncate text-sm font-medium text-slate-900">{user.name}</p>
-        <p className="text-xs text-slate-500">{user.position || user.role.replace('_', ' ')}</p>
+      <div className="border-b border-[var(--hair)] p-4">
+        <p className="truncate text-sm font-medium text-[var(--label)]">{user.name}</p>
+        <p className="text-xs text-[var(--label3)]">{user.position || user.role.replace('_', ' ')}</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
@@ -111,7 +111,7 @@ export function Sidebar({
                 onClick={() => onSelectView(item.view)}
                 aria-current={view === item.view ? 'page' : undefined}
                 className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
-                  view === item.view ? 'bg-blue-50 font-medium text-blue-700' : 'text-slate-700 hover:bg-slate-100'
+                  view === item.view ? 'bg-blue-50 font-medium text-blue-700' : 'text-[var(--label2)] hover:bg-[var(--fill2)]'
                 }`}
               >
                 <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -122,7 +122,7 @@ export function Sidebar({
         </ul>
 
         <div className="mb-2 flex items-center justify-between px-1">
-          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          <span className="text-xs font-semibold uppercase tracking-wide text-[var(--label3)]">
             Projects
           </span>
           {canManageProjects ? (
@@ -130,7 +130,7 @@ export function Sidebar({
               type="button"
               aria-label="Add project"
               onClick={() => setShowAddForm((v) => !v)}
-              className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              className="rounded p-1 text-[var(--label3)] hover:bg-[var(--fill2)] hover:text-[var(--label)]"
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -147,7 +147,7 @@ export function Sidebar({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Project name"
-              className="mb-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus-visible:outline-blue-600"
+              className="mb-1 w-full rounded-md border border-[var(--hair)] px-2 py-1 text-sm focus-visible:outline-blue-600"
             />
             <label htmlFor="new-project-group" className="sr-only">
               Telegram group ID
@@ -157,9 +157,9 @@ export function Sidebar({
               value={groupId}
               onChange={(e) => setGroupId(e.target.value)}
               placeholder="Telegram group ID (e.g. 1234567890)"
-              className="mb-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus-visible:outline-blue-600"
+              className="mb-1 w-full rounded-md border border-[var(--hair)] px-2 py-1 text-sm focus-visible:outline-blue-600"
             />
-            <p className="mb-1 text-xs text-slate-500">
+            <p className="mb-1 text-xs text-[var(--label3)]">
               Just the group ID -- the -100 supergroup prefix is added automatically.
             </p>
             {error ? (
@@ -187,7 +187,7 @@ export function Sidebar({
                 className={`flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
                   view === 'board' && selectedProjectId === project.id
                     ? 'bg-blue-50 font-medium text-blue-700'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    : 'text-[var(--label2)] hover:bg-[var(--fill2)]'
                 }`}
               >
                 <FolderKanban className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -200,7 +200,7 @@ export function Sidebar({
                   disabled={archivingId === project.id}
                   aria-label={`Archive ${project.name}`}
                   title="Archive this project"
-                  className="shrink-0 rounded p-1 text-slate-300 opacity-0 hover:bg-slate-100 hover:text-slate-600 focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+                  className="shrink-0 rounded p-1 text-[var(--label4)] opacity-0 hover:bg-[var(--fill2)] hover:text-[var(--label2)] focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
                 >
                   {archivingId === project.id ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -212,14 +212,14 @@ export function Sidebar({
             </li>
           ))}
           {projects.length === 0 ? (
-            <li className="px-2 py-1.5 text-sm text-slate-500">No projects yet.</li>
+            <li className="px-2 py-1.5 text-sm text-[var(--label3)]">No projects yet.</li>
           ) : null}
         </ul>
 
         {/* GET /api/archive/mine ролью не ограничен, и member -- такой же
             исполнитель, как admin: свой закрытый список нужен обоим. */}
         {user.role === 'admin' || user.role === 'member' ? (
-          <div className="mt-4 border-t border-slate-200 pt-3">
+          <div className="mt-4 border-t border-[var(--hair)] pt-3">
             <button
               type="button"
               onClick={() => onSelectView('personal-archive')}
@@ -227,7 +227,7 @@ export function Sidebar({
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
                 view === 'personal-archive'
                   ? 'bg-blue-50 font-medium text-blue-700'
-                  : 'text-slate-700 hover:bg-slate-100'
+                  : 'text-[var(--label2)] hover:bg-[var(--fill2)]'
               }`}
             >
               <ClipboardCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -237,7 +237,7 @@ export function Sidebar({
         ) : null}
 
         {canManageProjects ? (
-          <div className="mt-4 border-t border-slate-200 pt-3">
+          <div className="mt-4 border-t border-[var(--hair)] pt-3">
             <button
               type="button"
               onClick={() => onSelectView('archived-projects')}
@@ -245,7 +245,7 @@ export function Sidebar({
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
                 view === 'archived-projects'
                   ? 'bg-blue-50 font-medium text-blue-700'
-                  : 'text-slate-700 hover:bg-slate-100'
+                  : 'text-[var(--label2)] hover:bg-[var(--fill2)]'
               }`}
             >
               <ArchiveRestore className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -255,11 +255,11 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <div className="border-t border-slate-200 p-3">
+      <div className="border-t border-[var(--hair)] p-3">
         <button
           type="button"
           onClick={onLogout}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-[var(--label2)] hover:bg-[var(--fill2)]"
         >
           <LogOut className="h-4 w-4" aria-hidden="true" />
           Log out

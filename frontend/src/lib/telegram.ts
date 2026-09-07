@@ -9,6 +9,9 @@ type WebApp = {
   expand(): void;
   colorScheme?: 'light' | 'dark';
   themeParams?: Record<string, string>;
+  setHeaderColor?(color: string): void;
+  setBackgroundColor?(color: string): void;
+  onEvent?(event: string, handler: () => void): void;
 };
 
 function webApp(): WebApp | null {
@@ -34,12 +37,16 @@ export function initData(): string | null {
  */
 export function applyTelegramTheme(): void {
   const w = (window as unknown as { Telegram?: { WebApp?: WebApp } }).Telegram?.WebApp;
-  const p = w?.themeParams;
-  const dark = w?.colorScheme === 'dark';
+  // Вне Telegram тему не навязываем: index.css сам следует системной
+  // настройке через prefers-color-scheme.
+  if (!w?.colorScheme) return;
+  const p = w.themeParams;
+  const dark = w.colorScheme === 'dark';
   const root = document.documentElement;
 
-  // color-scheme нужен браузеру, чтобы системные элементы (скроллбары, поля
-  // ввода) не остались светлыми на тёмном фоне.
+  // data-theme переключает набор токенов в index.css; color-scheme нужен
+  // браузеру, чтобы системные элементы (скроллбары, поля ввода) не остались
+  // светлыми на тёмном фоне.
   root.style.colorScheme = dark ? 'dark' : 'light';
   root.dataset.theme = dark ? 'dark' : 'light';
   if (!p) return;
@@ -68,6 +75,12 @@ export function announceReady(): void {
     w.ready();
     w.expand();
     applyTelegramTheme();
+    // Шапка и подложка самого Telegram вокруг нас -- того же цвета, что наша
+    // страница (secondary_bg), иначе над стеклянной шапкой видна чужая полоса.
+    w.setHeaderColor?.('secondary_bg_color');
+    w.setBackgroundColor?.('secondary_bg_color');
+    // Человек переключил тему мессенджера, не закрывая приложение.
+    w.onEvent?.('themeChanged', applyTelegramTheme);
   } catch {
     // Старые клиенты могут не знать expand(); это не повод падать.
   }

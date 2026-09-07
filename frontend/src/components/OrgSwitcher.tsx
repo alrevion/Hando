@@ -17,14 +17,14 @@ export function OrgSwitcher({ user }: { user: User }) {
   if (!user.org_name) return null;
 
   return (
-    <div className="border-b border-slate-200 px-4 py-3">
+    <div className="border-b border-[var(--hair)] px-4 py-3">
       <div className="flex items-center gap-2">
-        <Building2 className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
-        <p className="truncate text-sm font-medium text-slate-900" title={user.org_name}>
+        <Building2 className="h-4 w-4 shrink-0 text-[var(--label3)]" aria-hidden="true" />
+        <p className="truncate text-sm font-medium text-[var(--label)]" title={user.org_name}>
           {user.org_name}
         </p>
       </div>
-      <p className="mt-0.5 text-xs text-slate-400">Переключение пока недоступно</p>
+      <p className="mt-0.5 text-xs text-[var(--label3)]">Переключение пока недоступно</p>
     </div>
   );
 }

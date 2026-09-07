@@ -95,149 +95,95 @@ export function TaskFormModal({ task, members, otherTasks, onClose, onSubmit }: 
   }
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-900/40 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="task-form-title"
-        className="flex max-h-[85vh] w-full max-w-md flex-col rounded-lg bg-white p-6 shadow-lg"
-      >
-        <div className="mb-4 flex items-center justify-between">
-          <h2 id="task-form-title" className="text-lg font-semibold text-slate-900">
-            {task ? 'Edit task' : 'New task'}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="rounded p-1 text-slate-500 hover:bg-slate-100"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
+    <div className="sheet-backdrop">
+      <div role="dialog" aria-modal="true" aria-labelledby="task-form-title" className="sheet">
+        <div className="sheet-grab" aria-hidden="true" />
+        <div className="sheet-head">
+          <h2 id="task-form-title" className="sheet-title">{task ? 'Изменить задачу' : 'Новая задача'}</h2>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">
+            <X aria-hidden="true" />
           </button>
         </div>
 
-        {formError ? (
-          <div role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
-            {formError}
-          </div>
-        ) : null}
+        {formError ? <div role="alert" className="alert alert-err">{formError}</div> : null}
 
         {task && task.status === 'in_progress' ? (
-          <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-800">
-            Saving will move this task back to Todo.
-          </div>
+          <div className="alert alert-warn">После сохранения задача вернётся в «К выполнению».</div>
         ) : null}
 
-        <form onSubmit={handleSubmit} noValidate className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <label htmlFor="task-title" className="mb-1 block text-sm font-medium text-slate-700">
-            Title
-          </label>
-          <input
-            id="task-title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            aria-invalid={!!errors.title}
-            aria-describedby={errors.title ? 'task-title-error' : undefined}
-            className="mb-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus-visible:outline-blue-600"
-          />
-          {errors.title ? (
-            <p id="task-title-error" role="alert" className="mb-2 text-xs text-red-700">
-              {errors.title}
-            </p>
-          ) : (
-            <div className="mb-2" />
-          )}
-
-          <label htmlFor="task-responsible" className="mb-1 block text-sm font-medium text-slate-700">
-            Responsible
-          </label>
-          <select
-            id="task-responsible"
-            value={responsibleId}
-            onChange={(e) => setResponsibleId(e.target.value)}
-            aria-invalid={!!errors.responsible}
-            aria-describedby={errors.responsible ? 'task-responsible-error' : undefined}
-            className="mb-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-blue-600"
-          >
-            <option value="">Select a person…</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-          {errors.responsible ? (
-            <p id="task-responsible-error" role="alert" className="mb-2 text-xs text-red-700">
-              {errors.responsible}
-            </p>
-          ) : (
-            <div className="mb-2" />
-          )}
-
-          <span className="mb-1 block text-sm font-medium text-slate-700">Priority</span>
-          <div className="mb-4 flex gap-2">
-            {PRIORITIES.map((p) => (
-              <button
-                key={p.value}
-                type="button"
-                onClick={() => setPriority(p.value)}
-                aria-pressed={priority === p.value}
-                className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm ${
-                  priority === p.value ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-300 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <span className={`h-2 w-2 rounded-full ${p.dot}`} aria-hidden="true" />
-                {p.label}
-              </button>
-            ))}
+        <form onSubmit={handleSubmit} noValidate>
+          <div className="field">
+            <label htmlFor="task-title" className="lbl">Название</label>
+            <input
+              id="task-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              aria-invalid={!!errors.title}
+              aria-describedby={errors.title ? 'task-title-error' : undefined}
+              className="inp"
+            />
+            {errors.title ? <p id="task-title-error" role="alert" className="field-err">{errors.title}</p> : null}
           </div>
 
-          <label htmlFor="task-deadline" className="mb-1 block text-sm font-medium text-slate-700">
-            Deadline (optional)
-          </label>
-          <input
-            id="task-deadline"
-            type="date"
-            value={deadline ?? ''}
-            onChange={(e) => setDeadline(e.target.value)}
-            className="mb-4 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus-visible:outline-blue-600"
-          />
+          <div className="field">
+            <label htmlFor="task-responsible" className="lbl">Кто делает</label>
+            <select
+              id="task-responsible"
+              value={responsibleId}
+              onChange={(e) => setResponsibleId(e.target.value)}
+              aria-invalid={!!errors.responsible}
+              aria-describedby={errors.responsible ? 'task-responsible-error' : undefined}
+              className="inp"
+            >
+              <option value="">Выберите человека…</option>
+              {members.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+            {errors.responsible ? <p id="task-responsible-error" role="alert" className="field-err">{errors.responsible}</p> : null}
+          </div>
 
-          <label htmlFor="task-depends-on" className="mb-1 block text-sm font-medium text-slate-700">
-            Depends on (optional)
-          </label>
-          <select
-            id="task-depends-on"
-            value={dependsOn}
-            onChange={(e) => setDependsOn(e.target.value)}
-            className="mb-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-blue-600"
-          >
-            <option value="">No dependency</option>
-            {dependencyOptions.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.title}
-              </option>
-            ))}
-          </select>
+          <div className="field">
+            <span className="lbl">Срочность</span>
+            <div className="chips" style={{ paddingBottom: 0 }}>
+              {PRIORITIES.map((p) => (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => setPriority(p.value)}
+                  aria-pressed={priority === p.value}
+                  className={priority === p.value ? 'chip on' : 'chip'}
+                >
+                  <span className={`dot ${p.dot}`} aria-hidden="true" />
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
-          <span className="mb-1 block text-sm font-medium text-slate-700">Content</span>
+          <div className="field">
+            <label htmlFor="task-deadline" className="lbl">Срок (необязательно)</label>
+            <input id="task-deadline" type="date" value={deadline ?? ''} onChange={(e) => setDeadline(e.target.value)} className="inp" />
+          </div>
+
+          <div className="field">
+            <label htmlFor="task-depends-on" className="lbl">Зависит от (необязательно)</label>
+            <select id="task-depends-on" value={dependsOn} onChange={(e) => setDependsOn(e.target.value)} className="inp">
+              <option value="">Без зависимости</option>
+              {dependencyOptions.map((t) => (
+                <option key={t.id} value={t.id}>{t.title}</option>
+              ))}
+            </select>
+          </div>
+
+          <span className="lbl">Описание</span>
           <ContentEditor blocks={blocks} onChange={setBlocks} />
 
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex items-center gap-2 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-blue-300"
-            >
+          <div className="btn-row">
+            <button type="button" onClick={onClose} className="btn">Отмена</button>
+            <button type="submit" disabled={submitting} className="btn btn-primary">
               {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-              Save
+              Сохранить
             </button>
           </div>
         </form>

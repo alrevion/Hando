@@ -68,7 +68,7 @@ export function AccessTab({ project, currentUser }: AccessTabProps) {
 
   return (
     <div className="flex h-full flex-col gap-6 overflow-y-auto p-6">
-      <h1 className="text-xl font-semibold text-slate-900">{project.name} — Access</h1>
+      <h1 className="text-xl font-semibold text-[var(--label)]">{project.name} — Access</h1>
 
       {loadError ? (
         <div role="alert" className="rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
@@ -79,29 +79,29 @@ export function AccessTab({ project, currentUser }: AccessTabProps) {
       <CreatePersonForm currentUser={currentUser} projectId={project.id} onCreated={load} />
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-[var(--label3)]">
           Members of this project
         </h2>
         {loading ? (
-          <p className="text-sm text-slate-500">Loading…</p>
+          <p className="text-sm text-[var(--label3)]">Loading…</p>
         ) : members.length === 0 ? (
-          <p className="text-sm text-slate-500">No admins assigned to this project yet.</p>
+          <p className="text-sm text-[var(--label3)]">No admins assigned to this project yet.</p>
         ) : (
           <ul className="space-y-1">
             {members.map((m) => (
               <li
                 key={m.id}
-                className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="flex items-center justify-between gap-2 rounded-md border border-[var(--hair)] bg-[var(--bg2)] px-3 py-2 text-sm"
               >
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
                   <span>{m.name}</span>
-                  <span className="text-xs text-slate-400">· {m.role.replace('_', ' ')}</span>
-                  <span className="text-xs text-slate-400">{m.telegram_username ? `@${m.telegram_username}` : 'no Telegram username'}</span>
+                  <span className="text-xs text-[var(--label3)]">· {m.role.replace('_', ' ')}</span>
+                  <span className="text-xs text-[var(--label3)]">{m.telegram_username ? `@${m.telegram_username}` : 'no Telegram username'}</span>
                   <button
                     type="button"
                     onClick={() => setEditingPerson(m)}
                     aria-label={`Edit ${m.name}`}
-                    className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-blue-700"
+                    className="rounded p-0.5 text-[var(--label3)] hover:bg-[var(--fill2)] hover:text-blue-700"
                   >
                     <Pencil className="h-3 w-3" aria-hidden="true" />
                   </button>
@@ -124,7 +124,7 @@ export function AccessTab({ project, currentUser }: AccessTabProps) {
                 ) : (
                   // No membership row to remove: either the global creator, or this
                   // project's own creator (implicit access, not a formal member row).
-                  <span className="shrink-0 text-xs text-slate-400">always has access</span>
+                  <span className="shrink-0 text-xs text-[var(--label3)]">always has access</span>
                 )}
               </li>
             ))}
@@ -133,11 +133,11 @@ export function AccessTab({ project, currentUser }: AccessTabProps) {
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-[var(--label3)]">
           Add an existing person to this project
         </h2>
         {nonMembers.length === 0 ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-[var(--label3)]">
             Everyone eligible is already assigned, or no admin accounts exist yet -- create one above.
           </p>
         ) : (
@@ -145,7 +145,7 @@ export function AccessTab({ project, currentUser }: AccessTabProps) {
             {nonMembers.map((u) => (
               <li
                 key={u.id}
-                className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="flex items-center justify-between gap-2 rounded-md border border-[var(--hair)] bg-[var(--bg2)] px-3 py-2 text-sm"
               >
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span>{u.name}</span>
@@ -153,7 +153,7 @@ export function AccessTab({ project, currentUser }: AccessTabProps) {
                     type="button"
                     onClick={() => setEditingPerson(u)}
                     aria-label={`Edit ${u.name}`}
-                    className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-blue-700"
+                    className="rounded p-0.5 text-[var(--label3)] hover:bg-[var(--fill2)] hover:text-blue-700"
                   >
                     <Pencil className="h-3 w-3" aria-hidden="true" />
                   </button>
@@ -162,7 +162,7 @@ export function AccessTab({ project, currentUser }: AccessTabProps) {
                   type="button"
                   onClick={() => handleAdd(u.id)}
                   disabled={busyUserId === u.id}
-                  className="flex shrink-0 items-center gap-1 rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  className="flex shrink-0 items-center gap-1 rounded border border-[var(--hair)] px-2 py-1 text-xs text-[var(--label2)] hover:bg-[var(--fill2)] disabled:opacity-50"
                 >
                   {busyUserId === u.id ? (
                     <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -241,11 +241,11 @@ function CreatePersonForm({
   }
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+    <section className="rounded-lg border border-[var(--hair)] bg-[var(--fill2)] p-4">
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[var(--label3)]">
         Create a new person
       </h2>
-      <p className="mb-3 text-xs text-slate-500">
+      <p className="mb-3 text-xs text-[var(--label3)]">
         Invite-only: this is the only way a phone number becomes able to sign in.
       </p>
 
@@ -257,7 +257,7 @@ function CreatePersonForm({
 
       <form onSubmit={handleSubmit} noValidate className="flex flex-wrap items-end gap-3">
         <div>
-          <label htmlFor="new-person-phone" className="mb-1 block text-xs font-medium text-slate-700">
+          <label htmlFor="new-person-phone" className="mb-1 block text-xs font-medium text-[var(--label2)]">
             Phone number
           </label>
           <input
@@ -267,7 +267,7 @@ function CreatePersonForm({
             onChange={(e) => setPhone(e.target.value)}
             aria-invalid={!!errors.phone}
             aria-describedby={errors.phone ? 'new-person-phone-error' : undefined}
-            className="w-44 rounded-md border border-slate-300 px-2 py-1.5 text-sm focus-visible:outline-blue-600"
+            className="w-44 rounded-md border border-[var(--hair)] px-2 py-1.5 text-sm focus-visible:outline-blue-600"
           />
           {errors.phone ? (
             <p id="new-person-phone-error" role="alert" className="mt-1 text-xs text-red-700">
@@ -277,7 +277,7 @@ function CreatePersonForm({
         </div>
 
         <div>
-          <label htmlFor="new-person-name" className="mb-1 block text-xs font-medium text-slate-700">
+          <label htmlFor="new-person-name" className="mb-1 block text-xs font-medium text-[var(--label2)]">
             Name
           </label>
           <input
@@ -286,7 +286,7 @@ function CreatePersonForm({
             onChange={(e) => setName(e.target.value)}
             aria-invalid={!!errors.name}
             aria-describedby={errors.name ? 'new-person-name-error' : undefined}
-            className="w-44 rounded-md border border-slate-300 px-2 py-1.5 text-sm focus-visible:outline-blue-600"
+            className="w-44 rounded-md border border-[var(--hair)] px-2 py-1.5 text-sm focus-visible:outline-blue-600"
           />
           {errors.name ? (
             <p id="new-person-name-error" role="alert" className="mt-1 text-xs text-red-700">
@@ -296,11 +296,11 @@ function CreatePersonForm({
         </div>
 
         <div>
-          <label htmlFor="new-person-username" className="mb-1 block text-xs font-medium text-slate-700">
+          <label htmlFor="new-person-username" className="mb-1 block text-xs font-medium text-[var(--label2)]">
             Telegram username (optional)
           </label>
-          <div className="flex w-44 items-center rounded-md border border-slate-300 bg-white px-2 py-1.5 focus-within:outline focus-within:outline-2 focus-within:outline-blue-600">
-            <span className="text-sm text-slate-400">@</span>
+          <div className="flex w-44 items-center rounded-md border border-[var(--hair)] bg-[var(--bg2)] px-2 py-1.5 focus-within:outline focus-within:outline-2 focus-within:outline-blue-600">
+            <span className="text-sm text-[var(--label3)]">@</span>
             <input
               id="new-person-username"
               value={telegramUsername}
@@ -313,14 +313,14 @@ function CreatePersonForm({
 
         {canCreateSuperAdmin ? (
           <div>
-            <label htmlFor="new-person-role" className="mb-1 block text-xs font-medium text-slate-700">
+            <label htmlFor="new-person-role" className="mb-1 block text-xs font-medium text-[var(--label2)]">
               Role
             </label>
             <select
               id="new-person-role"
               value={role}
               onChange={(e) => setRole(e.target.value as Role)}
-              className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus-visible:outline-blue-600"
+              className="rounded-md border border-[var(--hair)] bg-[var(--bg2)] px-2 py-1.5 text-sm focus-visible:outline-blue-600"
             >
               <option value="admin">Admin</option>
               <option value="super_admin">Super-admin</option>

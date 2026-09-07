@@ -58,18 +58,18 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
         role="dialog"
         aria-modal="true"
         aria-labelledby="person-edit-title"
-        className="w-full max-w-sm rounded-lg bg-white p-6 shadow-lg"
+        className="w-full max-w-sm rounded-lg bg-[var(--bg2)] p-6 shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 id="person-edit-title" className="text-lg font-semibold text-slate-900">
+          <h2 id="person-edit-title" className="text-lg font-semibold text-[var(--label)]">
             Edit person
           </h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="rounded p-1 text-slate-500 hover:bg-slate-100"
+            className="rounded p-1 text-[var(--label3)] hover:bg-[var(--fill2)]"
           >
             <X className="h-4 w-4" aria-hidden="true" />
           </button>
@@ -82,7 +82,7 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
         ) : null}
 
         <form onSubmit={handleSubmit} noValidate>
-          <label htmlFor="person-name" className="mb-1 block text-sm font-medium text-slate-700">
+          <label htmlFor="person-name" className="mb-1 block text-sm font-medium text-[var(--label2)]">
             Name
           </label>
           <input
@@ -90,11 +90,11 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
             value={name}
             onChange={(e) => setName(e.target.value)}
             aria-invalid={!!errors.name}
-            className="mb-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus-visible:outline-blue-600"
+            className="mb-1 w-full rounded-md border border-[var(--hair)] px-3 py-2 text-sm focus-visible:outline-blue-600"
           />
           {errors.name ? <p role="alert" className="mb-2 text-xs text-red-700">{errors.name}</p> : <div className="mb-2" />}
 
-          <label htmlFor="person-phone" className="mb-1 block text-sm font-medium text-slate-700">
+          <label htmlFor="person-phone" className="mb-1 block text-sm font-medium text-[var(--label2)]">
             Phone number
           </label>
           <input
@@ -103,15 +103,15 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             aria-invalid={!!errors.phone}
-            className="mb-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus-visible:outline-blue-600"
+            className="mb-1 w-full rounded-md border border-[var(--hair)] px-3 py-2 text-sm focus-visible:outline-blue-600"
           />
           {errors.phone ? <p role="alert" className="mb-2 text-xs text-red-700">{errors.phone}</p> : <div className="mb-2" />}
 
-          <label htmlFor="person-username" className="mb-1 block text-sm font-medium text-slate-700">
+          <label htmlFor="person-username" className="mb-1 block text-sm font-medium text-[var(--label2)]">
             Telegram username (optional)
           </label>
-          <div className="mb-4 flex items-center rounded-md border border-slate-300 bg-white px-3 py-2 focus-within:outline focus-within:outline-2 focus-within:outline-blue-600">
-            <span className="text-sm text-slate-400">@</span>
+          <div className="mb-4 flex items-center rounded-md border border-[var(--hair)] bg-[var(--bg2)] px-3 py-2 focus-within:outline focus-within:outline-2 focus-within:outline-blue-600">
+            <span className="text-sm text-[var(--label3)]">@</span>
             <input
               id="person-username"
               value={telegramUsername}
@@ -122,19 +122,19 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
           </div>
 
           {roleLocked ? (
-            <p className="mb-4 text-xs text-slate-400">
+            <p className="mb-4 text-xs text-[var(--label3)]">
               {isCreator ? "Role: creator (can't be changed here)" : "Role: can't change your own role"}
             </p>
           ) : (
             <>
-              <label htmlFor="person-role" className="mb-1 block text-sm font-medium text-slate-700">
+              <label htmlFor="person-role" className="mb-1 block text-sm font-medium text-[var(--label2)]">
                 Role
               </label>
               <select
                 id="person-role"
                 value={role}
                 onChange={(e) => setRole(e.target.value as Role)}
-                className="mb-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-blue-600"
+                className="mb-4 w-full rounded-md border border-[var(--hair)] bg-[var(--bg2)] px-3 py-2 text-sm focus-visible:outline-blue-600"
               >
                 <option value="admin">Admin</option>
                 {canPromoteToSuperAdmin || person.role === 'super_admin' ? <option value="super_admin">Super-admin</option> : null}
@@ -146,7 +146,7 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+              className="rounded-md border border-[var(--hair)] px-3 py-1.5 text-sm text-[var(--label2)] hover:bg-[var(--fill2)]"
             >
               Cancel
             </button>

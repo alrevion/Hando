@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { CalendarDays, ClipboardList, LayoutGrid, Send, User as UserIcon } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CalendarDays, ClipboardList, LayoutGrid, Send, Users } from 'lucide-react';
 import type { Project, Task, User } from '../types';
 import { BottomNav, type NavTab } from './BottomNav';
 import { MyTasksView } from './MyTasksView';
@@ -8,16 +8,25 @@ import { BoardView } from './BoardView';
 import { CalendarView } from './CalendarView';
 import { PeopleView } from './PeopleView';
 
+/** Инициалы для аватара: «Азиз Каримов» -> «АК». */
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]!.toUpperCase())
+    .join('');
+}
+
 /**
- * Мобильная оболочка приложения.
- *
- * Прежде на телефоне открывалась десктопная раскладка: боковая панель на треть
- * экрана и доска в остатке. В Telegram приложение и так на пол-экрана, поэтому
- * здесь колонка во всю ширину, а навигация -- внизу, под большим пальцем.
+ * Мобильная оболочка: одна колонка, стеклянная шапка сверху, плавающая
+ * пилюля навигации внизу -- под большим пальцем. Прокручивается только
+ * .content, шапка и док лежат поверх (см. index.css .app-frame).
  *
  * Порядок вкладок зависит от роли -- тем же правилом, что в боте: директор
  * приходит смотреть чужой прогресс, сотрудник -- свои задачи. Первой стоит та,
- * ради которой человек открыл приложение.
+ * ради которой человек открыл приложение. «Люди» -- только руководителям:
+ * справочник организации рядовому сотруднику сервер и так не отдаёт.
  */
 export function MobileShell({
   user, projects, selectedProject, deepLinkTask, onReloadProjects,
@@ -41,40 +50,69 @@ export function MobileShell({
         ]),
     { id: 'board', label: 'Доска', icon: LayoutGrid },
     { id: 'calendar', label: 'Календарь', icon: CalendarDays },
-    { id: 'people', label: 'Люди', icon: UserIcon },
+    ...(boss ? [{ id: 'people', label: 'Люди', icon: Users }] : []),
   ];
   const [active, setActive] = useState(tabs[0].id);
+  // Своя выбранная доска, а не общая с десктопом: на телефоне переключатель --
+  // чипы над списком, и он должен работать без похода в App.
+  const [projectId, setProjectId] = useState<string | null>(selectedProject?.id ?? null);
+  const project = projects.find((p) => p.id === projectId) ?? selectedProject ?? projects[0] ?? null;
   void onReloadProjects;
 
+  // Пришли по ссылке из уведомления -- открываем доску той задачи.
+  useEffect(() => {
+    if (!deepLinkTask) return;
+    setProjectId(deepLinkTask.project_id);
+    setActive('board');
+  }, [deepLinkTask]);
+
+  const projectChips = projects.length > 1 ? (
+    <div className="chips" role="tablist" aria-label="Доски">
+      {projects.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          role="tab"
+          aria-selected={p.id === project?.id}
+          className={p.id === project?.id ? 'chip on' : 'chip'}
+          onClick={() => setProjectId(p.id)}
+        >
+          {p.name}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
   return (
-    <div className="flex min-h-dvh flex-col bg-[var(--tg-bg,#f1f5f9)]">
-      {/* Шапка: где человек находится. Без неё при переключении организаций
-          непонятно, чьи задачи на экране. */}
-      <header
-        className="sticky top-0 z-30 border-b border-[var(--tg-separator,rgba(0,0,0,0.08))] bg-[var(--tg-bg,#fff)] px-4 py-2.5"
-        style={{ paddingTop: 'max(0.625rem, env(safe-area-inset-top))' }}
-      >
-        <p className="truncate text-sm font-semibold text-[var(--tg-text,#0f172a)]">{user.org_name ?? 'Hando'}</p>
-        <p className="truncate text-xs text-[var(--tg-hint,#64748b)]">{user.name}</p>
+    <div className="app-frame">
+      <header className="topbar">
+        {/* Где я: организация и кто я в ней. Название экрана -- крупным
+            заголовком в самом экране, дублировать его тут незачем. */}
+        <div className="topbar-c">
+          <div className="topbar-title">{user.org_name ?? 'Hando'}</div>
+          <div className="topbar-sub">{user.position || (boss ? 'Руководитель' : 'Сотрудник')}</div>
+        </div>
+        <span className="topbar-r avatar" title={user.name} aria-label={user.name}>{initials(user.name) || '·'}</span>
       </header>
 
-      {/* Отступ снизу под навигацию: без него последняя карточка прячется за ней. */}
-      <main className="min-h-0 flex-1 pb-16">
+      <main className="content">
         {active === 'tasks' ? <MyTasksView user={user} /> : null}
         {active === 'assigned' ? <AssignedView user={user} /> : null}
         {active === 'calendar' ? <CalendarView currentUser={user} /> : null}
         {active === 'people' ? <PeopleView /> : null}
         {active === 'board' ? (
-          selectedProject ? (
+          project ? (
             <BoardView
-              key={selectedProject.id}
-              project={selectedProject}
+              key={project.id}
+              project={project}
               user={user}
-              initialTask={deepLinkTask?.project_id === selectedProject.id ? deepLinkTask : null}
+              initialTask={deepLinkTask?.project_id === project.id ? deepLinkTask : null}
+              projectSwitcher={projectChips}
             />
           ) : (
-            <div className="p-6 text-center text-sm text-[var(--tg-hint,#64748b)]">
-              {projects.length === 0 ? 'Досок пока нет.' : 'Выберите доску.'}
+            <div className="empty">
+              <b>Досок пока нет</b>
+              Доска появится, как только в организации создадут первую задачу.
             </div>
           )
         ) : null}

@@ -1,23 +1,930 @@
 @import "tailwindcss";
 
-@theme {
-  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+/* Inter -- те же два файла, что в Ijoda (латиница + кириллица, вариативный
+   вес 400-800). Без своего шрифта Android-клиент Telegram рисовал Roboto, iOS
+   -- SF, и одна и та же карточка выглядела по-разному. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/fonts/inter-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/fonts/inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-html {
+@theme {
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ============================================================
+   ТОКЕНЫ. Палитра iOS -- как в Ijoda -- а поверх неё цвета темы Telegram
+   (--tg-*, их кладёт lib/telegram.ts). Внутри мессенджера приложение обязано
+   выглядеть его частью: фон страницы = secondary_bg, карточка = section_bg,
+   текст = text_color. В обычном браузере --tg-* нет, работают запасные.
+
+   Светлая -- база. Тёмная включается либо явным data-theme="dark" (его ставит
+   telegram.ts по colorScheme мессенджера), либо системной настройкой, если
+   явного выбора нет.
+   ============================================================ */
+:root {
   color-scheme: light;
+  --bg: var(--tg-secondary-bg, #f2f2f7);
+  --bg2: var(--tg-section-bg, #ffffff);
+  --bg3: #e5e5ea;
+  --fill: rgba(120, 120, 128, 0.18);
+  --fill2: rgba(120, 120, 128, 0.1);
+  --hair: rgba(0, 0, 0, 0.08);
+  --sep: rgba(60, 60, 67, 0.29);
+  --card-ring: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --label: var(--tg-text, #000000);
+  --label2: #52525a;
+  --label3: var(--tg-hint, #65656d);
+  --label4: #b0b0b8;
+  --blue: #007aff;
+  --green: #34c759;
+  --red: #ff3b30;
+  --orange: #ff9500;
+  /* Красный как ТЕКСТ: системный --red на белом даёт 3.8:1 -- ниже порога. */
+  --err: #d70015;
+  /* Подписи цветных плашек. Мелкий жирный текст (12px/600) поверх своей же
+     14%-подложки: системные оттенки тут не проходят 4.5:1, взяты погашенные. */
+  --tone-blue: #005fcc;
+  --tone-green: #1e7334;
+  --tone-red: #bf0a00;
+  --tone-orange: #945600;
+  /* Самый заметный элемент экрана -- активная вкладка, главная кнопка.
+     Монохром: на светлом почти чёрная пилюля, на тёмном почти белая. Синий
+     остаётся ссылкам и статусам, иначе всё сливается в одно «синее». */
+  --accent: #111114;
+  --accent-fg: #ffffff;
+  --glass-bg: rgba(242, 242, 247, 0.72);
+  --r: 14px;
+  --r-sm: 10px;
+  --dock-h: 62px;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--tg-secondary-bg, #000000);
+  --bg2: var(--tg-section-bg, #1c1c1e);
+  --bg3: #2c2c2e;
+  --fill: rgba(120, 120, 128, 0.28);
+  --fill2: rgba(120, 120, 128, 0.16);
+  --hair: rgba(255, 255, 255, 0.07);
+  --sep: rgba(84, 84, 88, 0.6);
+  --card-ring: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --label: var(--tg-text, #ffffff);
+  --label2: #c2c2c8;
+  --label3: var(--tg-hint, #9a9aa2);
+  --label4: #55555c;
+  --blue: #0a84ff;
+  --green: #30d158;
+  --red: #ff453a;
+  --orange: #ff9f0a;
+  --err: #ff6961;
+  --tone-blue: #6fb3ff;
+  --tone-green: #4cd964;
+  --tone-red: #ff7b72;
+  --tone-orange: #ffb340;
+  --accent: #f2f2f7;
+  --accent-fg: #0a0a0a;
+  --glass-bg: rgba(0, 0, 0, 0.7);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: var(--tg-secondary-bg, #000000);
+    --bg2: var(--tg-section-bg, #1c1c1e);
+    --bg3: #2c2c2e;
+    --fill: rgba(120, 120, 128, 0.28);
+    --fill2: rgba(120, 120, 128, 0.16);
+    --hair: rgba(255, 255, 255, 0.07);
+    --sep: rgba(84, 84, 88, 0.6);
+    --card-ring: 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --label: var(--tg-text, #ffffff);
+    --label2: #c2c2c8;
+    --label3: var(--tg-hint, #9a9aa2);
+    --label4: #55555c;
+    --blue: #0a84ff;
+    --green: #30d158;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+    --err: #ff6961;
+    --tone-blue: #6fb3ff;
+    --tone-green: #4cd964;
+    --tone-red: #ff7b72;
+    --tone-orange: #ffb340;
+    --accent: #f2f2f7;
+    --accent-fg: #0a0a0a;
+    --glass-bg: rgba(0, 0, 0, 0.7);
+  }
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
-  @apply bg-slate-100 text-slate-900 font-sans antialiased;
+  @apply font-sans antialiased;
   margin: 0;
+  background: var(--bg);
+  color: var(--label);
 }
 
 #root {
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* Keep the default focus ring visible everywhere; never remove it without a replacement. */
 :focus-visible {
-  @apply outline outline-2 outline-offset-2 outline-blue-600;
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* ============================================================
+   МОБИЛЬНАЯ ОБОЛОЧКА. Экран одной высоты, прокручивается только .content --
+   плавающий док и стеклянная шапка лежат поверх и не едут вместе с лентой.
+   ============================================================ */
+.app-frame {
+  position: relative;
+  height: 100dvh;
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--label);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: var(--safe-t) 16px 0;
+  height: calc(52px + var(--safe-t));
+  background: var(--glass-bg);
+  /* Второй раз тем же свойством: браузер без color-mix отбрасывает эту строку
+     и остаётся на токене выше, а новый берёт цвет прямо из фона страницы --
+     в Telegram он свой у каждой темы, и константа выглядела бы чужой полосой. */
+  background: color-mix(in srgb, var(--bg) 74%, transparent);
+  backdrop-filter: saturate(180%) blur(22px);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+}
+.topbar-c {
+  min-width: 0;
+  text-align: center;
+}
+.topbar-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar-sub {
+  font-size: 11.5px;
+  color: var(--label3);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar-r {
+  position: absolute;
+  right: 14px;
+  top: calc(var(--safe-t) + 10px);
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: clip;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  /* сверху -- под стеклянную шапку, снизу -- под плавающий док */
+  padding: calc(52px + var(--safe-t) + 10px) 16px calc(var(--dock-h) + 28px + var(--safe-b));
+}
+
+/* ----- плавающая пилюля навигации, как в Ijoda ----- */
+.bottom-nav {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: calc(10px + var(--safe-b));
+  height: var(--dock-h);
+  display: flex;
+  padding: 5px;
+  background: var(--glass-bg);
+  /* Второй раз тем же свойством: браузер без color-mix отбрасывает эту строку
+     и остаётся на токене выше, а новый берёт цвет прямо из фона страницы --
+     в Telegram он свой у каждой темы, и константа выглядела бы чужой полосой. */
+  background: color-mix(in srgb, var(--bg) 74%, transparent);
+  backdrop-filter: saturate(180%) blur(22px);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+  border: 0.5px solid var(--hair);
+  border-radius: 999px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  z-index: 30;
+}
+.nav-indicator {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 5px;
+  width: calc((100% - 10px) / var(--n, 4));
+  border-radius: 999px;
+  background: var(--accent);
+  /* та же длительность и кривая, что у цвета иконки -- подложка и цвет едут
+     синхронно, иначе иконка перекрашивается раньше, чем под неё приедет пилюля */
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+}
+.nav-btn {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 999px;
+  color: var(--label2);
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.nav-btn svg {
+  width: 22px;
+  height: 22px;
+  transition: transform 0.12s ease-out;
+}
+.nav-btn:active svg {
+  transform: scale(0.9);
+}
+.nav-btn.active {
+  color: var(--accent-fg);
+}
+.nav-label {
+  max-width: 100%;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nav-badge {
+  position: absolute;
+  top: 7px;
+  left: calc(50% + 5px);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* ============================================================
+   ТИПОГРАФИКА И ПОВЕРХНОСТИ
+   ============================================================ */
+.h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  line-height: 1.15;
+  color: var(--label);
+  margin: 4px 0 14px;
+}
+.h1-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.h1-row .h1 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sec-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label2);
+  letter-spacing: 0.2px;
+  margin: 22px 4px 9px;
+}
+.sec-title:first-child {
+  margin-top: 4px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--bg2);
+  color: var(--label);
+  border: none;
+  border-radius: var(--r);
+  padding: 14px 16px;
+  box-shadow: var(--card-ring);
+  font-family: inherit;
+}
+.card-tap {
+  cursor: pointer;
+  transition: transform 0.12s, background 0.15s;
+}
+.card-tap:active {
+  background: var(--bg3);
+  transform: scale(0.985);
+}
+.card.is-overdue {
+  box-shadow: var(--card-ring), inset 3px 0 0 var(--red);
+}
+
+.t-title {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--label3);
+  min-width: 0;
+}
+.t-meta > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.t-row > .grow {
+  flex: 1;
+  min-width: 0;
+}
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.num {
+  flex-shrink: 0;
+  width: 22px;
+  padding-top: 1px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--label4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ----- плашки статусов ----- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--fill2);
+  color: var(--label2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.pill > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pill svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.pill-blue {
+  background: rgba(10, 132, 255, 0.14);
+  color: var(--tone-blue);
+}
+.pill-green {
+  background: rgba(52, 199, 89, 0.16);
+  color: var(--tone-green);
+}
+.pill-red {
+  background: rgba(255, 59, 48, 0.14);
+  color: var(--tone-red);
+}
+.pill-orange {
+  background: rgba(255, 159, 10, 0.16);
+  color: var(--tone-orange);
+}
+.dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ----- чипы-переключатели (сегменты, фильтры) ----- */
+.chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px 0 12px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.chips::-webkit-scrollbar {
+  display: none;
+}
+.chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: none;
+  background: var(--fill2);
+  color: var(--label2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.12s;
+}
+.chip:active {
+  transform: scale(0.96);
+}
+.chip.on {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.chip .cnt {
+  font-weight: 500;
+  opacity: 0.7;
+}
+/* Показ по ширине. Своими классами, а не hidden/lg:flex: у утилит Tailwind
+   та же специфичность, что у .chips, и объявлены они выше по файлу -- .chips
+   их перебивала, и «скрытая» строка оставалась на экране. */
+.only-wide {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .only-wide {
+    display: flex;
+  }
+  .only-narrow {
+    display: none;
+  }
+}
+
+/* ----- кнопки ----- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 48px;
+  padding: 0 18px;
+  border: none;
+  border-radius: var(--r);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label);
+  background: var(--fill2);
+  cursor: pointer;
+  transition: filter 0.12s, transform 0.12s;
+}
+.btn:active {
+  transform: scale(0.98);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  text-transform: uppercase;
+  letter-spacing: 1.1px;
+  font-size: 14px;
+}
+.btn-primary:active {
+  filter: brightness(0.9);
+}
+.btn-danger {
+  background: rgba(255, 59, 48, 0.14);
+  color: var(--tone-red);
+}
+.btn-sm {
+  width: auto;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  letter-spacing: 0.4px;
+}
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--fill2);
+  color: var(--label2);
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-icon:active {
+  background: var(--fill);
+}
+.btn-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.btn-icon.is-danger {
+  color: var(--tone-red);
+}
+.btn-icon.is-accent {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+.link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--blue);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+/* ----- формы ----- */
+.lbl {
+  display: block;
+  margin: 0 0 6px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label2);
+}
+.inp {
+  display: block;
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: var(--fill2);
+  color: var(--label);
+  font-family: inherit;
+  /* не меньше 16px: иначе iOS сам зумит страницу на фокусе поля */
+  font-size: 16px;
+  outline: none;
+  transition: border-color 0.15s;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.inp::placeholder {
+  color: var(--label3);
+}
+.inp:focus {
+  border-color: var(--accent);
+}
+.inp[aria-invalid="true"] {
+  border-color: var(--err);
+}
+textarea.inp {
+  height: auto;
+  min-height: 96px;
+  padding: 12px 14px;
+  resize: vertical;
+  line-height: 1.4;
+}
+select.inp {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+.field {
+  margin-bottom: 14px;
+}
+.field-err {
+  margin: 6px 2px 0;
+  font-size: 12.5px;
+  color: var(--err);
+}
+.hint {
+  margin: 6px 2px 0;
+  font-size: 12.5px;
+  color: var(--label3);
+}
+
+/* ----- сообщения ----- */
+.alert {
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  line-height: 1.4;
+  background: var(--fill2);
+  color: var(--label);
+}
+.alert-err {
+  background: rgba(255, 59, 48, 0.12);
+  color: var(--err);
+}
+.alert-ok {
+  background: rgba(52, 199, 89, 0.16);
+  color: var(--tone-green);
+}
+.alert-warn {
+  background: rgba(255, 159, 10, 0.16);
+  color: var(--tone-orange);
+}
+.empty {
+  padding: 56px 20px;
+  text-align: center;
+  color: var(--label3);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.empty b {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--label);
+}
+.muted {
+  color: var(--label3);
+  font-size: 14px;
+}
+
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--fill);
+  color: var(--label);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+.avatar-lg {
+  width: 40px;
+  height: 40px;
+  font-size: 14px;
+}
+
+/* ----- календарь ----- */
+.cal {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.cal-wd {
+  padding: 4px 0 6px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--label3);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.cal-day {
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  color: var(--label);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.12s;
+}
+.cal-day:active {
+  transform: scale(0.94);
+}
+.cal-day.is-sel {
+  background: var(--bg2);
+  box-shadow: var(--card-ring);
+}
+.cal-n {
+  width: 28px;
+  height: 28px;
+  line-height: 28px;
+  text-align: center;
+  border-radius: 50%;
+  font-size: 15px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.cal-day.is-today .cal-n {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 700;
+}
+.cal-dots {
+  display: flex;
+  gap: 3px;
+  height: 5px;
+}
+.cal-dots .dot {
+  width: 5px;
+  height: 5px;
+}
+.cal-more {
+  font-size: 9px;
+  line-height: 5px;
+  color: var(--label3);
+}
+
+/* ----- шторка (модальные окна) ----- */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  animation: sheet-fade 0.18s ease-out;
+}
+.sheet {
+  width: 100%;
+  max-width: 480px;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--bg2);
+  color: var(--label);
+  border-radius: 22px 22px 0 0;
+  padding: 10px 20px calc(20px + var(--safe-b));
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.25);
+  font-family: var(--font-sans);
+  animation: sheet-rise 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.sheet-grab {
+  width: 36px;
+  height: 5px;
+  margin: 0 auto 12px;
+  border-radius: 3px;
+  background: var(--fill);
+  flex-shrink: 0;
+}
+.sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.sheet-title {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.2px;
+  min-width: 0;
+}
+.sheet .prose {
+  white-space: pre-wrap;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--label);
+}
+@media (min-width: 640px) {
+  .sheet-backdrop {
+    align-items: center;
+    padding: 16px;
+  }
+  .sheet {
+    border-radius: 18px;
+    max-height: 85vh;
+    padding-bottom: 20px;
+  }
+}
+@keyframes sheet-rise {
+  from {
+    transform: translateY(28px);
+    opacity: 0.6;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes sheet-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.c-red {
+  color: var(--tone-red);
+  font-weight: 600;
+}
+.c-orange {
+  color: var(--tone-orange);
+  font-weight: 600;
+}
+.c-green {
+  color: var(--tone-green);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-indicator,
+  .nav-btn,
+  .chip,
+  .card-tap,
+  .btn {
+    transition: none;
+  }
+  .sheet,
+  .sheet-backdrop {
+    animation: none;
+  }
 }

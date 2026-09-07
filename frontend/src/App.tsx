@@ -121,15 +121,15 @@ function AuthenticatedApp() {
         ) : selectedProject ? (
           <>
             {canManage ? (
-              <div className="flex gap-1 border-b border-slate-200 bg-white px-6 pt-3">
+              <div className="flex gap-1 border-b border-[var(--hair)] bg-[var(--bg2)] px-6 pt-3">
                 <button
                   type="button"
                   onClick={() => setProjectTab('board')}
                   aria-current={projectTab === 'board' ? 'page' : undefined}
                   className={`rounded-t-md px-3 py-1.5 text-sm font-medium ${
                     projectTab === 'board'
-                      ? 'border border-b-0 border-slate-200 bg-slate-50 text-blue-700'
-                      : 'text-slate-500 hover:text-slate-700'
+                      ? 'border border-b-0 border-[var(--hair)] bg-[var(--fill2)] text-blue-700'
+                      : 'text-[var(--label3)] hover:text-[var(--label2)]'
                   }`}
                 >
                   Board
@@ -140,8 +140,8 @@ function AuthenticatedApp() {
                   aria-current={projectTab === 'archive' ? 'page' : undefined}
                   className={`rounded-t-md px-3 py-1.5 text-sm font-medium ${
                     projectTab === 'archive'
-                      ? 'border border-b-0 border-slate-200 bg-slate-50 text-blue-700'
-                      : 'text-slate-500 hover:text-slate-700'
+                      ? 'border border-b-0 border-[var(--hair)] bg-[var(--fill2)] text-blue-700'
+                      : 'text-[var(--label3)] hover:text-[var(--label2)]'
                   }`}
                 >
                   Archive
@@ -152,8 +152,8 @@ function AuthenticatedApp() {
                   aria-current={projectTab === 'access' ? 'page' : undefined}
                   className={`rounded-t-md px-3 py-1.5 text-sm font-medium ${
                     projectTab === 'access'
-                      ? 'border border-b-0 border-slate-200 bg-slate-50 text-blue-700'
-                      : 'text-slate-500 hover:text-slate-700'
+                      ? 'border border-b-0 border-[var(--hair)] bg-[var(--fill2)] text-blue-700'
+                      : 'text-[var(--label3)] hover:text-[var(--label2)]'
                   }`}
                 >
                   Access
@@ -177,7 +177,7 @@ function AuthenticatedApp() {
             </div>
           </>
         ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
+          <div className="flex flex-1 items-center justify-center text-sm text-[var(--label3)]">
             Select a project to get started.
           </div>
         )}
@@ -190,7 +190,7 @@ function AppShell() {
   const { user, loading } = useAuth();
 
   if (loading) {
-    return <div className="flex min-h-screen items-center justify-center text-sm text-slate-500">Loading…</div>;
+    return <div className="app-frame" style={{ alignItems: 'center', justifyContent: 'center' }}><span className="muted">Загрузка…</span></div>;
   }
   if (!user) return <LoginPage />;
   return <AuthenticatedApp />;

@@ -40,3 +40,14 @@ const STATE_LABEL: Record<Assignee['state'], string> = {
 export function stateLabel(state: Assignee['state']): string {
   return STATE_LABEL[state] ?? state;
 }
+
+/** Тон плашки по состоянию адресата: серый -- ещё ничего, синий -- делает,
+ *  зелёный -- сдал/принято, оранжевый -- вернули, красный -- отказался. */
+export const STATE_PILL: Record<Assignee['state'], string> = {
+  pending: 'pill',
+  accepted: 'pill pill-blue',
+  done: 'pill pill-green',
+  confirmed: 'pill pill-green',
+  rejected: 'pill pill-orange',
+  declined: 'pill pill-red',
+};

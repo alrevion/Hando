@@ -28,7 +28,7 @@ export function PersonalArchiveTab() {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto p-6">
-      <h1 className="mb-4 text-xl font-semibold text-slate-900">My completed tasks</h1>
+      <h1 className="mb-4 text-xl font-semibold text-[var(--label)]">My completed tasks</h1>
 
       {loadError ? (
         <div role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
@@ -37,18 +37,18 @@ export function PersonalArchiveTab() {
       ) : null}
 
       {loading ? (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <p className="text-sm text-[var(--label3)]">Loading…</p>
       ) : entries.length === 0 ? (
-        <p className="text-sm text-slate-500">No completed tasks yet.</p>
+        <p className="text-sm text-[var(--label3)]">No completed tasks yet.</p>
       ) : (
         <ul className="space-y-3">
           {entries.map(({ task, events }) => (
-            <li key={task.id} className="rounded-lg border border-slate-200 bg-white p-4">
-              <h2 className="text-sm font-medium text-slate-900">{task.title}</h2>
-              {task.description ? <p className="text-xs text-slate-600">{task.description}</p> : null}
-              <ul className="mt-2 space-y-1 border-t border-slate-100 pt-2">
+            <li key={task.id} className="rounded-lg border border-[var(--hair)] bg-[var(--bg2)] p-4">
+              <h2 className="text-sm font-medium text-[var(--label)]">{task.title}</h2>
+              {task.description ? <p className="text-xs text-[var(--label2)]">{task.description}</p> : null}
+              <ul className="mt-2 space-y-1 border-t border-[var(--hair)] pt-2">
                 {events.map((event) => (
-                  <li key={event.id} className="text-xs text-slate-500">
+                  <li key={event.id} className="text-xs text-[var(--label3)]">
                     {event.action} · {formatDateTime(event.created_at)}
                     {event.overdue_by ? ` · overdue` : ''}
                   </li>

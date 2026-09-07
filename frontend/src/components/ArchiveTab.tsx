@@ -44,7 +44,7 @@ export function ArchiveTab({ project }: ArchiveTabProps) {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto p-6">
-      <h1 className="mb-4 text-xl font-semibold text-slate-900">{project.name} — Archive</h1>
+      <h1 className="mb-4 text-xl font-semibold text-[var(--label)]">{project.name} — Archive</h1>
 
       {loadError ? (
         <div role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
@@ -53,18 +53,18 @@ export function ArchiveTab({ project }: ArchiveTabProps) {
       ) : null}
 
       <section className="mb-6">
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-[var(--label3)]">
           Project activity
         </h2>
         {loading ? (
-          <p className="text-sm text-slate-500">Loading…</p>
+          <p className="text-sm text-[var(--label3)]">Loading…</p>
         ) : projectEvents.length === 0 ? (
-          <p className="text-sm text-slate-500">No project or membership changes yet.</p>
+          <p className="text-sm text-[var(--label3)]">No project or membership changes yet.</p>
         ) : (
-          <ul className="space-y-1 rounded-lg border border-slate-200 bg-white p-3">
+          <ul className="space-y-1 rounded-lg border border-[var(--hair)] bg-[var(--bg2)] p-3">
             {projectEvents.map((event: TaskEvent & { actor_name: string | null }) => (
-              <li key={event.id} className="text-xs text-slate-500">
-                <span className="font-medium text-slate-700">{event.actor_name ?? 'System'}</span>{' '}
+              <li key={event.id} className="text-xs text-[var(--label3)]">
+                <span className="font-medium text-[var(--label2)]">{event.actor_name ?? 'System'}</span>{' '}
                 {event.action} · {formatDateTime(event.created_at)}
               </li>
             ))}
@@ -72,38 +72,38 @@ export function ArchiveTab({ project }: ArchiveTabProps) {
         )}
       </section>
 
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-[var(--label3)]">
         Archived tasks
       </h2>
       {loading ? (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <p className="text-sm text-[var(--label3)]">Loading…</p>
       ) : entries.length === 0 ? (
-        <p className="text-sm text-slate-500">Nothing archived yet.</p>
+        <p className="text-sm text-[var(--label3)]">Nothing archived yet.</p>
       ) : (
         <ul className="space-y-3">
           {entries.map(({ task, events }) => (
-            <li key={task.id} className="rounded-lg border border-slate-200 bg-white p-4">
+            <li key={task.id} className="rounded-lg border border-[var(--hair)] bg-[var(--bg2)] p-4">
               <div className="mb-2 flex items-start justify-between gap-2">
                 <div>
-                  <h2 className="text-sm font-medium text-slate-900">{task.title}</h2>
+                  <h2 className="text-sm font-medium text-[var(--label)]">{task.title}</h2>
                   {task.description ? (
-                    <p className="text-xs text-slate-600">{task.description}</p>
+                    <p className="text-xs text-[var(--label2)]">{task.description}</p>
                   ) : null}
                 </div>
                 <button
                   type="button"
                   onClick={() => setRestoringId(task.id)}
-                  className="flex shrink-0 items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                  className="flex shrink-0 items-center gap-1 rounded-md border border-[var(--hair)] px-2 py-1 text-xs text-[var(--label2)] hover:bg-[var(--fill2)]"
                 >
                   <Undo2 className="h-3 w-3" aria-hidden="true" />
                   Restore
                 </button>
               </div>
 
-              <ul className="space-y-1 border-t border-slate-100 pt-2">
+              <ul className="space-y-1 border-t border-[var(--hair)] pt-2">
                 {events.map((event) => (
-                  <li key={event.id} className="text-xs text-slate-500">
-                    <span className="font-medium text-slate-700">{event.actor_name ?? 'System'}</span>{' '}
+                  <li key={event.id} className="text-xs text-[var(--label3)]">
+                    <span className="font-medium text-[var(--label2)]">{event.actor_name ?? 'System'}</span>{' '}
                     {event.action} · {formatDateTime(event.created_at)}
                     {event.overdue_by ? ` · ${describeOverdue(event.overdue_by)}` : ''}
                     {event.comment ? ` · "${event.comment}"` : ''}
@@ -161,8 +161,8 @@ function RestoreForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="mt-3 border-t border-slate-100 pt-3" noValidate>
-      <label htmlFor={`restore-comment-${taskId}`} className="mb-1 block text-xs font-medium text-slate-700">
+    <form onSubmit={handleSubmit} className="mt-3 border-t border-[var(--hair)] pt-3" noValidate>
+      <label htmlFor={`restore-comment-${taskId}`} className="mb-1 block text-xs font-medium text-[var(--label2)]">
         Reason for restoring (required)
       </label>
       <textarea
@@ -172,7 +172,7 @@ function RestoreForm({
         aria-invalid={!!error}
         aria-describedby={error ? `restore-comment-error-${taskId}` : undefined}
         rows={2}
-        className="mb-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus-visible:outline-blue-600"
+        className="mb-1 w-full rounded-md border border-[var(--hair)] px-2 py-1 text-sm focus-visible:outline-blue-600"
       />
       {error ? (
         <p id={`restore-comment-error-${taskId}`} role="alert" className="mb-2 text-xs text-red-700">
@@ -193,7 +193,7 @@ function RestoreForm({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+          className="rounded-md border border-[var(--hair)] px-2 py-1 text-xs text-[var(--label2)] hover:bg-[var(--fill2)]"
         >
           Cancel
         </button>

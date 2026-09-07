@@ -174,13 +174,13 @@ export function ContentEditor({ blocks, onChange }: ContentEditorProps) {
       onPaste={handlePaste}
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
-      className="flex flex-col rounded-md border border-slate-300 p-2"
+      className="flex flex-col rounded-md border border-[var(--hair)] p-2"
     >
       <input ref={fileInputRef} type="file" multiple className="sr-only" onChange={handleFileInput} />
 
       <InsertGap index={gapIndexes[0]} onInsertText={insertTextAt} onInsertImages={requestImagesAt} onInsertFiles={requestFilesAt} />
 
-      {groups.length === 0 ? <p className="py-4 text-center text-xs text-slate-400">Click + to write, add a photo, or attach a file.</p> : null}
+      {groups.length === 0 ? <p className="py-4 text-center text-xs text-[var(--label3)]">Click + to write, add a photo, or attach a file.</p> : null}
 
       {groups.map((group, gi) => (
         <div key={group.kind === 'text' ? group.block.id : group.blocks[0].id}>
@@ -212,7 +212,7 @@ export function ContentEditor({ blocks, onChange }: ContentEditorProps) {
               }}
               aria-label="Drag to reorder"
               title="Drag to reorder"
-              className="mt-1 shrink-0 cursor-grab rounded p-0.5 text-slate-300 opacity-0 group-hover:opacity-100 hover:bg-slate-100 hover:text-slate-500 active:cursor-grabbing"
+              className="mt-1 shrink-0 cursor-grab rounded p-0.5 text-[var(--label4)] opacity-0 group-hover:opacity-100 hover:bg-[var(--fill2)] hover:text-[var(--label3)] active:cursor-grabbing"
             >
               <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
             </div>
@@ -225,13 +225,13 @@ export function ContentEditor({ blocks, onChange }: ContentEditorProps) {
                     onChange={(e) => updateText(group.block.id, e.target.value)}
                     placeholder="Write something…"
                     rows={3}
-                    className="w-full resize-y rounded-md border-none px-1 py-1 text-sm text-slate-900 focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-600"
+                    className="w-full resize-y rounded-md border-none px-1 py-1 text-sm text-[var(--label)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
                   />
                   <button
                     type="button"
                     onClick={() => removeBlock(group.block.id)}
                     aria-label="Remove text block"
-                    className="absolute right-1 top-1 rounded p-0.5 text-slate-300 opacity-0 hover:bg-slate-100 hover:text-red-700 group-hover:opacity-100"
+                    className="absolute right-1 top-1 rounded p-0.5 text-[var(--label4)] opacity-0 hover:bg-[var(--fill2)] hover:text-[var(--err)] group-hover:opacity-100"
                   >
                     <X className="h-3 w-3" aria-hidden="true" />
                   </button>
@@ -255,15 +255,15 @@ export function ContentEditor({ blocks, onChange }: ContentEditorProps) {
               ) : (
                 <div className="flex flex-col gap-1 py-1">
                   {group.blocks.map((block) => (
-                    <div key={block.id} className="flex items-center gap-2 rounded-md border border-slate-200 px-2 py-1.5 text-sm">
-                      <FileIcon className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
-                      <span className="min-w-0 flex-1 truncate text-slate-700">{block.filename}</span>
-                      <span className="shrink-0 text-xs text-slate-400">{formatSize(block.sizeBytes)}</span>
+                    <div key={block.id} className="flex items-center gap-2 rounded-md border border-[var(--hair)] px-2 py-1.5 text-sm">
+                      <FileIcon className="h-4 w-4 shrink-0 text-[var(--label3)]" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate text-[var(--label2)]">{block.filename}</span>
+                      <span className="shrink-0 text-xs text-[var(--label3)]">{formatSize(block.sizeBytes)}</span>
                       <button
                         type="button"
                         onClick={() => removeBlock(block.id)}
                         aria-label="Remove file"
-                        className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-700"
+                        className="shrink-0 rounded p-0.5 text-[var(--label3)] hover:bg-[var(--fill2)] hover:text-[var(--err)]"
                       >
                         <X className="h-3 w-3" aria-hidden="true" />
                       </button>
@@ -279,11 +279,11 @@ export function ContentEditor({ blocks, onChange }: ContentEditorProps) {
       ))}
 
       {fileError ? (
-        <p role="alert" className="mt-1 text-xs text-red-700">
+        <p role="alert" className="mt-1 text-xs text-[var(--err)]">
           {fileError}
         </p>
       ) : null}
-      <p className="mt-1 text-xs text-slate-400">Paste or drag a photo/file in anywhere, or use + to place one exactly.</p>
+      <p className="mt-1 text-xs text-[var(--label3)]">Paste or drag a photo/file in anywhere, or use + to place one exactly.</p>
     </div>
   );
 }
@@ -321,7 +321,7 @@ function InsertGap({ index, onInsertText, onInsertImages, onInsertFiles }: Inser
       }}
     >
       {open ? (
-        <div className="flex items-center gap-0.5 rounded-full border border-slate-300 bg-white px-1 py-0.5 shadow-sm">
+        <div className="flex items-center gap-0.5 rounded-full border border-[var(--hair)] bg-[var(--bg2)] px-1 py-0.5 shadow-sm">
           <button
             type="button"
             onClick={() => {
@@ -330,7 +330,7 @@ function InsertGap({ index, onInsertText, onInsertImages, onInsertFiles }: Inser
             }}
             aria-label="Insert a text block here"
             title="Text"
-            className="rounded-full p-1 text-slate-500 hover:bg-slate-100"
+            className="rounded-full p-1 text-[var(--label3)] hover:bg-[var(--fill2)]"
           >
             <Type className="h-3 w-3" aria-hidden="true" />
           </button>
@@ -342,7 +342,7 @@ function InsertGap({ index, onInsertText, onInsertImages, onInsertFiles }: Inser
             }}
             aria-label="Insert a photo here"
             title="Photo"
-            className="rounded-full p-1 text-slate-500 hover:bg-slate-100"
+            className="rounded-full p-1 text-[var(--label3)] hover:bg-[var(--fill2)]"
           >
             <ImagePlus className="h-3 w-3" aria-hidden="true" />
           </button>
@@ -354,7 +354,7 @@ function InsertGap({ index, onInsertText, onInsertImages, onInsertFiles }: Inser
             }}
             aria-label="Attach a file here"
             title="File"
-            className="rounded-full p-1 text-slate-500 hover:bg-slate-100"
+            className="rounded-full p-1 text-[var(--label3)] hover:bg-[var(--fill2)]"
           >
             <Paperclip className="h-3 w-3" aria-hidden="true" />
           </button>
@@ -367,7 +367,7 @@ function InsertGap({ index, onInsertText, onInsertImages, onInsertFiles }: Inser
             onInsertText(index);
           }}
           aria-label="Insert a text block here"
-          className="rounded-full p-0.5 text-slate-300 hover:bg-slate-100 hover:text-slate-500"
+          className="rounded-full p-0.5 text-[var(--label4)] hover:bg-[var(--fill2)] hover:text-[var(--label3)]"
         >
           <Plus className="h-3 w-3" aria-hidden="true" />
         </button>
