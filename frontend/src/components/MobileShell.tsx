@@ -66,6 +66,10 @@ export function MobileShell({
     setActive('board');
   }, [deepLinkTask]);
 
+  const TITLE: Record<string, string> = {
+    tasks: 'Мои задачи', assigned: 'Мои поручения', board: 'Доска', calendar: 'Календарь', people: 'Люди',
+  };
+
   const projectChips = projects.length > 1 ? (
     <div className="chips" role="tablist" aria-label="Доски">
       {projects.map((p) => (
@@ -86,13 +90,20 @@ export function MobileShell({
   return (
     <div className="app-frame">
       <header className="topbar">
-        {/* Где я: организация и кто я в ней. Название экрана -- крупным
-            заголовком в самом экране, дублировать его тут незачем. */}
-        <div className="topbar-c">
-          <div className="topbar-title">{user.org_name ?? 'Hando'}</div>
-          <div className="topbar-sub">{user.position || (boss ? 'Руководитель' : 'Сотрудник')}</div>
+        <div className="topbar-l" aria-hidden="true" />
+        <h1 className="topbar-title">{TITLE[active]}</h1>
+        {/* Кто я в этой организации. Название самой организации осталось в
+            подписи аватара: на 375px оно не помещается рядом с заголовком. */}
+        <div className="topbar-r">
+          <span className="topbar-role">{user.position || (boss ? 'Руководитель' : 'Сотрудник')}</span>
+          <span
+            className="avatar"
+            title={user.org_name ? `${user.name} · ${user.org_name}` : user.name}
+            aria-label={user.org_name ? `${user.name}, ${user.org_name}` : user.name}
+          >
+            {initials(user.name) || '·'}
+          </span>
         </div>
-        <span className="topbar-r avatar" title={user.name} aria-label={user.name}>{initials(user.name) || '·'}</span>
       </header>
 
       <main className="content">
