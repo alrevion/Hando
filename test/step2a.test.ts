@@ -117,6 +117,22 @@ const FIXTURES: Record<string, Probe> = {
   'GET /memberships/pending': { path: '/memberships/pending', skip: 'списочный: организация берётся из сессии, идентификаторов не принимает' },
   'GET /org/snapshot': { path: '/org/snapshot', skip: 'списочный: организация берётся из сессии; содержимое проверяется отдельным тестом' },
 
+  // РОУТЫ ОРГАНИЗАЦИЙ ЖИВУТ ПО ДРУГОЙ МОДЕЛИ, и фикстура «токен А против
+  // идентификаторов Б» к ним неприменима по построению: они действуют не в
+  // организации СЕССИИ, а в той, что названа в адресе, и правом служит СОБСТВЕННОЕ
+  // членство вызывающего. Переименовать свою вторую организацию, сидя в первой, --
+  // законное действие, и «отказ» здесь означал бы сломанный продукт, а не защиту.
+  // Настоящая проверка -- чужак против чужой организации -- стоит отдельным
+  // блоком ниже («роуты организаций слушаются только своего членства»).
+  'GET /orgs/mine': { path: '/orgs/mine', skip: 'отдаёт СВОИ членства; чужих идентификаторов не принимает' },
+  'POST /orgs': { path: '/orgs', method: 'POST', body: { name: 'Своя' }, skip: 'создаёт своё; чужих идентификаторов не принимает' },
+  'POST /orgs/join': { path: '/orgs/join', method: 'POST', body: { code: 'ZZZZZZ' }, skip: 'по секретному коду, без идентификаторов; даёт только заявку' },
+  'POST /orgs/:orgId/switch': { path: `/orgs/${ORG_B}/switch`, method: 'POST', body: {}, skip: 'переход в СВОЮ вторую организацию законен; чужую отвергает switchOrg -- см. блок ниже' },
+  'PATCH /orgs/:orgId': { path: `/orgs/${ORG_B}`, method: 'PATCH', body: { name: 'x' }, skip: 'право -- собственное владение указанной организацией; см. блок ниже' },
+  'DELETE /orgs/:orgId': { path: `/orgs/${ORG_B}`, method: 'DELETE', skip: 'право -- собственное владение указанной организацией; см. блок ниже' },
+  'POST /orgs/:orgId/leave': { path: `/orgs/${ORG_B}/leave`, method: 'POST', body: {}, skip: 'выйти можно только из своего членства; см. блок ниже' },
+  'PATCH /me': { path: '/me', method: 'PATCH', body: { name: 'Новое имя' }, skip: 'правит только себя; идентификаторов не принимает' },
+
   'PATCH /users/:id': { path: '/users/b1', method: 'PATCH', body: { name: 'взломан' } },
   // Заявку организации Б нельзя ни принять, ни отклонить сессией организации А:
   // организация в адресе не участвует вовсе, она берётся из сессии.
@@ -627,5 +643,55 @@ describe('шаг 2a: ветка «участник» и записи по чле
     expect(results[0]).toMatchObject({ org_id: ORG_A, role: 'super_admin', left_at: null });
     // В Б роль осталась прежней -- воскрешение адресное.
     expect(results[1]).toMatchObject({ org_id: ORG_B, role: 'admin' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Роуты организаций проверяются ЗДЕСЬ, а не реестром выше: их право -- не
+// организация сессии, а собственное членство вызывающего в названной
+// организации. Проверяется то, что реестр по построению проверить не может:
+// посторонний против чужой организации.
+// ---------------------------------------------------------------------------
+describe('роуты организаций слушаются только своего членства', () => {
+  const call = async (env: Env, actor: string, role: Role, org: string, path: string, method: string, body?: unknown) => {
+    const init: RequestInit = { method, headers: { Cookie: await cookie(actor, role, org) } };
+    if (body !== undefined) {
+      (init.headers as Record<string, string>)['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    return apiRoutes.request(path, init, env);
+  };
+
+  it('чужую организацию нельзя ни переименовать, ни удалить, ни покинуть, ни открыть', async () => {
+    const env = await world();
+    tg();
+    // a1 состоит ТОЛЬКО в организации А. Всё, что он делает с Б, обязано быть отказом.
+    for (const [path, method, body] of [
+      [`/orgs/${ORG_B}`, 'PATCH', { name: 'взломано' }],
+      [`/orgs/${ORG_B}`, 'DELETE', undefined],
+      [`/orgs/${ORG_B}/leave`, 'POST', {}],
+      [`/orgs/${ORG_B}/switch`, 'POST', {}],
+    ] as [string, string, unknown][]) {
+      const res = await call(env, 'a1', 'admin', ORG_A, path, method, body);
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    // И организация Б осталась нетронутой.
+    const org = await testEnv.DB.prepare('SELECT name, archived_at FROM orgs WHERE id = ?').bind(ORG_B)
+      .first<{ name: string; archived_at: string | null }>();
+    expect(org!.name).not.toBe('взломано');
+    expect(org!.archived_at).toBeNull();
+  });
+
+  it('не-владелец не переименовывает и не удаляет организацию, где он состоит', async () => {
+    const env = await world();
+    tg();
+    // `w` -- admin в обеих организациях: доступ у него есть, владения нет.
+    // Это и отделяет «состоит» от «распоряжается».
+    expect((await call(env, 'w', 'admin', ORG_A, `/orgs/${ORG_A}`, 'PATCH', { name: 'взломано' })).status).toBe(403);
+    expect((await call(env, 'w', 'admin', ORG_A, `/orgs/${ORG_A}`, 'DELETE')).status).toBe(403);
+
+    // Зато выйти из СВОЕГО членства он вправе -- это не то же самое.
+    expect((await call(env, 'w', 'admin', ORG_A, `/orgs/${ORG_B}/leave`, 'POST', {})).status).toBe(200);
   });
 });

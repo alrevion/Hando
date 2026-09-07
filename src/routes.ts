@@ -10,7 +10,8 @@ import { deleteMessage, getFileUrl, resolveChatId, sendDocument, sendMessage } f
 import { applyTransition, buildNotification } from './transition';
 import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
-import { approveJoin, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, createOrg, joinByCode, pendingRequests, rejectJoin } from './signup';
+import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, switchOrg } from './menu';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
 // larger, but would then be permanently unretrievable). Enforce the download cap
@@ -349,6 +350,87 @@ apiRoutes.post('/memberships/:userId/approve', requireRole('super_admin', 'creat
 apiRoutes.post('/memberships/:userId/reject', requireRole('super_admin', 'creator'), async (c) => {
   const ok = await rejectJoin(c.env, c.get('userId'), c.get('orgId'), c.req.param('userId'));
   return ok ? c.json({ ok: true }) : c.json({ error: 'no pending request' }, 404);
+});
+
+// ------------------------------------------------------------ организации
+//
+// ПАРИТЕТ С БОТОМ. Всё, что человек делает кнопками в боте, он должен делать и
+// в приложении -- и наоборот. Логика ОДНА: эти роуты вызывают те же функции,
+// что экраны бота (menu.ts, signup.ts), а не свою копию правил. Копия правил
+// доступа разошлась бы с ботом на первой же правке, и разошлась бы молча.
+//
+// Единственное, чего здесь быть не может: создание САМОЙ ПЕРВОЙ организации.
+// Сессия приложения выдаётся только тому, у кого организация уже есть (иначе в
+// куке нечего писать), поэтому первый вход -- через бота. Вторую и следующие
+// приложение заводит наравне с ботом.
+apiRoutes.get('/orgs/mine', async (c) => c.json(await myOrgs(c.env, c.get('userId'))));
+
+/** Перевыпуск куки: организация лежит В claim'ах, и после смены её надо обновить. */
+async function reissue(c: Context<AppEnv>, userId: string, orgId: string): Promise<void> {
+  const role = await membershipRole(c.env.DB, orgId, userId);
+  if (!role) return;
+  const token = await mintSession(c.env.SESSION_SECRET, { sub: userId, role, org_id: orgId });
+  setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
+}
+
+apiRoutes.post('/orgs', async (c) => {
+  const { name } = await c.req.json<{ name?: string }>().catch(() => ({}) as Record<string, undefined>);
+  if (!name?.trim()) return c.json({ error: 'name required' }, 400);
+  const { orgId, code } = await createOrg(c.env, c.get('userId'), name.trim());
+  // Создатель сразу оказывается внутри созданного -- как и в боте.
+  await reissue(c, c.get('userId'), orgId);
+  return c.json({ id: orgId, name: name.trim(), join_code: code }, 201);
+});
+
+apiRoutes.post('/orgs/join', async (c) => {
+  const { code } = await c.req.json<{ code?: string }>().catch(() => ({}) as Record<string, undefined>);
+  if (!code?.trim()) return c.json({ error: 'code required' }, 400);
+  const res = await joinByCode(c.env, c.get('userId'), code.trim());
+  if (!res.ok) return c.json({ error: res.reason, code: res.reason }, 409);
+  // Уведомление владельцу -- та же кнопка, что шлёт бот: заявка обязана дойти
+  // независимо от того, откуда её подали.
+  if (res.ownerTgId) {
+    await sendMessage(c.env, res.ownerTgId, `К Вам просится: ${res.applicantName}`, {
+      inline_keyboard: [[
+        { text: '✅ Принять', callback_data: `join_ok:${c.get('userId')}` },
+        { text: '✖️ Отклонить', callback_data: `join_no:${c.get('userId')}` },
+      ]],
+    });
+  }
+  return c.json({ ok: true, org_name: res.orgName });
+});
+
+apiRoutes.post('/orgs/:orgId/switch', async (c) => {
+  const orgId = c.req.param('orgId');
+  if (!(await switchOrg(c.env, c.get('userId'), orgId))) return c.json({ error: 'not a member' }, 403);
+  await reissue(c, c.get('userId'), orgId);
+  return c.json({ ok: true });
+});
+
+apiRoutes.patch('/orgs/:orgId', async (c) => {
+  const { name } = await c.req.json<{ name?: string }>().catch(() => ({}) as Record<string, undefined>);
+  if (!name?.trim()) return c.json({ error: 'name required' }, 400);
+  // Право владельца проверяется ВНУТРИ renameOrg -- там же, где для бота.
+  const ok = await renameOrg(c.env, c.get('userId'), c.req.param('orgId'), name.trim());
+  return ok ? c.json({ ok: true }) : c.json({ error: 'not allowed' }, 403);
+});
+
+apiRoutes.delete('/orgs/:orgId', async (c) => {
+  const ok = await deleteOrg(c.env, c.get('userId'), c.req.param('orgId'));
+  return ok ? c.json({ ok: true }) : c.json({ error: 'not allowed' }, 403);
+});
+
+apiRoutes.post('/orgs/:orgId/leave', async (c) => {
+  const ok = await leaveOrg(c.env, c.get('userId'), c.req.param('orgId'));
+  return ok ? c.json({ ok: true }) : c.json({ error: 'not allowed' }, 403);
+});
+
+/** Своё имя -- то, которое видят коллеги в поручениях. В боте это «Профиль». */
+apiRoutes.patch('/me', async (c) => {
+  const { name } = await c.req.json<{ name?: string }>().catch(() => ({}) as Record<string, undefined>);
+  if (!name?.trim()) return c.json({ error: 'name required' }, 400);
+  const ok = await setDisplayName(c.env, c.get('userId'), name.trim());
+  return ok ? c.json({ ok: true, name: name.trim() }) : c.json({ error: 'name too short' }, 400);
 });
 
 // ОДИН снимок всей организации вместо «список досок плюс запрос на каждую».

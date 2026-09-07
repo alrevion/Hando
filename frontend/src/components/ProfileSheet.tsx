@@ -1,0 +1,227 @@
+import { useEffect, useState } from 'react';
+import { Check, LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
+import type { User } from '../types';
+import {
+  ApiError, createOrg, deleteOrg, getMe, getMyOrgs, joinOrgByCode, leaveOrg,
+  renameOrg, setMyName, switchOrg, type MyOrg,
+} from '../lib/api';
+import { useAuth } from '../context/AuthContext';
+import { useData } from '../context/DataContext';
+
+const ROLE_NAME: Record<string, string> = {
+  creator: 'Владелец',
+  super_admin: 'Руководитель',
+  admin: 'Администратор',
+  member: 'Сотрудник',
+};
+
+const JOIN_ERROR: Record<string, string> = {
+  unknown_code: 'Код не подошёл. Проверьте у того, кто его дал.',
+  already_member: 'Вы уже в этой организации.',
+  already_pending: 'Заявка уже подана, ждём подтверждения.',
+};
+
+/**
+ * Профиль и организации -- то же, что в боте кнопками «Профиль» и
+ * «Организации».
+ *
+ * Правило владельца: что можно в приложении, то можно и в боте, и наоборот.
+ * Права здесь не проверяются -- их проверяет сервер теми же функциями, что
+ * обслуживают экраны бота (см. routes.ts, раздел «организации»). Своя копия
+ * правил разошлась бы с ботом на первой правке и разошлась бы молча.
+ *
+ * Единственное исключение -- САМАЯ ПЕРВАЯ организация: сессия приложения
+ * выдаётся только тому, у кого организация уже есть, поэтому первый вход
+ * всегда через бота.
+ */
+export function ProfileSheet({ user, onClose }: { user: User; onClose: () => void }) {
+  const { setUser } = useAuth();
+  const { refresh } = useData();
+  const [orgs, setOrgs] = useState<MyOrg[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  // Что сейчас редактируется: имя, название организации, новая организация, код.
+  const [edit, setEdit] = useState<{ kind: 'name' | 'rename' | 'create' | 'join'; orgId?: string } | null>(null);
+  const [draft, setDraft] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const load = () => { getMyOrgs().then(setOrgs).catch(() => setOrgs([])); };
+  useEffect(load, []);
+
+  /** Общая обёртка: одна кнопка -- одно действие -- один разбор ошибки. */
+  async function run(fn: () => Promise<unknown>, after?: 'reload' | 'orgs') {
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      await fn();
+      setEdit(null);
+      setDraft('');
+      if (after === 'reload') {
+        // Сменилась организация -- меняется всё: и кто я в ней, и её данные.
+        setUser((await getMe()).user);
+        await refresh();
+      }
+      load();
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code ?? err.message : '';
+      setError(JOIN_ERROR[code] ?? (err instanceof ApiError ? err.message : 'Не получилось. Попробуйте ещё раз.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = (label: string, placeholder: string, onSubmit: () => void) => (
+    <form
+      className="field"
+      onSubmit={(e) => { e.preventDefault(); onSubmit(); }}
+    >
+      <label className="lbl" htmlFor="profile-input">{label}</label>
+      <input
+        id="profile-input"
+        className="inp"
+        autoFocus
+        value={draft}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="btn-row">
+        <button type="button" className="btn" onClick={() => { setEdit(null); setDraft(''); }}>Отмена</button>
+        <button type="submit" className="btn btn-primary" disabled={busy || !draft.trim()}>Сохранить</button>
+      </div>
+    </form>
+  );
+
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-labelledby="profile-title" className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-grab" aria-hidden="true" />
+        <div className="sheet-head">
+          <h2 id="profile-title" className="sheet-title">Профиль</h2>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
+        </div>
+
+        {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
+        {info ? <div role="status" className="alert alert-ok">{info}</div> : null}
+
+        {/* ---- имя ---- */}
+        {edit?.kind === 'name' ? (
+          field('Как к Вам обращаться', 'Имя и фамилия', () => run(() => setMyName(draft.trim()), 'reload'))
+        ) : (
+          <div className="card">
+            <div className="t-row" style={{ alignItems: 'center' }}>
+              <span className="grow">
+                <span className="t-title">{user.name}</span>
+                <span className="t-meta"><span>Это имя видят коллеги в поручениях</span></span>
+              </span>
+              <button
+                type="button"
+                className="btn-icon"
+                aria-label="Изменить имя"
+                onClick={() => { setEdit({ kind: 'name' }); setDraft(user.name); }}
+              >
+                <Pencil aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ---- организации ---- */}
+        <h3 className="sec-title">Организации</h3>
+        <ul className="stack">
+          {orgs.map((org) => {
+            const owner = org.owner_user_id === user.id || org.role === 'creator';
+            const current = org.is_current === 1;
+            return (
+              <li key={org.id} className="card" style={current ? { boxShadow: '0 0 0 1.5px var(--accent)' } : undefined}>
+                {edit?.kind === 'rename' && edit.orgId === org.id ? (
+                  field('Новое название', org.name, () => run(() => renameOrg(org.id, draft.trim()), 'reload'))
+                ) : (
+                  <>
+                    <div className="t-row" style={{ alignItems: 'center' }}>
+                      <span className="grow">
+                        <span className="t-title">{org.name}</span>
+                        <span className="t-meta">
+                          <span>{ROLE_NAME[org.role] ?? org.role}</span>
+                          {current ? <><span>·</span><span className="c-green">текущая</span></> : null}
+                        </span>
+                      </span>
+                      {!current ? (
+                        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => run(() => switchOrg(org.id), 'reload')}>
+                          Открыть
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {owner && org.join_code ? (
+                      <div className="pills">
+                        {/* Код раздают сотрудникам: сам по себе доступа не даёт, только заявку. */}
+                        <span className="pill"><span>Код для сотрудников: {org.join_code}</span></span>
+                      </div>
+                    ) : null}
+
+                    <div className="btn-row">
+                      {owner ? (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            disabled={busy}
+                            onClick={() => { setEdit({ kind: 'rename', orgId: org.id }); setDraft(org.name); }}
+                          >
+                            <Pencil aria-hidden="true" style={{ width: 14, height: 14 }} />
+                            Переименовать
+                          </button>
+                          {confirmDelete === org.id ? (
+                            <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => run(() => deleteOrg(org.id), 'reload')}>
+                              <Check aria-hidden="true" style={{ width: 14, height: 14 }} />
+                              Точно удалить
+                            </button>
+                          ) : (
+                            <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => setConfirmDelete(org.id)}>
+                              <Trash2 aria-hidden="true" style={{ width: 14, height: 14 }} />
+                              Удалить
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => run(() => leaveOrg(org.id), 'reload')}>
+                          <LogOut aria-hidden="true" style={{ width: 14, height: 14 }} />
+                          Выйти
+                        </button>
+                      )}
+                    </div>
+                    {confirmDelete === org.id ? (
+                      <p className="hint">Задачи и история сохранятся, но организация исчезнет у всех её сотрудников.</p>
+                    ) : null}
+                  </>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+
+        {edit?.kind === 'create' ? (
+          field('Как назвать организацию', 'Например, «Отдел продаж»', () => run(() => createOrg(draft.trim()), 'reload'))
+        ) : edit?.kind === 'join' ? (
+          field('Код организации', 'Шесть символов', () =>
+            run(async () => {
+              const res = await joinOrgByCode(draft.trim());
+              setInfo(`Заявка в «${res.org_name}» отправлена. Ждём подтверждения.`);
+            }))
+        ) : (
+          <div className="btn-row">
+            <button type="button" className="btn" onClick={() => { setEdit({ kind: 'create' }); setDraft(''); }}>
+              <Plus aria-hidden="true" style={{ width: 16, height: 16 }} />
+              Создать
+            </button>
+            <button type="button" className="btn" onClick={() => { setEdit({ kind: 'join' }); setDraft(''); }}>
+              Вступить по коду
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

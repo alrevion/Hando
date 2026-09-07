@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { CalendarDays, ClipboardList, LayoutGrid, Send, Users } from 'lucide-react';
 import type { Project, Task, User } from '../types';
 import { BottomNav, type NavTab } from './BottomNav';
+import { ProfileSheet } from './ProfileSheet';
 import { MyTasksView } from './MyTasksView';
 import { AssignedView } from './AssignedView';
 import { BoardView } from './BoardView';
@@ -53,6 +54,9 @@ export function MobileShell({
     ...(boss ? [{ id: 'people', label: 'Люди', icon: Users }] : []),
   ];
   const [active, setActive] = useState(tabs[0].id);
+  // Профиль и организации -- за аватаром: шестая вкладка в док не влезает, а
+  // ходят туда раз в сессию.
+  const [profileOpen, setProfileOpen] = useState(false);
   // Своя выбранная доска, а не общая с десктопом: на телефоне переключатель --
   // чипы над списком, и он должен работать без похода в App.
   const [projectId, setProjectId] = useState<string | null>(selectedProject?.id ?? null);
@@ -96,13 +100,16 @@ export function MobileShell({
             подписи аватара: на 375px оно не помещается рядом с заголовком. */}
         <div className="topbar-r">
           <span className="topbar-role">{user.position || (boss ? 'Руководитель' : 'Сотрудник')}</span>
-          <span
+          <button
+            type="button"
             className="avatar"
+            style={{ border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+            onClick={() => setProfileOpen(true)}
             title={user.org_name ? `${user.name} · ${user.org_name}` : user.name}
-            aria-label={user.org_name ? `${user.name}, ${user.org_name}` : user.name}
+            aria-label="Профиль и организации"
           >
             {initials(user.name) || '·'}
-          </span>
+          </button>
         </div>
       </header>
 
@@ -130,6 +137,8 @@ export function MobileShell({
       </main>
 
       <BottomNav tabs={tabs} active={active} onSelect={setActive} />
+
+      {profileOpen ? <ProfileSheet user={user} onClose={() => setProfileOpen(false)} /> : null}
     </div>
   );
 }

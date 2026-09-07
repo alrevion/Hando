@@ -6,7 +6,7 @@
 // (.omc/plans/kanban-plan.md, "Implementation Steps" 2-8). See the shape
 // notes on each function.
 
-import type { ArchivedTaskEntry, Priority, Project, ProjectMember, Task, TaskEvent, TaskStatus, User } from '../types';
+import type { ArchivedTaskEntry, Priority, Project, ProjectMember, Role, Task, TaskEvent, TaskStatus, User } from '../types';
 
 export class ApiError extends Error {
   status: number;
@@ -206,3 +206,26 @@ export interface OrgSnapshot {
 export function getOrgSnapshot(since?: string): Promise<OrgSnapshot> {
   return request<OrgSnapshot>(`/org/snapshot${since ? `?since=${encodeURIComponent(since)}` : ''}`);
 }
+
+/** Организация, в которой человек состоит (та же строка, что видит бот). */
+export interface MyOrg {
+  id: string;
+  name: string;
+  role: Role;
+  is_current: number;
+  join_code: string | null;
+  owner_user_id: string | null;
+}
+
+export const getMyOrgs = () => request<MyOrg[]>('/orgs/mine');
+export const createOrg = (name: string) =>
+  request<{ id: string; name: string; join_code: string }>('/orgs', { method: 'POST', body: JSON.stringify({ name }) });
+export const joinOrgByCode = (code: string) =>
+  request<{ ok: true; org_name: string }>('/orgs/join', { method: 'POST', body: JSON.stringify({ code }) });
+export const switchOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}/switch`, { method: 'POST' });
+export const renameOrg = (orgId: string, name: string) =>
+  request<{ ok: true }>(`/orgs/${orgId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+export const deleteOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}`, { method: 'DELETE' });
+export const leaveOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}/leave`, { method: 'POST' });
+export const setMyName = (name: string) =>
+  request<{ ok: true; name: string }>('/me', { method: 'PATCH', body: JSON.stringify({ name }) });

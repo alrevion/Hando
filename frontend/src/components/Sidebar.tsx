@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { LogOut, Plus, FolderKanban, ClipboardCheck, Archive, ArchiveRestore, Loader2, CalendarDays, ListChecks, Users } from 'lucide-react';
 import type { Project, User } from '../types';
 import { ApiError, createProject, deleteProject } from '../lib/api';
-import { OrgSwitcher } from './OrgSwitcher';
+import { ProfileSheet } from './ProfileSheet';
 
 // Что показано справа. Одно значение вместо набора взаимоисключающих флагов:
 // экранов стало шесть, и каждый новый флаг требовал бы гасить все остальные
@@ -43,6 +43,9 @@ export function Sidebar({
   onLogout,
 }: SidebarProps) {
   const canManageProjects = user.role === 'creator' || user.role === 'super_admin';
+  // Та же шторка профиля и организаций, что на телефоне: одно поведение на
+  // обеих раскладках, одна реализация.
+  const [profileOpen, setProfileOpen] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [name, setName] = useState('');
   const [groupId, setGroupId] = useState('');
@@ -95,7 +98,14 @@ export function Sidebar({
       aria-label="Projects"
       className="flex h-full w-64 shrink-0 flex-col border-r border-[var(--hair)] bg-[var(--bg2)]"
     >
-      <OrgSwitcher user={user} />
+      <button
+        type="button"
+        onClick={() => setProfileOpen(true)}
+        className="w-full border-b border-[var(--hair)] px-4 py-3 text-left"
+      >
+        <p className="truncate text-sm font-medium text-[var(--label)]">{user.org_name ?? 'Hando'}</p>
+        <p className="mt-0.5 text-xs text-[var(--label3)]">{user.name} · профиль и организации</p>
+      </button>
 
       <div className="border-b border-[var(--hair)] p-4">
         <p className="truncate text-sm font-medium text-[var(--label)]">{user.name}</p>
@@ -265,6 +275,7 @@ export function Sidebar({
           Log out
         </button>
       </div>
-    </nav>
+      {profileOpen ? <ProfileSheet user={user} onClose={() => setProfileOpen(false)} /> : null}
+      </nav>
   );
 }
