@@ -266,6 +266,11 @@ body {
   border-radius: 999px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
   z-index: 30;
+  /* Свой слой композитора и граница пересчёта раскладки. Без них панель со
+     стеклом пересобирается на каждый кадр прокрутки под ней: иконки мерцали и
+     дёргались на пиксель-другой. */
+  contain: layout paint;
+  transform: translateZ(0);
 }
 .nav-indicator {
   position: absolute;
@@ -285,6 +290,9 @@ body {
   z-index: 1;
   flex: 1 1 0;
   min-width: 0;
+  /* Подпись, не влезающая в свой слот, обрезается СВОЕЙ кнопкой, а не толкает
+     соседнюю: без этого ширины вкладок пересчитывались от длины слова. */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -302,6 +310,7 @@ body {
 .nav-btn svg {
   width: 22px;
   height: 22px;
+  flex-shrink: 0;
   transition: transform 0.12s ease-out;
 }
 .nav-btn:active svg {
@@ -453,6 +462,15 @@ body {
   gap: 6px;
   margin-top: 8px;
 }
+/* Метки задачи одной строкой: перенос выключен, лишнее уезжает за край с
+   плавным затуханием -- три строки меток на карточке читаются хуже, чем
+   обрезанная четвёртая метка. */
+.pills-line {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, #000 88%, transparent);
+  mask-image: linear-gradient(to right, #000 88%, transparent);
+}
 .num {
   flex-shrink: 0;
   width: 22px;
@@ -483,9 +501,11 @@ body {
   text-overflow: ellipsis;
 }
 .pill svg {
-  width: 12px;
-  height: 12px;
+  width: 13px;
+  height: 13px;
   flex-shrink: 0;
+  /* Иконка не должна тянуть строку вверх: у lucide базовая линия ниже текста. */
+  margin-top: -0.5px;
 }
 .pill-blue {
   background: rgba(10, 132, 255, 0.14);

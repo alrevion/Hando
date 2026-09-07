@@ -7,6 +7,8 @@ import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
 import { formatDeadlineDays, isReviewOverdue, isTaskOverdue } from '../lib/overdue';
 import { Lightbox } from './Lightbox';
 import { STATE_PILL, stateLabel } from '../lib/tasks';
+import { QuickEdit } from './QuickEdit';
+import { useAuth } from '../context/AuthContext';
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -59,6 +61,11 @@ function formatDeadline(deadline: string) {
 // клику), файлы. По фото открывается Lightbox с листанием по всем фото задачи.
 export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDetailModalProps) {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // Срок и срочность правит автор или руководитель -- те же правила, что на
+  // сервере (routes.ts, PATCH /tasks/:id/quick). Кнопок, ведущих в 403, быть
+  // не должно.
+  const { user: me } = useAuth();
+  const canQuickEdit = !!me && (task.author_id === me.id || me.role === 'creator' || me.role === 'super_admin');
   const isOverdue = isTaskOverdue(task);
   const reviewOverdue = isReviewOverdue(task);
   const blocks = parseContentBlocks(task);
@@ -160,6 +167,8 @@ export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDet
             });
           })()}
         </div>
+
+        {canQuickEdit ? <div style={{ marginTop: 18 }}><QuickEdit task={task} /></div> : null}
 
         {actions ? <div className="stack" style={{ gap: 8, marginTop: 20 }}>{actions}</div> : null}
 

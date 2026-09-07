@@ -94,7 +94,13 @@ async function connectByInvite(env: Env, tg: TgUser, token: string): Promise<str
 const DUE_HOUR = 18;
 const MONTH_TITLE = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 
-/** Быстрые сроки под подтверждением. «Свой срок» открывает календарь. */
+/**
+ * Быстрые сроки и срочность под подтверждением. «Свой срок» открывает календарь.
+ *
+ * Срочность здесь по той же причине, что и срок: она берётся из слов фразы, а
+ * если слов не было -- остаётся средней, и поднять её было негде. В приложении
+ * такие кнопки есть; правило «что можно там, можно и тут» требует их и здесь.
+ */
 function dueKeyboard(taskId: string): InlineKeyboard {
   return {
     inline_keyboard: [
@@ -105,6 +111,10 @@ function dueKeyboard(taskId: string): InlineKeyboard {
       [
         { text: 'В конце недели', callback_data: `due:${taskId}:we` },
         { text: '📅 Свой срок', callback_data: `cal:${taskId}:` },
+      ],
+      [
+        { text: '❗️ Срочно', callback_data: `pri:${taskId}:u` },
+        { text: '↓ Не срочно', callback_data: `pri:${taskId}:l` },
       ],
     ],
   };
@@ -325,6 +335,24 @@ botApp.post('/webhook', async (c) => {
       }
       if (cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
       await drainOutbox(c.env);
+      return c.json({ ok: true });
+    }
+
+    // --------------------------------------------------------- срочность
+    if (action === 'pri') {
+      if (task.author_id !== who.userId) {
+        await answerCallbackQuery(c.env, cq.id, 'Это не ваше поручение');
+        return c.json({ ok: true });
+      }
+      const map: Record<string, string> = { u: 'urgent', m: 'medium', l: 'low' };
+      const priority = map[parts[2] ?? ''];
+      if (!priority) {
+        await answerCallbackQuery(c.env, cq.id);
+        return c.json({ ok: true });
+      }
+      await c.env.DB.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ? AND org_id = ?')
+        .bind(priority, nowIso(), task.id, who.orgId).run();
+      await answerCallbackQuery(c.env, cq.id, priority === 'urgent' ? 'Срочная' : 'Не срочная');
       return c.json({ ok: true });
     }
 
@@ -739,6 +767,7 @@ botApp.post('/webhook', async (c) => {
     await sendMessage(c.env, String(msg.chat.id), [
       `✅ ${draft.title}`,
       `Кому: ${self ? 'вам' : names.join(', ') || '—'}`,
+      `Срочность: ${draft.priority === 'urgent' ? 'срочно' : draft.priority === 'low' ? 'низкая' : 'средняя'}`,
       `Срок: ${draft.deadline ? formatWhen(draft.deadline, org?.timezone ?? 'Asia/Tashkent') : 'не указан'}`,
       draft.deadline ? 'Напомню за день до срока.' : 'Поставьте срок кнопкой — и я напомню.',
     ].join('\n'),

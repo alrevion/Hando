@@ -135,6 +135,7 @@ const FIXTURES: Record<string, Probe> = {
   // Адресат из чужой организации не должен стать исполнителем: перебивание
   // разбора проверяется по справочнику СВОЕЙ организации.
   'POST /tasks/dictate': { path: '/tasks/dictate', method: 'POST', body: { text: 'позвонить в банк завтра', assignee_id: 'b1' } },
+  'PATCH /tasks/:id/quick': { path: '/tasks/tb/quick', method: 'PATCH', body: { priority: 'urgent' } },
 
   'PATCH /users/:id': { path: '/users/b1', method: 'PATCH', body: { name: 'взломан' } },
   // Заявку организации Б нельзя ни принять, ни отклонить сессией организации А:

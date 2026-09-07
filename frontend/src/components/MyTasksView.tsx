@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react';
 import { Lock } from 'lucide-react';
 import type { Priority, Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
-import { PRIORITIES, PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
-import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
+import { PRIORITIES } from '../lib/priority';
+import { isTaskOverdue } from '../lib/overdue';
 import { TaskDetailModal } from './TaskDetailModal';
+import { TaskMeta } from './TaskMeta';
 import { isMine } from '../lib/tasks';
 
 // Порядок срочности берётся из самого PRIORITIES: он уже перечислен от «Срочно»
@@ -24,7 +25,7 @@ const PRIORITY_RANK: Record<Priority, number> = Object.fromEntries(
  * читается только из одной сквозной очереди.
  */
 export function MyTasksView({ user }: { user: User }) {
-  const { tasks, loading, loadError } = useOrgTasks();
+  const { tasks, projects, loading, loadError } = useOrgTasks();
   const [viewing, setViewing] = useState<Task | null>(null);
 
   // Предшественника ищем среди ВСЕХ видимых задач, а не только своих: он лежит
@@ -91,29 +92,18 @@ export function MyTasksView({ user }: { user: User }) {
                     <span className="num">{index + 1}</span>
                     <span className="grow">
                       <span className="t-title">{task.title}</span>
-                      <span className="t-meta">
-                        <span className={`dot ${PRIORITY_DOT[task.priority]}`} aria-hidden="true" />
-                        <span>{PRIORITY_LABEL[task.priority]}</span>
-                        <span>·</span>
-                        <span>{projectName}</span>
-                        {task.deadline ? (
-                          <>
-                            <span>·</span>
-                            <span className={overdue ? 'c-red' : undefined}>{formatDeadlineDays(task.deadline)}</span>
-                          </>
+                      <TaskMeta
+                        task={task}
+                        projectName={projectName}
+                        showProject={projects.length > 1}
+                        line
+                        extra={blockedBy ? (
+                          <span className="pill pill-orange" title={`Ждёт задачу «${blockedBy}»`}>
+                            <Lock aria-hidden="true" />
+                            <span>Ждёт «{blockedBy}»</span>
+                          </span>
                         ) : null}
-                      </span>
-                      {task.status === 'in_progress' || blockedBy ? (
-                        <span className="pills">
-                          {task.status === 'in_progress' ? <span className="pill pill-blue">В работе</span> : null}
-                          {blockedBy ? (
-                            <span className="pill pill-orange" title={`Ждёт задачу «${blockedBy}»`}>
-                              <Lock aria-hidden="true" />
-                              <span>Ждёт «{blockedBy}»</span>
-                            </span>
-                          ) : null}
-                        </span>
-                      ) : null}
+                      />
                     </span>
                   </span>
                 </button>

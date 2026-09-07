@@ -70,6 +70,15 @@ const SCENARIOS: Scenario[] = [
   { name: 'принял', setup: [], act: move('aziz', 'in_progress') },
   { name: 'сдал', setup: [move('aziz', 'in_progress')], act: move('aziz', 'done') },
   {
+    // Быстрая правка срочности/срока НЕ трогает ни статус, ни строки
+    // адресатов -- и именно это здесь проверяется: свёртка обязана остаться
+    // согласованной, а строка Азиза -- нетронутой.
+    name: 'срочность кнопкой',
+    setup: [move('aziz', 'in_progress')],
+    act: { path: '/tasks/t1/quick', method: 'PATCH', body: { priority: 'urgent' }, as: 'boss' },
+    expectRows: 'accepted',
+  },
+  {
     name: 'правка заголовка после «Принял»',
     setup: [move('aziz', 'in_progress')],
     act: { path: '/tasks/t1', method: 'PATCH', body: { title: 'Другая задача' }, as: 'boss' },

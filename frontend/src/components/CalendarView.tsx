@@ -5,6 +5,7 @@ import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
 import { PRIORITY_DOT } from '../lib/priority';
 import { isTaskOverdue } from '../lib/overdue';
 import { TaskDetailModal } from './TaskDetailModal';
+import { TaskMeta } from './TaskMeta';
 import { assigneeKey } from '../lib/tasks';
 
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
@@ -39,7 +40,7 @@ function localDayKey(date: Date): string {
  * под сеткой.
  */
 export function CalendarView({ currentUser }: { currentUser: User }) {
-  const { tasks, loading, loadError } = useOrgTasks();
+  const { tasks, projects, loading, loadError } = useOrgTasks();
   const { users } = useOrgUsers();
   const [cursor, setCursor] = useState(() => new Date());
   const [viewing, setViewing] = useState<Task | null>(null);
@@ -144,17 +145,15 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
             return (
               <li key={task.id}>
                 <button type="button" onClick={() => setViewing(task)} className={`card card-tap${overdue ? ' is-overdue' : ''}`}>
-                  <span className="t-row" style={{ alignItems: 'center', gap: 10 }}>
-                    <span className={`dot ${PRIORITY_DOT[task.priority]}`} aria-hidden="true" />
-                    <span className="grow">
-                      <span className="t-title">{task.title}</span>
-                      <span className="t-meta">
-                        {who ? <span>{who}</span> : null}
-                        {who ? <span>·</span> : null}
-                        <span>{projectName}</span>
-                        {overdue ? <><span>·</span><span className="c-red">просрочено</span></> : null}
-                      </span>
-                    </span>
+                  <span className="grow">
+                    <span className="t-title">{task.title}</span>
+                    <TaskMeta
+                      task={task}
+                      projectName={projectName}
+                      showProject={projects.length > 1}
+                      who={who ? [{ name: who }] : undefined}
+                      line
+                    />
                   </span>
                 </button>
               </li>

@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, X } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
-import { PRIORITY_DOT } from '../lib/priority';
-import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
+import { isTaskOverdue } from '../lib/overdue';
 import { approveMember, getPendingMembers, rejectMember, type PendingMember } from '../lib/api';
 import { TaskDetailModal } from './TaskDetailModal';
+import { TaskMeta } from './TaskMeta';
 import { isMine } from '../lib/tasks';
 
 const STAGE_LABEL: Record<'todo' | 'in_progress' | 'done', string> = {
@@ -36,7 +36,7 @@ function initials(name: string): string {
  * это тоже ответ, и в списке задач его не видно.
  */
 export function PeopleView() {
-  const { tasks, loading, loadError } = useOrgTasks();
+  const { tasks, projects, loading, loadError } = useOrgTasks();
   const { users, forbidden } = useOrgUsers();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [viewing, setViewing] = useState<{ task: Task; responsible: User | undefined } | null>(null);
@@ -176,9 +176,7 @@ export function PeopleView() {
                     {active.length === 0 ? (
                       <li className="muted" style={{ padding: '8px 8px 4px' }}>Активных задач нет.</li>
                     ) : (
-                      active.map(({ task, projectName }) => {
-                        const overdue = isTaskOverdue(task);
-                        return (
+                      active.map(({ task, projectName }) => (
                           <li key={task.id}>
                             <button
                               type="button"
@@ -186,27 +184,13 @@ export function PeopleView() {
                               className="card card-tap"
                               style={{ boxShadow: 'none', padding: '10px 8px', background: 'transparent' }}
                             >
-                              <span className="t-row" style={{ alignItems: 'center', gap: 10 }}>
-                                <span className={`dot ${PRIORITY_DOT[task.priority]}`} aria-hidden="true" />
-                                <span className="grow">
-                                  <span className="t-title" style={{ fontSize: 15, fontWeight: 500 }}>{task.title}</span>
-                                  <span className="t-meta" style={{ marginTop: 2 }}>
-                                    <span>{projectName}</span>
-                                    <span>·</span>
-                                    <span>{STAGE_LABEL[task.status as 'todo' | 'in_progress' | 'done']}</span>
-                                    {task.deadline ? (
-                                      <>
-                                        <span>·</span>
-                                        <span className={overdue ? 'c-red' : undefined}>{formatDeadlineDays(task.deadline)}</span>
-                                      </>
-                                    ) : null}
-                                  </span>
-                                </span>
+                              <span className="grow">
+                                <span className="t-title" style={{ fontSize: 15, fontWeight: 500 }}>{task.title}</span>
+                                <TaskMeta task={task} projectName={projectName} showProject={projects.length > 1} line />
                               </span>
                             </button>
                           </li>
-                        );
-                      })
+                      ))
                     )}
                   </ul>
                 ) : null}

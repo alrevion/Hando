@@ -38,7 +38,10 @@ export function BottomNav({
             aria-current={on ? 'page' : undefined}
             className={on ? 'nav-btn active' : 'nav-btn'}
           >
-            <Icon strokeWidth={on ? 2.2 : 1.9} aria-hidden="true" />
+            {/* Толщина линии ПОСТОЯННАЯ: при её смене иконка перерисовывается
+                другой геометрией, и вкладки заметно вздрагивали. Активность
+                показывает цвет и подложка, этого достаточно. */}
+            <Icon strokeWidth={2} aria-hidden="true" />
             <span className="nav-label">{tab.label}</span>
             {tab.badge ? <span className="nav-badge">{tab.badge > 99 ? '99+' : tab.badge}</span> : null}
           </button>

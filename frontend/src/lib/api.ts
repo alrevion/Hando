@@ -235,21 +235,29 @@ export interface DictateResult {
   id: string;
   title: string;
   deadline: string | null;
+  priority: Priority;
   assignees: string[];
   heard: string;
 }
 
 /** Задача одной фразой: текстом или голосом. Тот же разбор, что у бота. */
 export function dictateTask(
-  input: ({ text: string } | { audio: Blob }) & { assignee_id?: string },
+  input: ({ text: string } | { audio: Blob }) & { assignee_id?: string; mode?: 'mine' | 'assigned'; priority?: Priority },
 ): Promise<DictateResult> {
   if ('audio' in input) {
     const form = new FormData();
     form.append('audio', input.audio, 'voice.webm');
     if (input.assignee_id) form.append('assignee_id', input.assignee_id);
+    if (input.mode) form.append('mode', input.mode);
+    if (input.priority) form.append('priority', input.priority);
     // Заголовок Content-Type НЕ ставим: границу multipart проставляет сам
     // браузер, и ручной заголовок её затрёт.
     return request<DictateResult>('/tasks/dictate', { method: 'POST', body: form, headers: {} });
   }
   return request<DictateResult>('/tasks/dictate', { method: 'POST', body: JSON.stringify(input) });
 }
+
+/** Срок и срочность в два касания -- то же, что кнопки под подтверждением бота.
+ *  Срок принимается и как «2026-09-11»: час дописывает сервер в поясе организации. */
+export const quickEditTask = (taskId: string, patch: { deadline?: string | null; priority?: Priority }) =>
+  request<{ ok: true }>(`/tasks/${taskId}/quick`, { method: 'PATCH', body: JSON.stringify(patch) });

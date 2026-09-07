@@ -1,9 +1,10 @@
 import type { MouseEvent } from 'react';
 import { AlertTriangle, ArrowRight, Check, CheckCircle2, X } from 'lucide-react';
 import type { Task, User } from '../types';
-import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
-import { formatDeadlineDays, isReviewOverdue, isTaskOverdue } from '../lib/overdue';
+
+import { isReviewOverdue, isTaskOverdue } from '../lib/overdue';
 import { assigneeLabel, isMine } from '../lib/tasks';
+import { TaskMeta } from './TaskMeta';
 
 interface TaskCardProps {
   task: Task;
@@ -86,31 +87,23 @@ export function TaskCard({
         ) : null}
       </div>
 
-      <div className="pills">
-        <span className="pill"><span>{who}</span></span>
-        <span className="pill">
-          <span className={`dot ${PRIORITY_DOT[task.priority]}`} aria-hidden="true" />
-          <span>{PRIORITY_LABEL[task.priority]}</span>
-        </span>
-        {task.deadline ? (
-          <span className={isOverdue ? 'pill pill-red' : 'pill'}>
-            <span>{formatDeadlineDays(task.deadline)}</span>
-            {isOverdue ? <span className="sr-only"> (просрочено)</span> : null}
-          </span>
-        ) : null}
-        {reviewOverdue ? (
+      <TaskMeta
+        task={task}
+        who={[{ name: who }]}
+        showStage={false}
+        line
+        extra={reviewOverdue ? (
           <span className="pill pill-orange" title="Сдано больше двух дней назад и не проверено">
             <AlertTriangle aria-hidden="true" />
             <span>Ждёт проверки</span>
           </span>
-        ) : null}
-        {task.status === 'done' && task.confirmed_at ? (
+        ) : task.status === 'done' && task.confirmed_at ? (
           <span className="pill pill-green">
             <CheckCircle2 aria-hidden="true" />
             <span>Принято</span>
           </span>
         ) : null}
-      </div>
+      />
 
       {task.status === 'done' && canManage && !task.confirmed_at ? (
         <div className="btn-row" style={{ marginTop: 12 }}>

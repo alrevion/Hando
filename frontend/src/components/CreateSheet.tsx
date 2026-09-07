@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Mic, Square, X } from 'lucide-react';
-import type { User } from '../types';
+import type { Priority, User } from '../types';
 import { ApiError, dictateTask, type DictateResult } from '../lib/api';
-import { Sheet } from './Sheet';
+import { PRIORITIES } from '../lib/priority';
+import { QuickEdit } from './QuickEdit';
+import { TaskMeta } from './TaskMeta';
 import { useData } from '../context/DataContext';
+import { Sheet } from './Sheet';
 
 /** Есть ли в этом браузере запись с микрофона. В WebView Telegram бывает и нет. */
 function canRecord(): boolean {
@@ -27,12 +30,16 @@ function canRecord(): boolean {
 export function CreateSheet({
   mode, me, onClose,
 }: { mode: 'mine' | 'assigned'; me: User; onClose: () => void }) {
-  const { users, refresh } = useData();
+  const { users, tasks, refresh } = useData();
   const [text, setText] = useState('');
   const [assignee, setAssignee] = useState(mode === 'mine' ? me.id : '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<DictateResult | null>(null);
+  // Срочность: пусто -- «как во фразе», иначе перебивает разбор.
+  const [priority, setPriority] = useState<Priority | ''>('');
+  // Сервер не понял, кому поручение: подсказываем и просим выбрать.
+  const [needWho, setNeedWho] = useState(false);
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
 
@@ -46,11 +53,23 @@ export function CreateSheet({
     setBusy(true);
     setError(null);
     try {
-      const res = await dictateTask({ ...body, assignee_id: assignee || undefined });
+      const res = await dictateTask({
+        ...body,
+        assignee_id: assignee || undefined,
+        mode,
+        priority: priority || undefined,
+      });
       setDone(res);
+      setNeedWho(false);
       await refresh();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не получилось. Попробуйте ещё раз.');
+      if (err instanceof ApiError && err.code === 'NEED_ASSIGNEE') {
+        // Имя во фразе не узнано: не назначаем молча на автора, а спрашиваем.
+        setNeedWho(true);
+        setError('Кому это поручение? Во фразе я никого не узнал.');
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Не получилось. Попробуйте ещё раз.');
+      }
     } finally {
       setBusy(false);
     }
@@ -82,7 +101,10 @@ export function CreateSheet({
     }
   }
 
-  const needsPerson = mode !== 'mine' && !assignee;
+  // Настоящая задача из общего склада: у неё уже актуальные срок и срочность,
+  // поэтому кнопки правки показывают состояние, а не то, что вернулось разбором.
+  const created = done ? tasks.find((t) => t.id === done.id) : undefined;
+  const needsPerson = mode !== 'mine' && !assignee && needWho;
 
   return (
     <Sheet labelledBy="create-title" onClose={onClose}>
@@ -98,13 +120,18 @@ export function CreateSheet({
           {/* Показываем, КАК фраза понята: не тот адресат или не тот срок видно
               сразу, а не через неделю. */}
           <div className="alert alert-ok">Записал.</div>
+          {/* Срок и срочность берём из ЖИВОЙ задачи, а не из ответа разбора:
+              их тут же правят кнопками ниже, и карточка обязана это показывать. */}
           <div className="card">
-            <span className="t-title">{done.title}</span>
+            <span className="t-title">{created?.title ?? done.title}</span>
             <span className="t-meta"><span>Кому: {done.assignees.join(', ') || 'вам'}</span></span>
-            <span className="t-meta">
-              <span>Срок: {done.deadline ? new Date(done.deadline).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : 'не указан'}</span>
-            </span>
+            {created ? <TaskMeta task={created} /> : null}
           </div>
+
+          {/* Срок и срочность правятся прямо здесь: без срока нет ни
+              напоминания, ни просрочки, и заставлять ради этого идти на доску
+              значит почти гарантированно оставить задачу без срока. */}
+          {created ? <QuickEdit task={created} /> : null}
           <div className="btn-row">
             <button type="button" className="btn" onClick={() => { setDone(null); setText(''); }}>Ещё одну</button>
             <button type="button" className="btn btn-primary" onClick={onClose}>Готово</button>
@@ -132,12 +159,37 @@ export function CreateSheet({
             {mode !== 'mine' ? (
               <div className="field">
                 <label className="lbl" htmlFor="create-who">Кому</label>
-                <select id="create-who" className="inp" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+                <select
+                  id="create-who"
+                  className="inp"
+                  value={assignee}
+                  aria-invalid={needWho}
+                  onChange={(e) => setAssignee(e.target.value)}
+                >
                   <option value="">Из фразы</option>
                   {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                 </select>
               </div>
             ) : null}
+
+            <div className="field">
+              <span className="lbl">Срочность</span>
+              <div className="chips" style={{ paddingBottom: 0 }}>
+                <button type="button" className={priority === '' ? 'chip on' : 'chip'} onClick={() => setPriority('')}>
+                  Из фразы
+                </button>
+                {PRIORITIES.map((p) => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    className={priority === p.value ? 'chip on' : 'chip'}
+                    onClick={() => setPriority(p.value)}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             <div className="btn-row">
               {canRecord() ? (

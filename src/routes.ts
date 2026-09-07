@@ -10,8 +10,8 @@ import { deleteMessage, getFileUrl, resolveChatId, sendDocument, sendMessage } f
 import { applyTransition, buildNotification } from './transition';
 import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
-import { createFromDraft } from './intake';
-import { parseTask, transcribe } from './parse';
+import { createFromDraft, setTaskDeadline } from './intake';
+import { localIso, parseTask, transcribe } from './parse';
 import { approveJoin, createOrg, joinByCode, pendingRequests, rejectJoin } from './signup';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, switchOrg } from './menu';
 
@@ -369,10 +369,15 @@ apiRoutes.post('/tasks/dictate', async (c) => {
 
   let phrase = '';
   let forced: string | null = null;
+  let mode: 'mine' | 'assigned' = 'mine';
+  let priorityOverride: 'urgent' | 'medium' | 'low' | null = null;
   if (type.includes('multipart/form-data')) {
     const form = await c.req.formData();
     const audio = form.get('audio');
     forced = (form.get('assignee_id') as string | null) || null;
+    mode = form.get('mode') === 'assigned' ? 'assigned' : 'mine';
+    const p = form.get('priority');
+    priorityOverride = typeof p === 'string' && PRIORITIES.includes(p) ? (p as 'urgent' | 'medium' | 'low') : null;
     // Сужение через typeof, а не instanceof: form.get отдаёт «строка или файл»,
     // и instanceof по такому объединению typescript не пропускает.
     if (!audio || typeof audio === 'string') return c.json({ error: 'audio required' }, 400);
@@ -381,9 +386,12 @@ apiRoutes.post('/tasks/dictate', async (c) => {
     if (!text) return c.json({ error: 'Не удалось разобрать запись', code: 'TRANSCRIBE_FAILED' }, 422);
     phrase = text;
   } else {
-    const b = await c.req.json<{ text?: string; assignee_id?: string }>().catch(() => ({}) as Record<string, undefined>);
+    const b = await c.req.json<{ text?: string; assignee_id?: string; mode?: string; priority?: string }>()
+      .catch(() => ({}) as Record<string, undefined>);
     phrase = (b.text ?? '').trim();
     forced = b.assignee_id ?? null;
+    mode = b.mode === 'assigned' ? 'assigned' : 'mine';
+    priorityOverride = PRIORITIES.includes(b.priority ?? '') ? (b.priority as 'urgent' | 'medium' | 'low') : null;
   }
   if (!phrase) return c.json({ error: 'text required' }, 400);
 
@@ -408,6 +416,22 @@ apiRoutes.post('/tasks/dictate', async (c) => {
     if (!roster.some((p) => p.id === forced)) return c.json({ error: 'Такого человека нет в организации' }, 400);
     draft.assigneeIds = [forced];
   }
+  if (priorityOverride) draft.priority = priorityOverride;
+
+  // ПОРУЧЕНИЕ БЕЗ УЗНАННОГО АДРЕСАТА -- вопрос, а не догадка.
+  //
+  // Человек нажал «+» на поручениях и сказал «нужно Еве приготовить сырники».
+  // Евы в организации нет, разбор никого не нашёл и по общему правилу записал
+  // бы задачу НА АВТОРА -- то есть поручение молча превратилось бы в личную
+  // задачу. Здесь мы этого не делаем: возвращаем разобранное и просим выбрать
+  // человека. Для «моих задач» правило обратное -- там автор и есть адресат.
+  if (mode === 'assigned' && !forced
+      && (draft.assigneeIds.length === 0 || (draft.assigneeIds.length === 1 && draft.assigneeIds[0] === userId))) {
+    return c.json({
+      error: 'Не понял, кому поручение', code: 'NEED_ASSIGNEE',
+      title: draft.title, deadline: draft.deadline, priority: draft.priority, heard: phrase,
+    }, 409);
+  }
 
   const taskId = await createFromDraft(c.env, { userId, orgId }, draft, null, phrase);
   if (!taskId) return c.json({ error: 'Вас не добавили ни на одну доску', code: 'NO_BOARD' }, 409);
@@ -418,7 +442,50 @@ apiRoutes.post('/tasks/dictate', async (c) => {
   ).bind(...draft.assigneeIds).all<{ name: string }>()).results.map((r) => r.name);
 
   // Возвращаем, КАК фраза понята: человек видит это сразу, а не через неделю.
-  return c.json({ id: taskId, title: draft.title, deadline: draft.deadline, assignees: names, heard: phrase }, 201);
+  return c.json({
+    id: taskId, title: draft.title, deadline: draft.deadline,
+    priority: draft.priority, assignees: names, heard: phrase,
+  }, 201);
+});
+
+// Срок и срочность кнопками -- то же, что кнопки под подтверждением в боте.
+// Один роут на оба поля: это одна и та же правка «в два касания», и два
+// отдельных роута означали бы две записи в реестре ради одного действия.
+apiRoutes.patch('/tasks/:id/quick', requireProjectAccess('task'), async (c) => {
+  // Задачу и доступ к её доске грузит штатная мидлвара, а не свой SELECT:
+  // структурный инвариант шага 0 требует именно её, и он прав -- своя выборка
+  // однажды забудет проверку доски.
+  const task = c.get('task')!;
+  const b = await c.req.json<{ deadline?: string | null; priority?: string }>()
+    .catch(() => ({}) as Record<string, undefined>);
+
+  // Правит автор или руководитель организации: срок и срочность -- требование
+  // поручителя, а не исполнителя.
+  const role = c.get('role');
+  if (task.author_id !== c.get('userId') && role !== 'creator' && role !== 'super_admin') {
+    return c.json({ error: 'not allowed' }, 403);
+  }
+
+  if (b.priority !== undefined) {
+    if (!PRIORITIES.includes(b.priority)) return c.json({ error: 'bad priority' }, 400);
+    await c.env.DB.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ? AND org_id = ?')
+      .bind(b.priority, nowIso(), task.id, c.get('orgId')).run();
+  }
+  if (b.deadline !== undefined) {
+    // «2026-09-11» приходит из системного выбора даты; час дописывается ЗДЕСЬ,
+    // в поясе организации, а не на клиенте: у телефона свой пояс, и «пятница»
+    // у сотрудника в другом городе означала бы другой момент.
+    let iso = b.deadline;
+    if (iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+      const org = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(c.get('orgId'))
+        .first<{ timezone: string }>();
+      const [y, m, d] = iso.split('-').map(Number);
+      iso = localIso(y, m, d, 18, org?.timezone ?? 'Asia/Tashkent');
+    }
+    // Срок ложится и в задачу, и в строки адресатов: напоминание считает по ним.
+    await setTaskDeadline(c.env, task.id, c.get('orgId'), iso);
+  }
+  return c.json({ ok: true });
 });
 
 // ------------------------------------------------------------ организации

@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import type { Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
-import { STATE_PILL, stateLabel } from '../lib/tasks';
-import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
+
+import { isTaskOverdue } from '../lib/overdue';
 import { TaskDetailModal } from './TaskDetailModal';
+import { TaskMeta } from './TaskMeta';
 
 /**
  * «Мои поручения» -- что человек раздал и кто на каком этапе.
@@ -13,7 +14,7 @@ import { TaskDetailModal } from './TaskDetailModal';
  * ради этого экрана, поэтому у него он первый.
  */
 export function AssignedView({ user }: { user: User }) {
-  const { tasks, loading, loadError } = useOrgTasks();
+  const { tasks, projects, loading, loadError } = useOrgTasks();
   const [viewing, setViewing] = useState<Task | null>(null);
 
   const mine = useMemo(
@@ -52,22 +53,14 @@ export function AssignedView({ user }: { user: User }) {
                   className={`card card-tap${overdue ? ' is-overdue' : ''}`}
                 >
                   <span className="t-title">{task.title}</span>
-                  <span className="t-meta">
-                    <span>{projectName}</span>
-                    {task.deadline ? (
-                      <>
-                        <span>·</span>
-                        <span className={overdue ? 'c-red' : undefined}>{formatDeadlineDays(task.deadline)}</span>
-                      </>
-                    ) : null}
-                  </span>
-                  <span className="pills">
-                    {(task.assignees ?? []).filter((a) => a.user_id !== user.id).map((a) => (
-                      <span key={a.user_id} className={STATE_PILL[a.state] ?? 'pill'}>
-                        <span>{a.user_name} · {stateLabel(a.state)}</span>
-                      </span>
-                    ))}
-                  </span>
+                  <TaskMeta
+                    task={task}
+                    projectName={projectName}
+                    showProject={projects.length > 1}
+                    line
+                    showStage={false}
+                    who={(task.assignees ?? []).filter((a) => a.user_id !== user.id).map((a) => ({ name: a.user_name, state: a.state }))}
+                  />
                 </button>
               </li>
             );

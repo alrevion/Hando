@@ -46,12 +46,12 @@ export async function createFromDraft(
 
   const writes = [
     env.DB.prepare(
-      `INSERT INTO tasks (id, org_id, project_id, title, description, author_id, kind, source, status, deadline)
-       VALUES (?, ?, ?, ?, '', ?, ?, ?, 'todo', ?)`,
+      `INSERT INTO tasks (id, org_id, project_id, title, description, author_id, kind, source, status, priority, deadline)
+       VALUES (?, ?, ?, ?, '', ?, ?, ?, 'todo', ?, ?)`,
     ).bind(taskId, who.orgId, projectId, draft.title, who.userId, draft.kind,
       // source различает разбор паттернами и моделью -- это и есть замер для
       // порога-гейта шага 4b: сколько фраз обошлось без обращения к сети.
-      media?.hasAudio ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.deadline),
+      media?.hasAudio ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.priority, draft.deadline),
     env.DB.prepare(
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -95,7 +95,7 @@ export async function createFromDraft(
  * Писать только в одно значило бы «срок вижу, а напоминания нет».
  * reminder_sent_at гасится: у нового срока своё напоминание.
  */
-export async function setTaskDeadline(env: Env, taskId: string, orgId: string, iso: string): Promise<void> {
+export async function setTaskDeadline(env: Env, taskId: string, orgId: string, iso: string | null): Promise<void> {
   await env.DB.batch([
     env.DB.prepare('UPDATE tasks SET deadline = ?, updated_at = ? WHERE id = ? AND org_id = ?')
       .bind(iso, nowIso(), taskId, orgId),

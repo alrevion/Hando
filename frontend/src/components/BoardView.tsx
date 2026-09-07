@@ -291,8 +291,12 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
     );
   }
 
+  // h-full ТОЛЬКО на широком экране. На телефоне доска живёт внутри общего
+  // прокручиваемого .content, и «высота в экран» рвала раскладку: сетка
+  // получала собственный скролл, чипы этапов уезжали под карточки, а низ
+  // списка обрезался.
   return (
-    <div className="flex h-full flex-col lg:p-6">
+    <div className="flex flex-col lg:h-full lg:p-6">
       <div className="h1-row">
         {/* Когда рядом есть переключатель досок (телефон), имя доски пишет
             он -- заголовок называет экран, иначе название стоит дважды. */}
@@ -362,11 +366,11 @@ export function BoardView({ project, user, initialTask, projectSwitcher }: Board
       {actionError ? <div role="alert" className="alert alert-err">{actionError}</div> : null}
       {actionInfo ? <div role="status" className="alert alert-ok">{actionInfo}</div> : null}
 
-      <div className="grid flex-1 grid-cols-1 gap-4 lg:min-h-0 lg:grid-cols-3 lg:overflow-y-auto">
+      <div className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-3 lg:overflow-y-auto">
         {COLUMNS.map((col) => (
           <div
             key={col.status}
-            className={`${col.status === mobileCol ? 'flex' : 'hidden lg:flex'} min-h-0 flex-col lg:rounded-[14px] lg:bg-[var(--fill2)] lg:p-3`}
+            className={`${col.status === mobileCol ? 'flex' : 'hidden lg:flex'} flex-col lg:min-h-0 lg:rounded-[14px] lg:bg-[var(--fill2)] lg:p-3`}
           >
             <h2 className="sec-title hidden lg:block" style={{ marginTop: 0 }}>
               {col.label}

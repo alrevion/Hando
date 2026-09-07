@@ -21,6 +21,8 @@ export type Draft = {
   title: string;
   assigneeIds: string[];
   deadline: string | null;
+  /** Срочность из самой фразы; medium -- когда о ней не сказали. */
+  priority: 'urgent' | 'medium' | 'low';
   kind: 'single' | 'each' | 'ack';
   /** Чем разобрано -- для замера порога-гейта шага 4b. */
   source: 'pattern' | 'llm' | 'fallback';
@@ -249,7 +251,69 @@ const E = '(?=$|[\\s,.;:!?«»"\'()-])';
 const word = (alts: string) => new RegExp(`${B}(?:${alts})${E}`, 'i');
 
 const SELF = word('мне|себе|я');
+
+// СРОЧНОСТЬ ИЗ СЛОВ. Порядок проверки обязателен: «не срочно» содержит
+// «срочно» как подстроку, и при обратном порядке всё несрочное стало бы
+// срочным. Поэтому сначала ищем понижение, и только потом повышение.
+const LOW_WORDS = word('несроч[а-яё]*|потом|когда будет время|при случае|не горит|низк[а-яё]* приоритет[а-яё]*');
+const NOT_URGENT = /(?:^|[\s,.;:!?«»"'()-])не\s+срочн[а-яё]*/i;
+const URGENT_WORDS = word('срочн[а-яё]*|сроч[а-яё]*|горит|немедленно|как можно скорее|асап|asap|очень важн[а-яё]*');
+
+/**
+ * Срочность из фразы и слова, которые её задали.
+ *
+ * Слова возвращаются, чтобы вычеркнуть их из заголовка: «срочно позвонить в
+ * банк» -- это задача «позвонить в банк» со срочностью, а не задача с этим
+ * словом в названии.
+ */
+export function matchPriority(text: string): { priority: Draft['priority']; usedWords: Set<string> } {
+  const used = new Set<string>();
+  const mark = (m: RegExpMatchArray | null) => {
+    if (!m) return;
+    for (const w of m[0].split(/\s+/)) {
+      const clean = w.replace(/^[^а-яёa-z0-9]+|[^а-яёa-z0-9]+$/gi, '');
+      if (clean) used.add(clean);
+    }
+  };
+
+  const notUrgent = text.match(NOT_URGENT);
+  if (notUrgent) {
+    mark(notUrgent);
+    return { priority: 'low', usedWords: used };
+  }
+  const low = text.match(LOW_WORDS);
+  if (low) {
+    mark(low);
+    return { priority: 'low', usedWords: used };
+  }
+  const urgent = text.match(URGENT_WORDS);
+  if (urgent) {
+    mark(urgent);
+    return { priority: 'urgent', usedWords: used };
+  }
+  return { priority: 'medium', usedWords: used };
+}
 const ACK_MARKERS = word('ознаком[а-яё]*|прочит[а-яё]*|прочти|к сведению|довед[а-яё]*|объявлени[а-яё]*|приказ[а-яё]*');
+
+/**
+ * Заголовок из фразы: вычёркиваем всё, что уже стало отдельным полем.
+ *
+ * Общий для разбора паттернами и для запасного пути. Раньше запасной путь
+ * оставлял фразу как есть, и в списке висело «не срочно разобрать архив» --
+ * слово про срочность уже уехало в поле, а из названия его никто не убрал.
+ */
+function buildTitle(text: string, used: Set<string>[]): string {
+  const drop = new Set(used.flatMap((set) => [...set].map((w) => w.toLowerCase())));
+  return text
+    .split(/\s+/)
+    // Предлоги НЕ выкидываются огулом: «в банк» -- часть сути поручения. Те,
+    // что относились к сроку («до пятницы»), уже вычеркнуты как слова даты.
+    .filter((w) => !drop.has(w.toLowerCase().replace(/^[^а-яёa-z0-9]+|[^а-яёa-z0-9]+$/gi, ''))
+      && !/^(?:напомни|поручи|скажи|передай|мне|себе|я)$/i.test(w))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /**
  * Разбор паттернами. null -- не хватило уверенности, дальше решает модель.
@@ -261,6 +325,7 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
   const clean = text.replace(LEAD_NOISE, '').trim();
   const { ids, ambiguous, usedWords } = matchPeople(clean, people);
   const { iso, usedWords: dateWords } = matchDeadline(clean, now, timeZone);
+  const { priority, usedWords: priorityWords } = matchPriority(clean);
 
   // «напомни мне завтра...» -- поручение себе. Оно же личный слой: адресат
   // совпадает с автором, отдельной сущности для этого нет по замыслу.
@@ -269,7 +334,7 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
   // переспроса управление не доходило: фраза уезжала в модель, та тоже не могла
   // выбрать, и задача молча создавалась на самого автора.
   if (ambiguous.length > 0) {
-    return { title: '', assigneeIds: [], deadline: iso, kind: 'single', source: 'pattern', ambiguous };
+    return { title: '', assigneeIds: [], deadline: iso, priority, kind: 'single', source: 'pattern', ambiguous };
   }
 
   // Адресат не назван, но назван СРОК -- это напоминание себе: «сдать отчёт в
@@ -281,21 +346,14 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
   if (assignees.length === 0) return null; // ни адресата, ни срока -- решает модель
 
   // Заголовок -- то, что осталось: убираем имена, слова даты и служебные слова.
-  const drop = new Set([...usedWords, ...dateWords].map((w) => w.toLowerCase()));
-  const title = clean
-    .split(/\s+/)
-    // Предлоги НЕ выкидываются огулом: «в банк» -- часть сути поручения. Те,
-    // что относились к сроку («до пятницы»), уже вычеркнуты как слова даты.
-    .filter((w) => !drop.has(w.toLowerCase()) && !/^(?:напомни|поручи|скажи|передай|мне|себе|я)$/i.test(w))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const title = buildTitle(clean, [usedWords, dateWords, priorityWords]);
   if (title.length < 3) return null; // осталась пустота -- это не поручение
 
   return {
     title: title[0].toUpperCase() + title.slice(1),
     assigneeIds: assignees,
     deadline: iso,
+    priority,
     kind: ACK_MARKERS.test(clean) ? 'ack' : assignees.length > 1 ? 'each' : 'single',
     source: 'pattern',
     ambiguous: [],
@@ -344,6 +402,8 @@ export async function parseByLlm(env: Env, text: string, people: Person[], model
       title: parsed.title.trim(),
       assigneeIds: ids,
       deadline: parsed.deadline ?? null,
+      // Модель о срочности не спрашивается: словарь надёжнее и дешевле.
+      priority: matchPriority(text).priority,
       kind: parsed.kind === 'each' || parsed.kind === 'ack' ? parsed.kind : ids.length > 1 ? 'each' : 'single',
       source: 'llm',
       ambiguous: [],
@@ -376,10 +436,15 @@ export async function parseTask(
   const byLlm = env.GROQ_API_KEY ? await parseByLlm(env, text, people, model) : null;
   if (byLlm) return byLlm;
 
+  // Даже на запасном пути слово про срочность не должно остаться в названии:
+  // оно уже стало полем, и в списке читалось бы дважды.
+  const { priority, usedWords: priorityWords } = matchPriority(text);
+  const bare = buildTitle(text.trim(), [priorityWords]);
   return {
-    title: text.trim().slice(0, 200) || 'Без названия',
+    title: (bare.length >= 3 ? bare[0].toUpperCase() + bare.slice(1) : text.trim()).slice(0, 200) || 'Без названия',
     assigneeIds: [selfId],
     deadline: null,
+    priority,
     kind: 'single',
     source: 'fallback',
     ambiguous: [],
