@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Sheet } from './Sheet';
 import { Check, LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { User } from '../types';
 import {
@@ -94,9 +95,7 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
   );
 
   return (
-    <div className="sheet-backdrop" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-labelledby="profile-title" className="sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="sheet-grab" aria-hidden="true" />
+    <Sheet labelledBy="profile-title" onClose={onClose}>
         <div className="sheet-head">
           <h2 id="profile-title" className="sheet-title">Профиль</h2>
           <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
@@ -221,7 +220,6 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
             </button>
           </div>
         )}
-      </div>
-    </div>
+    </Sheet>
   );
 }

@@ -43,7 +43,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { apiRoutes } from '../src/routes';
 import { mcpSessionClaims, mintSession, resolveOrgId } from '../src/auth';
 import { cookie, envWith, ORG_A, ORG_B, SECRET, stubTelegram } from './fixture';
-import type { Env } from '../src/types';
+import type { Env, Role } from '../src/types';
 
 let restore: { mockRestore(): void } | null = null;
 afterEach(() => {
@@ -132,6 +132,9 @@ const FIXTURES: Record<string, Probe> = {
   'DELETE /orgs/:orgId': { path: `/orgs/${ORG_B}`, method: 'DELETE', skip: 'право -- собственное владение указанной организацией; см. блок ниже' },
   'POST /orgs/:orgId/leave': { path: `/orgs/${ORG_B}/leave`, method: 'POST', body: {}, skip: 'выйти можно только из своего членства; см. блок ниже' },
   'PATCH /me': { path: '/me', method: 'PATCH', body: { name: 'Новое имя' }, skip: 'правит только себя; идентификаторов не принимает' },
+  // Адресат из чужой организации не должен стать исполнителем: перебивание
+  // разбора проверяется по справочнику СВОЕЙ организации.
+  'POST /tasks/dictate': { path: '/tasks/dictate', method: 'POST', body: { text: 'позвонить в банк завтра', assignee_id: 'b1' } },
 
   'PATCH /users/:id': { path: '/users/b1', method: 'PATCH', body: { name: 'взломан' } },
   // Заявку организации Б нельзя ни принять, ни отклонить сессией организации А:

@@ -10,6 +10,8 @@ import { deleteMessage, getFileUrl, resolveChatId, sendDocument, sendMessage } f
 import { applyTransition, buildNotification } from './transition';
 import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
+import { createFromDraft } from './intake';
+import { parseTask, transcribe } from './parse';
 import { approveJoin, createOrg, joinByCode, pendingRequests, rejectJoin } from './signup';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, switchOrg } from './menu';
 
@@ -350,6 +352,73 @@ apiRoutes.post('/memberships/:userId/approve', requireRole('super_admin', 'creat
 apiRoutes.post('/memberships/:userId/reject', requireRole('super_admin', 'creator'), async (c) => {
   const ok = await rejectJoin(c.env, c.get('userId'), c.get('orgId'), c.req.param('userId'));
   return ok ? c.json({ ok: true }) : c.json({ error: 'no pending request' }, 404);
+});
+
+// Задача одной фразой -- текстом или голосом, тем же путём, что в боте.
+//
+// ПАРИТЕТ: разбор (parseTask) и создание (createFromDraft) здесь ровно те же
+// функции, что обслуживают бота. Своя ветка создания задач разошлась бы с
+// ботом в мелочах -- источник, уведомления, вложение -- и разошлась бы молча.
+//
+// Тело либо JSON {text}, либо multipart с полем audio: приложение записывает
+// голос там, где браузер это умеет, и падает на текст там, где не умеет.
+apiRoutes.post('/tasks/dictate', async (c) => {
+  const orgId = c.get('orgId');
+  const userId = c.get('userId');
+  const type = c.req.header('content-type') ?? '';
+
+  let phrase = '';
+  let forced: string | null = null;
+  if (type.includes('multipart/form-data')) {
+    const form = await c.req.formData();
+    const audio = form.get('audio');
+    forced = (form.get('assignee_id') as string | null) || null;
+    // Сужение через typeof, а не instanceof: form.get отдаёт «строка или файл»,
+    // и instanceof по такому объединению typescript не пропускает.
+    if (!audio || typeof audio === 'string') return c.json({ error: 'audio required' }, 400);
+    const name = (audio as { name?: string }).name || 'voice.webm';
+    const text = await transcribe(c.env, audio as Blob, name);
+    if (!text) return c.json({ error: 'Не удалось разобрать запись', code: 'TRANSCRIBE_FAILED' }, 422);
+    phrase = text;
+  } else {
+    const b = await c.req.json<{ text?: string; assignee_id?: string }>().catch(() => ({}) as Record<string, undefined>);
+    phrase = (b.text ?? '').trim();
+    forced = b.assignee_id ?? null;
+  }
+  if (!phrase) return c.json({ error: 'text required' }, 400);
+
+  // Справочник -- только ПОДТВЕРЖДЁННЫЕ участники: разбор не должен находить
+  // заявителя, которого ещё не приняли.
+  const { results: people } = await c.env.DB.prepare(
+    `SELECT u.id, u.name, u.aliases FROM users u
+     JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
+     ORDER BY u.name`,
+  ).bind(orgId).all<{ id: string; name: string; aliases: string | null }>();
+  const roster = people.map((p) => ({ id: p.id, name: p.name, aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined }));
+
+  const org = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(orgId).first<{ timezone: string }>();
+  const draft = await parseTask(c.env, phrase, roster, userId, org?.timezone ?? 'Asia/Tashkent');
+  if (draft.ambiguous.length > 0) {
+    return c.json({ error: 'Уточните, кого вы имели в виду', code: 'AMBIGUOUS', ambiguous: draft.ambiguous }, 409);
+  }
+  // Выбранный в форме человек ПЕРЕБИВАЕТ разбор: явный выбор всегда точнее
+  // догадки по фразе. Чужой идентификатор -- отказ, а не молчаливое
+  // игнорирование: иначе устаревший выбор в форме тихо уехал бы не тому.
+  if (forced) {
+    if (!roster.some((p) => p.id === forced)) return c.json({ error: 'Такого человека нет в организации' }, 400);
+    draft.assigneeIds = [forced];
+  }
+
+  const taskId = await createFromDraft(c.env, { userId, orgId }, draft, null, phrase);
+  if (!taskId) return c.json({ error: 'Вас не добавили ни на одну доску', code: 'NO_BOARD' }, 409);
+  await drainOutbox(c.env);
+
+  const names = draft.assigneeIds.length === 0 ? [] : (await c.env.DB.prepare(
+    `SELECT name FROM users WHERE id IN (${draft.assigneeIds.map(() => '?').join(',')})`,
+  ).bind(...draft.assigneeIds).all<{ name: string }>()).results.map((r) => r.name);
+
+  // Возвращаем, КАК фраза понята: человек видит это сразу, а не через неделю.
+  return c.json({ id: taskId, title: draft.title, deadline: draft.deadline, assignees: names, heard: phrase }, 201);
 });
 
 // ------------------------------------------------------------ организации

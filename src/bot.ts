@@ -17,18 +17,17 @@ import { Hono } from 'hono';
 import type { Env, Role } from './types';
 import { nowIso, uuid } from './db';
 import { myAssignee, transitionAssignee } from './assignees';
-import { answerCallbackQuery, editMessageReplyMarkup, sendMessage } from './telegram';
+import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
-import { approveJoin, createOrg, ensureDefaultProject, ensureUser, joinByCode, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, createOrg, ensureUser, joinByCode, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
+import { createFromDraft, setTaskDeadline } from './intake';
 import {
   askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
   billingScreen, mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
   setState, switchOrg, type OrgRow, type Screen,
 } from './menu';
-import { download, extractMedia, storeByFileId, type Media } from './media';
-import { parseTask, transcribe, type Draft } from './parse';
-import { buildAssignees } from './assignees';
-import { buildNotification } from './transition';
+import { download, extractMedia } from './media';
+import { parseTask, transcribe, localIso, localToday } from './parse';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -84,87 +83,85 @@ async function connectByInvite(env: Env, tg: TgUser, token: string): Promise<str
  * не сохранится, задача всё равно останется -- вложение это дополнение к
  * поручению, а не его условие.
  */
-/** Срок по-русски в поясе организации: «пятница, 12 сентября, 18:00». */
+// ------------------------------------------------------------ срок кнопками
+//
+// У задачи без срока нет ни напоминания, ни просрочки -- она просто лежит.
+// Просить человека переписать фразу целиком ради одного слова -- плохой обмен,
+// поэтому срок ставится кнопками прямо под подтверждением.
+//
+// callback_data: «due:<taskId>:<что>» и «cal:<taskId>:<YYYY-MM>». Обе укладываются
+// в предел Telegram в 64 байта -- 51 и 48 (см. test/callback-data.test.ts).
+const DUE_HOUR = 18;
+const MONTH_TITLE = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+
+/** Быстрые сроки под подтверждением. «Свой срок» открывает календарь. */
+function dueKeyboard(taskId: string): InlineKeyboard {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Сегодня', callback_data: `due:${taskId}:t0` },
+        { text: 'Завтра', callback_data: `due:${taskId}:t1` },
+      ],
+      [
+        { text: 'В конце недели', callback_data: `due:${taskId}:we` },
+        { text: '📅 Свой срок', callback_data: `cal:${taskId}:` },
+      ],
+    ],
+  };
+}
+
+/**
+ * Календарь месяца инлайновыми кнопками.
+ *
+ * Своя сетка, а не системный выбор даты: у ботов Telegram системного выбора нет
+ * вовсе -- он есть только в мини-приложении, а ради одной даты гонять человека
+ * в приложение и обратно дороже, чем нажать день прямо в переписке.
+ */
+function calendarKeyboard(taskId: string, y: number, m: number, today: { y: number; m: number; d: number }): InlineKeyboard {
+  const first = new Date(Date.UTC(y, m - 1, 1));
+  // Понедельник -- первый столбец: getUTCDay() считает от воскресенья.
+  const lead = (first.getUTCDay() + 6) % 7;
+  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  // Месяц и дата собираются В ПЕРЕМЕННУЮ до подстановки: в callback_data
+  // помещается 64 байта, и правило «один идентификатор плюс одна короткая
+  // строка» -- то, что проверяет test/callback-data.test.ts. Три подстановки в
+  // одной строке это правило нарушают, даже если по факту коротки.
+  const prevYm = m === 1 ? `${y - 1}-12` : `${y}-${pad(m - 1)}`;
+  const nextYm = m === 12 ? `${y + 1}-01` : `${y}-${pad(m + 1)}`;
+
+  const rows: { text: string; callback_data: string }[][] = [
+    [
+      { text: '‹', callback_data: `cal:${taskId}:${prevYm}` },
+      { text: `${MONTH_TITLE[m - 1]} ${y}`, callback_data: `noop:${taskId}:` },
+      { text: '›', callback_data: `cal:${taskId}:${nextYm}` },
+    ],
+    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((w) => ({ text: w, callback_data: `noop:${taskId}:` })),
+  ];
+
+  let row: { text: string; callback_data: string }[] = Array.from({ length: lead }, () => ({ text: ' ', callback_data: `noop:${taskId}:` }));
+  for (let d = 1; d <= days; d++) {
+    const isToday = y === today.y && m === today.m && d === today.d;
+    const ymd = `${y}-${pad(m)}-${pad(d)}`;
+    row.push({ text: isToday ? `·${d}·` : String(d), callback_data: `due:${taskId}:${ymd}` });
+    if (row.length === 7) { rows.push(row); row = []; }
+  }
+  if (row.length > 0) {
+    while (row.length < 7) row.push({ text: ' ', callback_data: `noop:${taskId}:` });
+    rows.push(row);
+  }
+  rows.push([{ text: '‹ Назад', callback_data: `cal:${taskId}:back` }]);
+  return { inline_keyboard: rows };
+}
+
+/** «12 сентября, 18:00» -- срок словами в поясе организации. */
 function formatWhen(iso: string, timeZone: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   const day = new Intl.DateTimeFormat('ru-RU', { timeZone, weekday: 'long', day: 'numeric', month: 'long' }).format(d);
   const time = new Intl.DateTimeFormat('ru-RU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
   return `${day}, ${time}`;
-}
-
-async function createFromDraft(
-  env: Env,
-  who: { userId: string; orgId: string },
-  draft: Draft,
-  media: Media | null,
-  rawPhrase: string,
-): Promise<string | null> {
-  const project = await env.DB.prepare(
-    `SELECT p.id, p.telegram_chat_id FROM projects p
-     LEFT JOIN project_memberships m ON m.project_id = p.id AND m.user_id = ?
-     WHERE p.org_id = ? AND p.archived_at IS NULL AND (m.user_id IS NOT NULL OR p.created_by = ?)
-     ORDER BY p.created_at LIMIT 1`,
-  ).bind(who.userId, who.orgId, who.userId).first<{ id: string }>();
-  // В только что созданной организации досок нет вовсе -- заводим первую, иначе
-  // класть задачу физически некуда (tasks.project_id NOT NULL). Если доски
-  // есть, а этой строки нет -- человека просто не добавили ни на одну, и это
-  // другой разговор: молча заводить ему личную доску нельзя.
-  const projectId = project?.id ?? (
-    (await env.DB.prepare('SELECT id FROM projects WHERE org_id = ? AND archived_at IS NULL LIMIT 1').bind(who.orgId).first())
-      ? null
-      : await ensureDefaultProject(env, who.orgId, who.userId)
-  );
-  if (!projectId) return null;
-
-  const taskId = uuid();
-  const now = nowIso();
-  const task = {
-    id: taskId, org_id: who.orgId, project_id: projectId, title: draft.title,
-    author_id: who.userId, kind: draft.kind, deadline: draft.deadline,
-    telegram_message_id: null,
-  } as import('./types').Task;
-
-  const writes = [
-    env.DB.prepare(
-      `INSERT INTO tasks (id, org_id, project_id, title, description, author_id, kind, source, status, deadline)
-       VALUES (?, ?, ?, ?, '', ?, ?, ?, 'todo', ?)`,
-    ).bind(taskId, who.orgId, projectId, draft.title, who.userId, draft.kind,
-      // source различает разбор паттернами и моделью -- это и есть замер для
-      // порога-гейта шага 4b: сколько фраз обошлось без обращения к сети.
-      media?.hasAudio ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.deadline),
-    env.DB.prepare(
-      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(uuid(), who.userId, who.orgId, 'task', taskId, 'created', rawPhrase.slice(0, 500), null, now),
-    ...buildAssignees(env, task, draft.assigneeIds, draft.deadline),
-  ];
-
-  // Уведомление каждому адресату, кроме самого автора: он только что это и
-  // продиктовал.
-  for (const uid of draft.assigneeIds) {
-    if (uid === who.userId) continue;
-    writes.push(await buildNotification(env, task, 'created', { emoji: '📌', label: 'Новая задача' }, draft.deadline, uid, who.userId));
-  }
-  await env.DB.batch(writes);
-
-  // Файл кладётся ПОСЛЕ задачи и отдельно: сеть может подвести, и терять из-за
-  // этого разобранное поручение нельзя.
-  if (media) {
-    const stored = await storeByFileId(env, media);
-    if (stored) {
-      await env.DB.prepare(
-        `INSERT INTO attachments (id, org_id, task_id, telegram_file_id, telegram_message_id, filename, mime_type, size_bytes, uploaded_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(uuid(), who.orgId, taskId, stored.fileId, stored.messageId, media.filename, media.mimeType, media.sizeBytes, who.userId).run();
-      // Голосовое остаётся доказательством: «покажи, что я тогда сказал».
-      if (media.hasAudio) {
-        await env.DB.prepare('UPDATE tasks SET origin_audio_id = (SELECT id FROM attachments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1) WHERE id = ?')
-          .bind(taskId, taskId).run();
-      }
-    }
-  }
-  return taskId;
 }
 
 /**
@@ -327,6 +324,72 @@ botApp.post('/webhook', async (c) => {
         ).bind(task.id, who.orgId).run();
       }
       if (cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
+      await drainOutbox(c.env);
+      return c.json({ ok: true });
+    }
+
+    // ------------------------------------------------------------ срок
+    if (action === 'due' || action === 'cal' || action === 'noop') {
+      if (action === 'noop') {
+        // Подпись месяца и дни недели -- не кнопки; без ответа у нажавшего
+        // крутится спиннер до таймаута.
+        await answerCallbackQuery(c.env, cq.id);
+        return c.json({ ok: true });
+      }
+      // Срок ставит АВТОР: это его поручение и его требование к дате.
+      if (task.author_id !== who.userId) {
+        await answerCallbackQuery(c.env, cq.id, 'Это не ваше поручение');
+        return c.json({ ok: true });
+      }
+      const org = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(who.orgId).first<{ timezone: string }>();
+      const tz = org?.timezone ?? 'Asia/Tashkent';
+      const today = localToday(new Date(), tz);
+      const chatId = cq.message ? String(cq.message.chat.id) : null;
+      const messageId = cq.message ? String(cq.message.message_id) : null;
+
+      if (action === 'cal') {
+        const arg = parts[2] ?? '';
+        // «Назад» возвращает быстрые кнопки, пустое значение открывает текущий
+        // месяц, «YYYY-MM» -- листание.
+        const kb = arg === 'back'
+          ? dueKeyboard(task.id)
+          : (() => {
+              const [y, m] = arg ? arg.split('-').map(Number) : [today.y, today.m];
+              return calendarKeyboard(task.id, y || today.y, m || today.m, today);
+            })();
+        await answerCallbackQuery(c.env, cq.id);
+        if (chatId && messageId) await editMessageReplyMarkup(c.env, chatId, messageId, kb);
+        return c.json({ ok: true });
+      }
+
+      const arg = parts[2] ?? '';
+      const iso = arg === 't0' ? localIso(today.y, today.m, today.d, DUE_HOUR, tz)
+        : arg === 't1' ? (() => { const d = new Date(Date.UTC(today.y, today.m - 1, today.d + 1)); return localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), DUE_HOUR, tz); })()
+        : arg === 'we' ? (() => {
+            // «Конец недели» -- ближайшая пятница, включая сегодняшнюю: сказанное
+            // в пятницу «к концу недели» означает этот же день, а не следующий.
+            const base = new Date(Date.UTC(today.y, today.m - 1, today.d));
+            const delta = (5 - ((base.getUTCDay() + 6) % 7) + 7) % 7;
+            const d = new Date(base.getTime() + delta * 864e5);
+            return localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), DUE_HOUR, tz);
+          })()
+        : /^\d{4}-\d{2}-\d{2}$/.test(arg) ? (() => { const [y, m, d] = arg.split('-').map(Number); return localIso(y, m, d, DUE_HOUR, tz); })()
+        : null;
+
+      if (!iso) {
+        await answerCallbackQuery(c.env, cq.id);
+        return c.json({ ok: true });
+      }
+
+      await setTaskDeadline(c.env, task.id, who.orgId, iso);
+      await answerCallbackQuery(c.env, cq.id, 'Срок поставлен');
+      if (chatId && messageId) {
+        await editMessageText(c.env, chatId, messageId, [
+          `✅ ${task.title}`,
+          `Срок: ${formatWhen(iso, tz)}`,
+          'Напомню за день до срока.',
+        ].join('\n'));
+      }
       await drainOutbox(c.env);
       return c.json({ ok: true });
     }
@@ -677,8 +740,11 @@ botApp.post('/webhook', async (c) => {
       `✅ ${draft.title}`,
       `Кому: ${self ? 'вам' : names.join(', ') || '—'}`,
       `Срок: ${draft.deadline ? formatWhen(draft.deadline, org?.timezone ?? 'Asia/Tashkent') : 'не указан'}`,
-      draft.deadline ? 'Напомню за день до срока.' : 'Скажите «до пятницы» или «завтра» — и я напомню.',
-    ].join('\n'));
+      draft.deadline ? 'Напомню за день до срока.' : 'Поставьте срок кнопкой — и я напомню.',
+    ].join('\n'),
+      // Без срока нет ни напоминания, ни просрочки. Кнопки дешевле, чем просить
+      // переписать всю фразу ради одного слова.
+      draft.deadline ? undefined : dueKeyboard(created));
   }
   if (!created) {
     // Единственная оставшаяся причина отказа: доски в организации есть, а

@@ -19,11 +19,14 @@ const sent = (spy: ReturnType<typeof stubTelegram>) =>
     .filter(([u]) => u.includes('/sendMessage'))
     .map(([, i]) => JSON.parse(String(i.body)).text as string);
 
+// Имена с фамилиями, как в жизни. Односложные («Азиз») прятали дефект: имя
+// сравнивалось целиком, «азизкаримо» не совпадало с «Азизу», и в проде по
+// имени не находился никто -- а тесты были зелёные.
 const PEOPLE = [
-  { id: 'u-aziz', name: 'Азиз' },
-  { id: 'u-bek', name: 'Бек' },
-  { id: 'u-maria', name: 'Мария' },
-  { id: 'u-alex', name: 'Алексей' },
+  { id: 'u-aziz', name: 'Азиз Каримов' },
+  { id: 'u-bek', name: 'Бек Юсупов' },
+  { id: 'u-maria', name: 'Мария Ли' },
+  { id: 'u-alex', name: 'Алексей Смирнов' },
 ];
 const TZ = 'Asia/Tashkent';
 // Среда, 2 сентября 2026, 10:00 в Ташкенте (05:00 UTC).
@@ -290,5 +293,29 @@ describe('бот: поручение из фразы, из фото и из кр
     expect(sent(spy).join(' ')).toContain('Кого именно');
     const { n } = (await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM tasks').first<{ n: number }>())!;
     expect(n).toBe(0);
+  });
+});
+
+describe('имя и фамилия -- обе формы обращения', () => {
+  const parse = (t: string) => parseByPattern(t, PEOPLE, 'u-self', NOW, TZ);
+
+  it('по имени в дательном падеже', () => {
+    expect(parse('Азизу подготовить отчёт до пятницы')!.assigneeIds).toEqual(['u-aziz']);
+  });
+
+  it('по фамилии', () => {
+    expect(parse('Каримову подготовить отчёт до пятницы')!.assigneeIds).toEqual(['u-aziz']);
+  });
+
+  it('имя выкидывается из заголовка, а не остаётся в нём', () => {
+    const d = parse('Азизу подготовить отчёт до пятницы')!;
+    expect(d.title).toBe('Подготовить отчёт');
+  });
+
+  it('двое с одинаковым именем -- переспрос, а не догадка', () => {
+    const two = [...PEOPLE, { id: 'u-aziz2', name: 'Азиз Рахимов' }];
+    const d = parseByPattern('Азизу подготовить отчёт', two, 'u-self', NOW, TZ)!;
+    expect(d.ambiguous).toEqual(['Азизу']);
+    expect(d.assigneeIds).toEqual([]);
   });
 });

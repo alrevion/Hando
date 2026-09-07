@@ -229,3 +229,27 @@ export const deleteOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId
 export const leaveOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}/leave`, { method: 'POST' });
 export const setMyName = (name: string) =>
   request<{ ok: true; name: string }>('/me', { method: 'PATCH', body: JSON.stringify({ name }) });
+
+/** Что система поняла из фразы -- показывается человеку сразу после создания. */
+export interface DictateResult {
+  id: string;
+  title: string;
+  deadline: string | null;
+  assignees: string[];
+  heard: string;
+}
+
+/** Задача одной фразой: текстом или голосом. Тот же разбор, что у бота. */
+export function dictateTask(
+  input: ({ text: string } | { audio: Blob }) & { assignee_id?: string },
+): Promise<DictateResult> {
+  if ('audio' in input) {
+    const form = new FormData();
+    form.append('audio', input.audio, 'voice.webm');
+    if (input.assignee_id) form.append('assignee_id', input.assignee_id);
+    // Заголовок Content-Type НЕ ставим: границу multipart проставляет сам
+    // браузер, и ручной заголовок её затрёт.
+    return request<DictateResult>('/tasks/dictate', { method: 'POST', body: form, headers: {} });
+  }
+  return request<DictateResult>('/tasks/dictate', { method: 'POST', body: JSON.stringify(input) });
+}

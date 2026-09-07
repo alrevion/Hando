@@ -1,4 +1,5 @@
-// Cron (*/5 * * * *): auto-archive stale Done tasks, then escalate overdue ones.
+// Cron (раз в час): архив залежавшихся Done, эскалация просроченных,
+// напоминания о подходящем сроке и страховка за очередь отправки.
 import type { Env, Task } from './types';
 import { nowIso, uuid } from './db';
 import { reconcileWebhook } from './telegram';

@@ -6,8 +6,15 @@
 // UUID давало 81 байт, Telegram отвергал ВСЁ сообщение с кнопками, sendMessage
 // молча возвращал null, и заявка на вступление пропадала без следа.
 //
-// Худший случай считается подстановкой UUID (36 символов) в каждую дырку
-// `${...}`: почти все наши идентификаторы -- именно они.
+// ПРАВИЛО, которое проверяется: в одной кнопке помещается ОДИН идентификатор
+// плюс короткий признак. Худший случай считается подстановкой UUID (36
+// символов) в каждую дырку, где упомянут идентификатор, и 10 символов в
+// остальные -- ровно столько занимает самый длинный короткий признак,
+// «YYYY-MM-DD».
+//
+// Дырок с непонятной длиной быть не должно: если в кнопку нужна дата или
+// месяц, они собираются в переменную ДО подстановки. Три подстановки в одной
+// строке -- признак того, что предел вот-вот перестанут держать в голове.
 import { describe, expect, it } from 'vitest';
 
 const modules = (import.meta as unknown as {
@@ -15,6 +22,8 @@ const modules = (import.meta as unknown as {
 }).glob('../src/*.ts', { query: '?raw', import: 'default', eager: true });
 
 const UUID_LEN = 36;
+const SHORT_LEN = 10;
+const looksLikeId = (expr: string) => /\bid\b|Id\b|_id\b/i.test(expr);
 
 describe('callback_data укладывается в предел Telegram', () => {
   it('ни одна кнопка в src не может превысить 64 байта', () => {
@@ -25,7 +34,8 @@ describe('callback_data укладывается в предел Telegram', () =
       // callback_data: `...` -- шаблон до закрывающей обратной кавычки.
       for (const m of code.matchAll(/callback_data:\s*`([^`]*)`/g)) {
         found++;
-        const worst = m[1].replace(/\$\{[^}]*\}/g, 'x'.repeat(UUID_LEN));
+        const worst = m[1].replace(/\$\{([^}]*)\}/g, (_, expr: string) =>
+          'x'.repeat(looksLikeId(expr) ? UUID_LEN : SHORT_LEN));
         const bytes = new TextEncoder().encode(worst).length;
         if (bytes > 64) offenders.push(`${path}: «${m[1]}» -> ${bytes} байт`);
       }

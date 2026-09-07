@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { Sheet } from './Sheet';
 import { AlertTriangle, CalendarDays, Download, File as FileIcon, X } from 'lucide-react';
 import type { ContentBlock, Task, User } from '../types';
 import { parseContentBlocks } from '../types';
@@ -68,15 +69,7 @@ export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDet
   const assignees = task.assignees ?? [];
 
   return (
-    <div className="sheet-backdrop" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="task-detail-title"
-        className="sheet"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="sheet-grab" aria-hidden="true" />
+    <Sheet labelledBy="task-detail-title" onClose={onClose}>
         <div className="sheet-head">
           <h2 id="task-detail-title" className="sheet-title">{task.title}</h2>
           <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">
@@ -169,11 +162,11 @@ export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDet
         </div>
 
         {actions ? <div className="stack" style={{ gap: 8, marginTop: 20 }}>{actions}</div> : null}
-      </div>
 
+      {/* Просмотр фото поверх шторки: свой слой, поэтому живёт рядом с ней. */}
       {lightboxIndex !== null ? (
         <Lightbox images={images} startIndex={lightboxIndex} onClose={() => setLightboxIndex(null)} />
       ) : null}
-    </div>
+    </Sheet>
   );
 }

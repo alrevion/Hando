@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { Sheet } from './Sheet';
 import { Loader2, X } from 'lucide-react';
 import type { Priority, Task, User } from '../types';
 import { parseContentBlocks } from '../types';
@@ -95,9 +96,7 @@ export function TaskFormModal({ task, members, otherTasks, onClose, onSubmit }: 
   }
 
   return (
-    <div className="sheet-backdrop">
-      <div role="dialog" aria-modal="true" aria-labelledby="task-form-title" className="sheet">
-        <div className="sheet-grab" aria-hidden="true" />
+    <Sheet labelledBy="task-form-title" onClose={onClose}>
         <div className="sheet-head">
           <h2 id="task-form-title" className="sheet-title">{task ? 'Изменить задачу' : 'Новая задача'}</h2>
           <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">
@@ -187,7 +186,6 @@ export function TaskFormModal({ task, members, otherTasks, onClose, onSubmit }: 
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Sheet>
   );
 }

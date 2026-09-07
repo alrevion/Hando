@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { Sheet } from './Sheet';
 import { Loader2, X } from 'lucide-react';
 import type { Task } from '../types';
 import { ApiError } from '../lib/api';
@@ -41,9 +42,7 @@ export function RejectTaskModal({ task, onClose, onReject }: RejectTaskModalProp
   }
 
   return (
-    <div className="sheet-backdrop" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-labelledby="reject-task-title" className="sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="sheet-grab" aria-hidden="true" />
+    <Sheet labelledBy="reject-task-title" onClose={onClose}>
         <div className="sheet-head">
           <h2 id="reject-task-title" className="sheet-title">Вернуть «{task.title}»</h2>
           <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">
@@ -88,7 +87,6 @@ export function RejectTaskModal({ task, onClose, onReject }: RejectTaskModalProp
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Sheet>
   );
 }

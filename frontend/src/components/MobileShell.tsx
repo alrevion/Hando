@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { CalendarDays, ClipboardList, LayoutGrid, Send, Users } from 'lucide-react';
+import { CalendarDays, ClipboardList, LayoutGrid, Plus, Send, Users } from 'lucide-react';
 import type { Project, Task, User } from '../types';
 import { BottomNav, type NavTab } from './BottomNav';
 import { ProfileSheet } from './ProfileSheet';
+import { CreateSheet } from './CreateSheet';
 import { MyTasksView } from './MyTasksView';
 import { AssignedView } from './AssignedView';
 import { BoardView } from './BoardView';
@@ -57,6 +58,9 @@ export function MobileShell({
   // Профиль и организации -- за аватаром: шестая вкладка в док не влезает, а
   // ходят туда раз в сессию.
   const [profileOpen, setProfileOpen] = useState(false);
+  // Быстрое создание -- только там, где оно осмысленно: на поручениях, своих
+  // задачах и доске. В календаре и людях создавать нечего.
+  const [creating, setCreating] = useState(false);
   // Своя выбранная доска, а не общая с десктопом: на телефоне переключатель --
   // чипы над списком, и он должен работать без похода в App.
   const [projectId, setProjectId] = useState<string | null>(selectedProject?.id ?? null);
@@ -136,7 +140,22 @@ export function MobileShell({
         ) : null}
       </main>
 
+      {active === 'tasks' || active === 'assigned' || active === 'board' ? (
+        <button
+          type="button"
+          className="fab"
+          aria-label={active === 'tasks' ? 'Новая задача себе' : 'Новое поручение'}
+          onClick={() => setCreating(true)}
+        >
+          <Plus aria-hidden="true" />
+        </button>
+      ) : null}
+
       <BottomNav tabs={tabs} active={active} onSelect={setActive} />
+
+      {creating ? (
+        <CreateSheet mode={active === 'tasks' ? 'mine' : 'assigned'} me={user} onClose={() => setCreating(false)} />
+      ) : null}
 
       {profileOpen ? <ProfileSheet user={user} onClose={() => setProfileOpen(false)} /> : null}
     </div>

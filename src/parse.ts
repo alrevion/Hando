@@ -52,6 +52,11 @@ function stemMatches(word: string, name: string): boolean {
   return w.length <= n.length + 2;
 }
 
+/** Формы, по которым можно назвать человека: имя, фамилия, целиком, прозвища. */
+function nameForms(p: Person): string[] {
+  return [p.name, ...p.name.split(/\s+/).filter(Boolean), ...(p.aliases ?? [])];
+}
+
 /**
  * Находит адресатов среди слов фразы.
  *
@@ -66,7 +71,14 @@ export function matchPeople(text: string, people: Person[]): { ids: string[]; am
   const usedWords = new Set<string>();
 
   for (const word of words) {
-    const hits = people.filter((p) => [p.name, ...(p.aliases ?? [])].some((n) => stemMatches(word, n)));
+    // Имя сравнивается ПО ЧАСТЯМ, а не целиком.
+    //
+    // Раньше сравнение шло с «Азиз Каримов» как с одним словом: пробел
+    // выбрасывался, основой становилось «азизкаримо», и «Азизу» не совпадало
+    // НИ С КЕМ. В тестах этого не было видно -- там имена односложные
+    // («Азиз»), -- а в проде у всех имя и фамилия, и по имени не находился
+    // вообще никто: каждое поручение молча уезжало автору.
+    const hits = people.filter((p) => nameForms(p).some((n) => stemMatches(word, n)));
     if (hits.length === 1) {
       if (!ids.includes(hits[0].id)) ids.push(hits[0].id);
       usedWords.add(word);
@@ -100,43 +112,60 @@ const WEEKDAYS = [
  * Считается В ПОЯСЕ ОРГАНИЗАЦИИ: «завтра» у директора в Ташкенте и у сервера в
  * UTC -- разные дни пять часов в сутки.
  */
+
+/**
+ * Разбор момента на местные Y/M/D/h/m/s в заданном поясе.
+ *
+ * Через Intl, а не через new Date(toLocaleString(...)): прежний круг «строка
+ * местного времени -> Date» зависел от пояса САМОГО рантайма -- локально тесты
+ * идут в Asia/Tashkent, и преобразование было пустой операцией, а в проде
+ * воркер идёт в UTC, где тот же код ведёт себя иначе.
+ */
+function localParts(at: Date, timeZone: string) {
+  const f = new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+  const o = Object.fromEntries(f.formatToParts(at).map((x) => [x.type, x.value])) as Record<string, string>;
+  return { y: +o.year, m: +o.month, d: +o.day, h: +o.hour % 24, mi: +o.minute, s: +o.second };
+}
+
+/** Смещение пояса НА ЭТОТ момент: стенные часы минус мировое время. */
+function offsetMsAt(at: Date, timeZone: string): number {
+  const p = localParts(at, timeZone);
+  return Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi, p.s) - at.getTime();
+}
+
+/**
+ * Местные год/месяц/день/час в поясе организации -> настоящий момент (ISO).
+ *
+ * Смещение берётся на приблизительный момент и затем уточняется: у поясов с
+ * переводом часов смещение до и после полуночи может отличаться.
+ */
+export function localIso(y: number, m: number, d: number, hour: number, timeZone: string): string {
+  const wall = Date.UTC(y, m - 1, d, hour);
+  const rough = new Date(wall - offsetMsAt(new Date(wall), timeZone));
+  return new Date(wall - offsetMsAt(rough, timeZone)).toISOString();
+}
+
+/** Сегодняшняя местная дата в поясе организации. */
+export function localToday(now: Date, timeZone: string): { y: number; m: number; d: number } {
+  const p = localParts(now, timeZone);
+  return { y: p.y, m: p.m, d: p.d };
+}
+
 export function matchDeadline(text: string, now: Date, timeZone: string): { iso: string | null; usedWords: Set<string> } {
   const used = new Set<string>();
   const lower = text.toLowerCase();
 
-  // Дата считается ЧЕРЕЗ Intl, а не через new Date(toLocaleString(...)).
-  //
-  // Прежний вариант делал круг «строка местного времени -> Date», и результат
-  // зависел от пояса САМОГО рантайма: локально тесты идут в Asia/Tashkent, и
-  // преобразование было пустой операцией -- код работал по совпадению, а мутация
-  // «считать в UTC» не ловилась ничем. В проде воркер идёт в UTC, где тот же код
-  // ведёт себя иначе. Intl с явным timeZone от пояса рантайма не зависит вовсе.
-  const parts = (at: Date) => {
-    const f = new Intl.DateTimeFormat('en-CA', {
-      timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-    });
-    const o = Object.fromEntries(f.formatToParts(at).map((x) => [x.type, x.value])) as Record<string, string>;
-    return { y: +o.year, m: +o.month, d: +o.day, h: +o.hour % 24, mi: +o.minute, s: +o.second };
-  };
-  // Смещение пояса НА ЭТОТ момент: стенные часы минус мировое время.
-  const offsetMs = (at: Date) => {
-    const p = parts(at);
-    return Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi, p.s) - at.getTime();
-  };
-
+  const parts = (at: Date) => localParts(at, timeZone);
   const today = parts(now);
   // Полночь местного дня, выраженная в UTC-мерах: с ней удобно считать «+N дней».
   const midnight = new Date(Date.UTC(today.y, today.m - 1, today.d));
 
   /** Местные Y/M/D + час -> настоящий момент времени. */
-  const at = (d: Date, hour = 18) => {
-    const wall = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour);
-    // Смещение берётся на приблизительный момент, затем уточняется: у поясов с
-    // переводом часов смещение до и после полуночи может отличаться.
-    const rough = new Date(wall - offsetMs(new Date(wall)));
-    return new Date(wall - offsetMs(rough)).toISOString();
-  };
+  const at = (d: Date, hour = 18) =>
+    localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), hour, timeZone);
   const mark = (...ws: string[]) => ws.forEach((w) => used.add(w));
 
   let base: Date | null = null;
@@ -195,9 +224,14 @@ export function matchDeadline(text: string, now: Date, timeZone: string): { iso:
     if (time[3] === 'дня' && h < 12) h += 12;
     if (h >= 0 && h <= 23) {
       mark(...time[0].split(/\s+/));
-      const wall = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), h, Number(time[2] ?? 0));
-      const rough = new Date(wall - offsetMs(new Date(wall)));
-      return { iso: new Date(wall - offsetMs(rough)).toISOString(), usedWords: used };
+      const minute = Number(time[2] ?? 0);
+      const wall = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), h, minute);
+      const iso = localIso(
+        new Date(wall).getUTCFullYear(), new Date(wall).getUTCMonth() + 1, new Date(wall).getUTCDate(),
+        h, timeZone,
+      );
+      // Минуты у «в 15:30» дописываются к часу, посчитанному в поясе.
+      return { iso: new Date(new Date(iso).getTime() + minute * 60000).toISOString(), usedWords: used };
     }
   }
   return { iso: at(base), usedWords: used };
