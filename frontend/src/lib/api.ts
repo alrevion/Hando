@@ -218,8 +218,19 @@ export interface MyOrg {
 }
 
 export const getMyOrgs = () => request<MyOrg[]>('/orgs/mine');
-export const createOrg = (name: string) =>
-  request<{ id: string; name: string; join_code: string }>('/orgs', { method: 'POST', body: JSON.stringify({ name }) });
+/** Профиль отрасли: от него зависят отделы организации и словарь разбора. */
+export interface OrgPack {
+  id: string;
+  title: string;
+  emoji: string;
+  departments: string[];
+  examples: string[];
+}
+
+export const getPacks = () => request<OrgPack[]>('/packs');
+
+export const createOrg = (name: string, pack: string) =>
+  request<{ id: string; name: string; join_code: string }>('/orgs', { method: 'POST', body: JSON.stringify({ name, pack }) });
 export const joinOrgByCode = (code: string) =>
   request<{ ok: true; org_name: string }>('/orgs/join', { method: 'POST', body: JSON.stringify({ code }) });
 export const switchOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}/switch`, { method: 'POST' });

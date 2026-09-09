@@ -14,6 +14,7 @@
 // он окупается, потому что вопросы повторяются («когда каникулы?»). Поручения не
 // повторяются: имена и даты разные, кэш промахнётся почти всегда.
 import type { Env } from './types';
+import { pack } from './packs';
 
 export type Person = { id: string; name: string; aliases?: string[] };
 
@@ -260,13 +261,35 @@ const NOT_URGENT = /(?:^|[\s,.;:!?«»"'()-])не\s+срочн[а-яё]*/i;
 const URGENT_WORDS = word('срочн[а-яё]*|сроч[а-яё]*|горит|немедленно|как можно скорее|асап|asap|очень важн[а-яё]*');
 
 /**
+ * Словари отрасли поверх базовых. Собираются ОДИН РАЗ на профиль и кэшируются:
+ * regexp'ы строятся из данных packs.ts, а границы слова навешивает та же
+ * word(), что и базовым словарям -- значит ловушка «ср» внутри «срочно»
+ * закрыта для отраслевых слов тем же кодом, а не второй его копией.
+ */
+const PACK_RE = new Map<string, { urgent: RegExp | null; low: RegExp | null; ack: RegExp | null }>();
+function packRe(packId: string | null | undefined) {
+  const p = pack(packId);
+  let built = PACK_RE.get(p.id);
+  if (!built) {
+    built = {
+      urgent: p.urgent?.length ? word(p.urgent.join('|')) : null,
+      low: p.low?.length ? word(p.low.join('|')) : null,
+      ack: p.ack?.length ? word(p.ack.join('|')) : null,
+    };
+    PACK_RE.set(p.id, built);
+  }
+  return built;
+}
+
+/**
  * Срочность из фразы и слова, которые её задали.
  *
  * Слова возвращаются, чтобы вычеркнуть их из заголовка: «срочно позвонить в
  * банк» -- это задача «позвонить в банк» со срочностью, а не задача с этим
  * словом в названии.
  */
-export function matchPriority(text: string): { priority: Draft['priority']; usedWords: Set<string> } {
+export function matchPriority(text: string, packId?: string | null): { priority: Draft['priority']; usedWords: Set<string> } {
+  const extra = packRe(packId);
   const used = new Set<string>();
   const mark = (m: RegExpMatchArray | null) => {
     if (!m) return;
@@ -281,12 +304,14 @@ export function matchPriority(text: string): { priority: Draft['priority']; used
     mark(notUrgent);
     return { priority: 'low', usedWords: used };
   }
-  const low = text.match(LOW_WORDS);
+  // Понижение проверяется раньше повышения и в отраслевом словаре тоже:
+  // «на выходных» не должно проиграть слову «горит» из другой части фразы.
+  const low = text.match(LOW_WORDS) ?? (extra.low ? text.match(extra.low) : null);
   if (low) {
     mark(low);
     return { priority: 'low', usedWords: used };
   }
-  const urgent = text.match(URGENT_WORDS);
+  const urgent = text.match(URGENT_WORDS) ?? (extra.urgent ? text.match(extra.urgent) : null);
   if (urgent) {
     mark(urgent);
     return { priority: 'urgent', usedWords: used };
@@ -321,11 +346,11 @@ function buildTitle(text: string, used: Set<string>[]): string {
  * Уверенность требуется в АДРЕСАТЕ: задача без исполнителя бессмысленна, а
  * угадывать его нельзя. Срок необязателен -- поручения без срока нормальны.
  */
-export function parseByPattern(text: string, people: Person[], selfId: string, now: Date, timeZone: string): Draft | null {
+export function parseByPattern(text: string, people: Person[], selfId: string, now: Date, timeZone: string, packId?: string | null): Draft | null {
   const clean = text.replace(LEAD_NOISE, '').trim();
   const { ids, ambiguous, usedWords } = matchPeople(clean, people);
   const { iso, usedWords: dateWords } = matchDeadline(clean, now, timeZone);
-  const { priority, usedWords: priorityWords } = matchPriority(clean);
+  const { priority, usedWords: priorityWords } = matchPriority(clean, packId);
 
   // «напомни мне завтра...» -- поручение себе. Оно же личный слой: адресат
   // совпадает с автором, отдельной сущности для этого нет по замыслу.
@@ -354,7 +379,9 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
     assigneeIds: assignees,
     deadline: iso,
     priority,
-    kind: ACK_MARKERS.test(clean) ? 'ack' : assignees.length > 1 ? 'each' : 'single',
+    // «Ознакомиться» в отрасли называется по-своему: приказ, инструктаж по ТБ,
+    // техкарта, стоп-лист. Базовый словарь и отраслевой равноправны.
+    kind: ACK_MARKERS.test(clean) || packRe(packId).ack?.test(clean) ? 'ack' : assignees.length > 1 ? 'each' : 'single',
     source: 'pattern',
     ambiguous: [],
   };
@@ -365,7 +392,7 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
 const GROQ = 'https://api.groq.com/openai/v1';
 
 /** Разбор моделью. null -- сеть не ответила; вызывающий отдаёт fallback. */
-export async function parseByLlm(env: Env, text: string, people: Person[], model: string): Promise<Draft | null> {
+export async function parseByLlm(env: Env, text: string, people: Person[], model: string, packId?: string | null): Promise<Draft | null> {
   const roster = people.map((p) => `${p.id}=${p.name}`).join('; ');
   const prompt = [
     'Разбери поручение в JSON. Отвечай ТОЛЬКО JSON, без пояснений.',
@@ -403,7 +430,7 @@ export async function parseByLlm(env: Env, text: string, people: Person[], model
       assigneeIds: ids,
       deadline: parsed.deadline ?? null,
       // Модель о срочности не спрашивается: словарь надёжнее и дешевле.
-      priority: matchPriority(text).priority,
+      priority: matchPriority(text, packId).priority,
       kind: parsed.kind === 'each' || parsed.kind === 'ack' ? parsed.kind : ids.length > 1 ? 'each' : 'single',
       source: 'llm',
       ambiguous: [],
@@ -427,18 +454,20 @@ export async function parseTask(
   selfId: string,
   timeZone: string,
   now: Date = new Date(),
+  /** Профиль организации: расширяет словари срочности и ознакомления. */
+  packId?: string | null,
 ): Promise<Draft> {
-  const byPattern = parseByPattern(text, people, selfId, now, timeZone);
+  const byPattern = parseByPattern(text, people, selfId, now, timeZone, packId);
   if (byPattern && byPattern.ambiguous.length > 0) return byPattern;
   if (byPattern) return byPattern;
 
   const model = env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b';
-  const byLlm = env.GROQ_API_KEY ? await parseByLlm(env, text, people, model) : null;
+  const byLlm = env.GROQ_API_KEY ? await parseByLlm(env, text, people, model, packId) : null;
   if (byLlm) return byLlm;
 
   // Даже на запасном пути слово про срочность не должно остаться в названии:
   // оно уже стало полем, и в списке читалось бы дважды.
-  const { priority, usedWords: priorityWords } = matchPriority(text);
+  const { priority, usedWords: priorityWords } = matchPriority(text, packId);
   const bare = buildTitle(text.trim(), [priorityWords]);
   return {
     title: (bare.length >= 3 ? bare[0].toUpperCase() + bare.slice(1) : text.trim()).slice(0, 200) || 'Без названия',

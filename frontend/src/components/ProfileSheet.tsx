@@ -3,8 +3,8 @@ import { Sheet } from './Sheet';
 import { Check, LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { User } from '../types';
 import {
-  ApiError, createOrg, deleteOrg, getMe, getMyOrgs, joinOrgByCode, leaveOrg,
-  renameOrg, setMyName, switchOrg, type MyOrg,
+  ApiError, createOrg, deleteOrg, getMe, getMyOrgs, getPacks, joinOrgByCode, leaveOrg,
+  renameOrg, setMyName, switchOrg, type MyOrg, type OrgPack,
 } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
@@ -46,9 +46,15 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
   const [edit, setEdit] = useState<{ kind: 'name' | 'rename' | 'create' | 'join'; orgId?: string } | null>(null);
   const [draft, setDraft] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Профили отрасли приходят с сервера, а не лежат копией здесь: две копии
+  // разошлись бы, и бот с приложением заводили бы разные отделы под одним
+  // названием профиля.
+  const [packs, setPacks] = useState<OrgPack[]>([]);
+  const [chosenPack, setChosenPack] = useState('generic');
 
   const load = () => { getMyOrgs().then(setOrgs).catch(() => setOrgs([])); };
   useEffect(load, []);
+  useEffect(() => { getPacks().then(setPacks).catch(() => setPacks([])); }, []);
 
   /** Общая обёртка: одна кнопка -- одно действие -- один разбор ошибки. */
   async function run(fn: () => Promise<unknown>, after?: 'reload' | 'orgs') {
@@ -202,7 +208,48 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
         </ul>
 
         {edit?.kind === 'create' ? (
-          field('Как назвать организацию', 'Например, «Отдел продаж»', () => run(() => createOrg(draft.trim()), 'reload'))
+          // Своя разметка, а не общий field(): у создания два поля, и кнопка
+          // «Сохранить» обязана стоять ПОСЛЕ выбора профиля, а не между ними.
+          <form onSubmit={(e) => { e.preventDefault(); run(() => createOrg(draft.trim(), chosenPack), 'reload'); }}>
+            <div className="field">
+              <label className="lbl" htmlFor="org-name">Как назвать организацию</label>
+              <input
+                id="org-name"
+                className="inp"
+                autoFocus
+                value={draft}
+                placeholder="Например, «Ромашка»"
+                onChange={(e) => setDraft(e.target.value)}
+              />
+            </div>
+
+            {/* Профиль спрашивается ЗДЕСЬ же, а не потом: от него зависят
+                отделы, которые заведутся вместе с организацией, и слова,
+                которые бот будет понимать как срочные. */}
+            <div className="field">
+              <span className="lbl">Чем занимаетесь</span>
+              <div className="chips" style={{ paddingBottom: 0 }}>
+                {packs.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={chosenPack === p.id ? 'chip on' : 'chip'}
+                    onClick={() => setChosenPack(p.id)}
+                  >
+                    {p.emoji} {p.title}
+                  </button>
+                ))}
+              </div>
+              <p className="hint">
+                Отделы: {(packs.find((p) => p.id === chosenPack)?.departments ?? []).join(', ')}
+              </p>
+            </div>
+
+            <div className="btn-row">
+              <button type="button" className="btn" onClick={() => { setEdit(null); setDraft(''); }}>Отмена</button>
+              <button type="submit" className="btn btn-primary" disabled={busy || !draft.trim()}>Создать</button>
+            </div>
+          </form>
         ) : edit?.kind === 'join' ? (
           field('Код организации', 'Шесть символов', () =>
             run(async () => {

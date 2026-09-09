@@ -11,6 +11,7 @@ import { applyTransition, buildNotification } from './transition';
 import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { createFromDraft, setTaskDeadline } from './intake';
+import { PACKS } from './packs';
 import { localIso, parseTask, transcribe } from './parse';
 import { approveJoin, createOrg, joinByCode, pendingRequests, rejectJoin } from './signup';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, switchOrg } from './menu';
@@ -404,8 +405,9 @@ apiRoutes.post('/tasks/dictate', async (c) => {
   ).bind(orgId).all<{ id: string; name: string; aliases: string | null }>();
   const roster = people.map((p) => ({ id: p.id, name: p.name, aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined }));
 
-  const org = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(orgId).first<{ timezone: string }>();
-  const draft = await parseTask(c.env, phrase, roster, userId, org?.timezone ?? 'Asia/Tashkent');
+  const org = await c.env.DB.prepare('SELECT timezone, industry_pack FROM orgs WHERE id = ?').bind(orgId)
+    .first<{ timezone: string; industry_pack: string }>();
+  const draft = await parseTask(c.env, phrase, roster, userId, org?.timezone ?? 'Asia/Tashkent', new Date(), org?.industry_pack);
   if (draft.ambiguous.length > 0) {
     return c.json({ error: 'Уточните, кого вы имели в виду', code: 'AMBIGUOUS', ambiguous: draft.ambiguous }, 409);
   }
@@ -509,10 +511,16 @@ async function reissue(c: Context<AppEnv>, userId: string, orgId: string): Promi
   setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
 }
 
+// Профили отрасли -- одним списком, чтобы приложение не держало свою копию:
+// две копии словаря разошлись бы на первой правке, и бот с приложением стали
+// бы заводить разные отделы под одним названием профиля.
+apiRoutes.get('/packs', async (c) =>
+  c.json(PACKS.map((p) => ({ id: p.id, title: p.title, emoji: p.emoji, departments: p.departments, examples: p.examples }))));
+
 apiRoutes.post('/orgs', async (c) => {
-  const { name } = await c.req.json<{ name?: string }>().catch(() => ({}) as Record<string, undefined>);
+  const { name, pack } = await c.req.json<{ name?: string; pack?: string }>().catch(() => ({}) as Record<string, undefined>);
   if (!name?.trim()) return c.json({ error: 'name required' }, 400);
-  const { orgId, code } = await createOrg(c.env, c.get('userId'), name.trim());
+  const { orgId, code } = await createOrg(c.env, c.get('userId'), name.trim(), pack ?? 'generic');
   // Создатель сразу оказывается внутри созданного -- как и в боте.
   await reissue(c, c.get('userId'), orgId);
   return c.json({ id: orgId, name: name.trim(), join_code: code }, 201);

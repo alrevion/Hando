@@ -10,6 +10,7 @@ import { botApp } from '../src/bot';
 import { apiRoutes } from '../src/routes';
 import { approveJoin, createOrg, ensureDefaultProject, ensureUser, generateJoinCode, joinByCode, pendingOrgFor, rejectJoin } from '../src/signup';
 import { BTN, deleteOrg, leaveOrg, myOrgs, renameOrg, switchOrg } from '../src/menu';
+import { PACKS, packButton } from '../src/packs';
 import { membershipRole, resolveOrgId } from '../src/auth';
 import { cookie, envWith, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
@@ -30,6 +31,18 @@ const hook = (env: Env, update: unknown) =>
     body: JSON.stringify(update),
   }, env);
 const msg = (id: number, text: string) => ({ message: { chat: { id, type: 'private' }, from: { id, first_name: `Ч${id}` }, text } });
+
+const tapBtn = (env: Env, tgId: number, label: string) => hook(env, msg(tgId, label));
+/**
+ * Создание организации через бота -- ДВА шага: название, потом профиль отрасли.
+ * Профиль решает, какие отделы завести и какие слова считать срочными, и
+ * спрашивается сразу: позже пришлось бы переименовывать уже заполненные доски.
+ */
+const createOrgViaBot = async (env: Env, tgId: number, name: string, profile = packButton(PACKS[0])) => {
+  await tapBtn(env, tgId, BTN.create);
+  await hook(env, msg(tgId, name));
+  await hook(env, msg(tgId, profile));
+};
 
 describe('код вступления', () => {
   it('без похожих начертаний: ни 0/O, ни 1/I/L', () => {
@@ -212,8 +225,7 @@ describe('регистрация целиком через бота -- ПОСТ�
     const spy = tg();
 
     await meet(env, 101, 'Директор Иванов');
-    await tap(env, 101, BTN.create);
-    await hook(env, msg(101, 'Школа №7'));
+    await createOrgViaBot(env, 101, 'Школа №7');
     const code = sent(spy).map((m) => m.text).join(' ').match(/[A-Z2-9]{6}/)![0];
 
     await meet(env, 202, 'Азиз Каримов');
@@ -242,8 +254,7 @@ describe('регистрация целиком через бота -- ПОСТ�
 
     // Директор открывает бота, чтобы узнать, как идут ЕГО поручения.
     await meet(env, 707, 'Директор');
-    await tap(env, 707, BTN.create);
-    await hook(env, msg(707, 'Фирма'));
+    await createOrgViaBot(env, 707, 'Фирма');
     const rows = (sent(spy).at(-1)! as unknown as { reply_markup?: { keyboard: { text: string }[][] } }).reply_markup!.keyboard;
     expect(rows[0].map((b) => b.text)).toEqual([BTN.assigned, BTN.tasks]);
     // Кнопки мини-приложения в клавиатуре нет: у Telegram для этого своя кнопка
@@ -269,8 +280,7 @@ describe('регистрация целиком через бота -- ПОСТ�
     const env = await blank();
     const spy = tg();
     await meet(env, 606, 'Владелец');
-    await tap(env, 606, BTN.create);
-    await hook(env, msg(606, 'Моя фирма'));
+    await createOrgViaBot(env, 606, 'Моя фирма');
     await tap(env, 606, BTN.billing);
 
     const text = sent(spy).at(-1)!.text;
@@ -297,10 +307,8 @@ describe('регистрация целиком через бота -- ПОСТ�
     const env = await blank();
     const spy = tg();
     await meet(env, 303, 'Владелец');
-    await tap(env, 303, BTN.create);
-    await hook(env, msg(303, 'Первая'));
-    await tap(env, 303, BTN.create);
-    await hook(env, msg(303, 'Вторая'));
+    await createOrgViaBot(env, 303, 'Первая');
+    await createOrgViaBot(env, 303, 'Вторая');
 
     const me = await testEnv.DB.prepare("SELECT id FROM users WHERE telegram_user_id = '303'").first<{ id: string }>();
     const first = await testEnv.DB.prepare("SELECT id FROM orgs WHERE name = 'Первая'").first<{ id: string }>();
@@ -333,8 +341,7 @@ describe('регистрация целиком через бота -- ПОСТ�
     const env = await blank();
     const spy = tg();
     await meet(env, 404, 'Владелец');
-    await tap(env, 404, BTN.create);
-    await hook(env, msg(404, 'Чужая фирма'));
+    await createOrgViaBot(env, 404, 'Чужая фирма');
 
     await meet(env, 505, 'Посторонний');
     await tap(env, 505, BTN.orgs);
@@ -421,8 +428,7 @@ describe('заявка доходит до владельца', () => {
     const env = await blank();
     const spy = tg();
     await onboard(env, 501, 'Директор Директоров');
-    await tap(env, 501, BTN.create);
-    await hook(env, msg(501, 'Тестовая среда'));
+    await createOrgViaBot(env, 501, 'Тестовая среда');
     const org = await testEnv.DB.prepare('SELECT id, join_code FROM orgs WHERE name = ?').bind('Тестовая среда').first<{ id: string; join_code: string }>();
 
     await onboard(env, 502, 'Артур Заявитель');

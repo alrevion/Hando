@@ -21,9 +21,10 @@ import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineKe
 import { drainOutbox } from './outbox';
 import { approveJoin, createOrg, ensureUser, joinByCode, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
 import { createFromDraft, setTaskDeadline } from './intake';
+import { packByButton } from './packs';
 import {
   askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
-  billingScreen, mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
+  billingScreen, mainScreen, myOrgs, orgScreen, orgsScreen, packScreen, profileScreen, renameOrg, setDisplayName,
   setState, switchOrg, type OrgRow, type Screen,
 } from './menu';
 import { download, extractMedia } from './media';
@@ -535,12 +536,29 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     if (st.await === 'new') {
-      const { code } = await createOrg(c.env, userId, text.slice(0, 60));
+      // Название запомнили, теперь профиль: он решает, какие отделы завести.
+      await show(c.env, chatId, userId, packScreen(text.slice(0, 60)));
+      return c.json({ ok: true });
+    }
+    if (st.await === 'pack') {
+      const chosen = packByButton(text);
+      if (!chosen) {
+        // Написали текстом вместо нажатия -- переспрашиваем, а не гадаем.
+        await show(c.env, chatId, userId, packScreen(st.draft ?? text.slice(0, 60)));
+        return c.json({ ok: true });
+      }
+      const orgName = st.draft ?? 'Моя организация';
+      const { code, departments } = await createOrg(c.env, userId, orgName, chosen.id);
       await sendMessage(c.env, chatId, [
-        `Организация «${text.slice(0, 60)}» создана. Вы её владелец.`,
+        `Организация «${orgName}» создана. Вы её владелец.`,
+        `Профиль: ${chosen.title}`,
+        `Отделы: ${departments.join(', ')}`,
         '',
         `Код для сотрудников: ${code}`,
         'Каждого вступившего Вы подтверждаете кнопкой.',
+        '',
+        'Попробуйте сказать так:',
+        ...chosen.examples.map((e: string) => `· ${e}`),
       ].join('\n'));
       await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
       return c.json({ ok: true });
@@ -741,8 +759,9 @@ botApp.post('/webhook', async (c) => {
     aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined,
   }));
 
-  const org = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(who.orgId).first<{ timezone: string }>();
-  const draft = await parseTask(c.env, phrase, roster, who.userId, org?.timezone ?? 'Asia/Tashkent');
+  const org = await c.env.DB.prepare('SELECT timezone, industry_pack FROM orgs WHERE id = ?').bind(who.orgId)
+    .first<{ timezone: string; industry_pack: string }>();
+  const draft = await parseTask(c.env, phrase, roster, who.userId, org?.timezone ?? 'Asia/Tashkent', new Date(), org?.industry_pack);
 
   // Неоднозначное имя -- ПЕРЕСПРОС, а не догадка. Поручение, ушедшее не тому,
   // дороже одного вопроса.

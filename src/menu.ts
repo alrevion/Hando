@@ -13,6 +13,7 @@
 import type { Env, Role } from './types';
 import { nowIso } from './db';
 import type { ReplyKeyboard } from './telegram';
+import { PACKS, packButton } from './packs';
 
 export const BTN = {
   tasks: '📋 Мои задачи',
@@ -36,7 +37,9 @@ export const BTN = {
 
 /** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
 export type BotState = {
-  await?: 'name' | 'new' | 'join' | 'rename';
+  await?: 'name' | 'new' | 'pack' | 'join' | 'rename';
+  /** Незаконченный ввод: название организации ждёт выбора профиля. */
+  draft?: string;
   /** Экран: по нему разбирается нажатие, потому что подписи повторяются. */
   screen?: 'main' | 'orgs' | 'org' | 'profile' | 'billing' | 'confirm_delete';
   /** Организация, открытая в карточке. */
@@ -181,6 +184,32 @@ export function orgScreen(org: OrgRow, userId: string, pending = 0): Screen {
   rows.push([{ text: BTN.back }]);
 
   return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'org', org: org.id } };
+}
+
+/**
+ * Выбор профиля отрасли -- второй шаг создания организации.
+ *
+ * Профиль спрашивается ОДИН раз и сразу: от него зависят отделы, которые
+ * заведутся, и словарь, которым бот будет разбирать фразы. Спросить позже
+ * значило бы переименовывать уже заполненные доски.
+ *
+ * По две кнопки в ряд: подписи длинные («Магазин, торговля»), в три ряда они
+ * обрезаются на узком экране.
+ */
+export function packScreen(orgName: string): Screen {
+  const rows: { text: string }[][] = [];
+  for (let i = 0; i < PACKS.length; i += 2) {
+    rows.push(PACKS.slice(i, i + 2).map((p) => ({ text: packButton(p) })));
+  }
+  return {
+    text: [
+      `«${orgName}» -- чем занимаетесь?`,
+      '',
+      'От этого зависят отделы и то, какие слова я буду понимать как срочные.',
+    ].join('\n'),
+    keyboard: kb(rows),
+    state: { await: 'pack', draft: orgName },
+  };
 }
 
 export function confirmDeleteScreen(org: OrgRow): Screen {

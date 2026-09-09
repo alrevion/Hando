@@ -12,6 +12,7 @@
 // смешивать их нельзя.
 import type { Env, Role } from './types';
 import { nowIso, uuid } from './db';
+import { pack } from './packs';
 
 /**
  * Код вступления: шесть символов из алфавита без похожих начертаний.
@@ -53,19 +54,32 @@ export async function ensureUser(env: Env, tgId: string, name: string, username:
  * Членство подтверждено сразу: подтверждать себя самому не у кого, и это не
  * дыра -- он создал организацию, в ней пока никого больше нет.
  */
-export async function createOrg(env: Env, userId: string, name: string): Promise<{ orgId: string; code: string }> {
+export async function createOrg(
+  env: Env,
+  userId: string,
+  name: string,
+  /** Профиль отрасли: от него зависят отделы и словарь разбора. */
+  packId = 'generic',
+): Promise<{ orgId: string; code: string; departments: string[] }> {
   const orgId = uuid();
   const code = generateJoinCode();
   const now = nowIso();
+  const profile = pack(packId);
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO orgs (id, name, join_code, owner_user_id) VALUES (?, ?, ?, ?)').bind(orgId, name, code, userId),
+    env.DB.prepare('INSERT INTO orgs (id, name, join_code, owner_user_id, industry_pack) VALUES (?, ?, ?, ?, ?)')
+      .bind(orgId, name, code, userId, profile.id),
     env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?, ?, ?, ?, ?)')
       .bind(uuid(), orgId, userId, 'creator', now),
     // Липкий контекст: человек сразу оказывается в созданной организации.
     env.DB.prepare('UPDATE users SET current_org_id = ? WHERE id = ?').bind(orgId, userId),
   ]);
-  await ensureDefaultProject(env, orgId, userId);
-  return { orgId, code };
+  // Отделы профиля -- сразу досками. Раз доска = отдел, набор досок и есть
+  // структура организации, и заводить её вручную после каждого создания
+  // значило бы просить человека повторить то, что он уже сказал выбором профиля.
+  await env.DB.batch(profile.departments.map((dept) =>
+    env.DB.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id) VALUES (?, ?, ?, ?, NULL)')
+      .bind(uuid(), orgId, dept, userId)));
+  return { orgId, code, departments: profile.departments };
 }
 
 /**
@@ -82,9 +96,14 @@ export async function ensureDefaultProject(env: Env, orgId: string, createdBy: s
     .bind(orgId)
     .first<{ id: string }>();
   if (existing) return existing.id;
+  // Название берётся из профиля организации: у школы первая доска называется
+  // «Учебная часть», а не «Задачи». Досок нет только у организаций, созданных
+  // до профилей, -- для них профиль generic и название прежнее.
+  const org = await env.DB.prepare('SELECT industry_pack FROM orgs WHERE id = ?').bind(orgId)
+    .first<{ industry_pack: string }>();
   const id = uuid();
   await env.DB.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id) VALUES (?, ?, ?, ?, NULL)')
-    .bind(id, orgId, 'Задачи', createdBy)
+    .bind(id, orgId, pack(org?.industry_pack).departments[0], createdBy)
     .run();
   return id;
 }
