@@ -11,7 +11,7 @@ import { applyTransition, buildNotification } from './transition';
 import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { createFromDraft, setTaskDeadline } from './intake';
-import { PACKS } from './packs';
+import { CATEGORIES, PACKS, pack } from './packs';
 import { localIso, parseTask, transcribe } from './parse';
 import { approveJoin, createOrg, joinByCode, pendingRequests, rejectJoin } from './signup';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, switchOrg } from './menu';
@@ -317,7 +317,7 @@ apiRoutes.get('/users', requireRole('admin', 'super_admin', 'creator'), async (c
   // иначе между 2a и 2b справочник показывал бы мёртвую users.role и
   // разжалованный виден как super_admin.
   const { results } = await c.env.DB.prepare(
-    `SELECT u.id, u.name, m.role AS role, u.telegram_username${extra}
+    `SELECT u.id, u.name, m.role AS role, m.position AS position, u.telegram_username${extra}
      FROM users u JOIN org_memberships m ON m.user_id = u.id
      WHERE m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL ORDER BY u.name`,
   )
@@ -340,9 +340,15 @@ apiRoutes.get('/memberships/pending', requireRole('super_admin', 'creator'), asy
 
 apiRoutes.post('/memberships/:userId/approve', requireRole('super_admin', 'creator'), async (c) => {
   const applicantId = c.req.param('userId');
+  const b = await c.req.json<{ role?: string; project_id?: string; position?: string }>()
+    .catch(() => ({}) as Record<string, undefined>);
+  // Роль и отдел выбирают ПРИ подтверждении -- иначе каждый вступивший молча
+  // становился рядовым, и поменять это можно было только с компьютера.
+  // Владельца отсюда не выдают: это делает approveJoin.
+  const role = (['member', 'admin', 'super_admin'] as const).find((r) => r === b.role) ?? 'member';
   // Право проверяется ВНУТРИ approveJoin по членству, а не только по роли из
   // сессии: организация в адресе не участвует, она берётся из сессии.
-  const ok = await approveJoin(c.env, c.get('userId'), c.get('orgId'), applicantId);
+  const ok = await approveJoin(c.env, c.get('userId'), c.get('orgId'), applicantId, role, b.project_id, b.position);
   if (!ok) return c.json({ error: 'no pending request' }, 404);
   const tg = await c.env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?')
     .bind(applicantId).first<{ telegram_user_id: string | null }>();
@@ -514,8 +520,20 @@ async function reissue(c: Context<AppEnv>, userId: string, orgId: string): Promi
 // Профили отрасли -- одним списком, чтобы приложение не держало свою копию:
 // две копии словаря разошлись бы на первой правке, и бот с приложением стали
 // бы заводить разные отделы под одним названием профиля.
-apiRoutes.get('/packs', async (c) =>
-  c.json(PACKS.map((p) => ({ id: p.id, title: p.title, emoji: p.emoji, departments: p.departments, examples: p.examples }))));
+apiRoutes.get('/packs', async (c) => c.json({
+  categories: CATEGORIES.map((k) => ({ id: k.id, title: k.title, emoji: k.emoji })),
+  industries: PACKS.map((p) => ({
+    id: p.id, title: p.title, emoji: p.emoji, category: p.category,
+    departments: p.departments, positions: p.positions, examples: p.examples,
+  })),
+}));
+
+/** Должности профиля организации -- ими подписан выбор при подтверждении заявки. */
+apiRoutes.get('/org/positions', async (c) => {
+  const org = await c.env.DB.prepare('SELECT industry_pack FROM orgs WHERE id = ?').bind(c.get('orgId'))
+    .first<{ industry_pack: string }>();
+  return c.json(pack(org?.industry_pack).positions);
+});
 
 apiRoutes.post('/orgs', async (c) => {
   const { name, pack } = await c.req.json<{ name?: string; pack?: string }>().catch(() => ({}) as Record<string, undefined>);

@@ -19,12 +19,12 @@ import { nowIso, uuid } from './db';
 import { myAssignee, transitionAssignee } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
-import { approveJoin, createOrg, ensureUser, joinByCode, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, createOrg, ensureUser, joinByCode, orgDepartments, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
 import { createFromDraft, setTaskDeadline } from './intake';
-import { packByButton } from './packs';
+import { categoryByButton, packByButton } from './packs';
 import {
   askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
-  billingScreen, mainScreen, myOrgs, orgScreen, orgsScreen, packScreen, profileScreen, renameOrg, setDisplayName,
+  billingScreen, categoryScreen, industryScreen, mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
   setState, switchOrg, type OrgRow, type Screen,
 } from './menu';
 import { download, extractMedia } from './media';
@@ -94,6 +94,42 @@ async function connectByInvite(env: Env, tg: TgUser, token: string): Promise<str
 // в предел Telegram в 64 байта -- 51 и 48 (см. test/callback-data.test.ts).
 const DUE_HOUR = 18;
 const MONTH_TITLE = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+
+// ---------------------------------------------------- приём в организацию
+//
+// Роль спрашивается ПРИ ПОДТВЕРЖДЕНИИ, а не «потом в настройках»: раньше
+// каждый вступивший молча становился рядовым, и поменять это можно было только
+// с компьютера. Владельца с кнопки не выдают -- он один, и передача владения не
+// должна быть выбором под уведомлением.
+//
+// Код роли в кнопке однобуквенный, а отдел -- НОМЕР в списке организации, а не
+// его идентификатор: два UUID в callback_data не помещаются (предел 64 байта).
+const ROLE_CODE: Record<string, Role> = { m: 'member', a: 'admin', s: 'super_admin' };
+const ROLE_TITLE: Record<Role, string> = {
+  creator: 'Владелец', super_admin: 'Руководитель', admin: 'Руководитель отдела', member: 'Сотрудник',
+};
+
+function roleKeyboard(applicantId: string): InlineKeyboard {
+  return {
+    inline_keyboard: [
+      [{ text: '👤 Сотрудник', callback_data: `jr:${applicantId}:m` }],
+      [{ text: '📋 Руководитель отдела', callback_data: `jr:${applicantId}:a` }],
+      [{ text: '⭐️ Руководитель', callback_data: `jr:${applicantId}:s` }],
+      [{ text: '✖️ Отклонить', callback_data: `join_no:${applicantId}` }],
+    ],
+  };
+}
+
+function deptKeyboard(applicantId: string, roleCode: string, depts: { name: string }[]): InlineKeyboard {
+  return {
+    // Роль и номер отдела одним коротким токеном («a3»): двумя подстановками
+    // кнопка не уложилась бы в предел.
+    inline_keyboard: depts.map((d, i) => {
+      const slot = `${roleCode}${i}`;
+      return [{ text: d.name, callback_data: `jd:${applicantId}:${slot}` }];
+    }),
+  };
+}
 
 /**
  * Быстрые сроки и срочность под подтверждением. «Свой срок» открывает календарь.
@@ -266,24 +302,82 @@ botApp.post('/webhook', async (c) => {
 
     // Заявки на вступление разбираются ОТДЕЛЬНО и раньше: у них второй сегмент
     // -- организация, а не задача, и загрузчик задачи их бы отверг.
-    if (action === 'join_ok' || action === 'join_no') {
-      // В кнопке только заявитель: «join_ok:» с ДВУМЯ UUID -- 81 байт, а предел
+    // Приём: «Принять» -> роль -> отдел (если их несколько) -> готово.
+    if (action === 'join_ok' || action === 'jr' || action === 'jd') {
+      const applicantId = parts[1] ?? '';
+      const orgId = applicantId ? await pendingOrgFor(c.env, who.userId, applicantId) : null;
+      if (!orgId) {
+        await answerCallbackQuery(c.env, cq.id, 'Заявка недоступна');
+        return c.json({ ok: true });
+      }
+      const applicant = await c.env.DB.prepare('SELECT name, telegram_user_id FROM users WHERE id = ?')
+        .bind(applicantId).first<{ name: string; telegram_user_id: string | null }>();
+      const chat = cq.message ? String(cq.message.chat.id) : null;
+      const msgId = cq.message ? String(cq.message.message_id) : null;
+
+      // Шаг 1: кем принять.
+      if (action === 'join_ok') {
+        await answerCallbackQuery(c.env, cq.id);
+        if (chat && msgId) {
+          await editMessageText(c.env, chat, msgId, `Кем принять ${applicant?.name ?? 'сотрудника'}?`, roleKeyboard(applicantId));
+        }
+        return c.json({ ok: true });
+      }
+
+      const depts = await orgDepartments(c.env, orgId);
+
+      // Шаг 2: в какой отдел. Если отдел один, вопроса нет.
+      if (action === 'jr') {
+        const roleCode = parts[2] ?? 'm';
+        if (depts.length > 1) {
+          await answerCallbackQuery(c.env, cq.id);
+          if (chat && msgId) {
+            await editMessageText(c.env, chat, msgId,
+              `${applicant?.name ?? 'Сотрудник'} -- ${ROLE_TITLE[ROLE_CODE[roleCode] ?? 'member']}. В какой отдел?`,
+              deptKeyboard(applicantId, roleCode, depts));
+          }
+          return c.json({ ok: true });
+        }
+        const ok = await approveJoin(c.env, who.userId, orgId, applicantId, ROLE_CODE[roleCode] ?? 'member', depts[0]?.id);
+        await answerCallbackQuery(c.env, cq.id, ok ? 'Принят' : 'Заявка недоступна');
+        if (ok && chat && msgId) {
+          await editMessageText(c.env, chat, msgId,
+            `✅ ${applicant?.name ?? 'Сотрудник'} принят -- ${ROLE_TITLE[ROLE_CODE[roleCode] ?? 'member']}.`);
+        }
+        if (ok && applicant?.telegram_user_id) {
+          await sendMessage(c.env, applicant.telegram_user_id, 'Вас приняли. /moe -- ваши задачи.');
+        }
+        return c.json({ ok: true });
+      }
+
+      // Шаг 3: роль и отдел выбраны.
+      const slot = parts[2] ?? 'm0';
+      const role = ROLE_CODE[slot[0]] ?? 'member';
+      const dept = depts[Number(slot.slice(1))] ?? depts[0];
+      const ok = await approveJoin(c.env, who.userId, orgId, applicantId, role, dept?.id);
+      await answerCallbackQuery(c.env, cq.id, ok ? 'Принят' : 'Заявка недоступна');
+      if (ok && chat && msgId) {
+        await editMessageText(c.env, chat, msgId,
+          `✅ ${applicant?.name ?? 'Сотрудник'} принят -- ${ROLE_TITLE[role]}, отдел «${dept?.name ?? '-'}».`);
+      }
+      if (ok && applicant?.telegram_user_id) {
+        await sendMessage(c.env, applicant.telegram_user_id, `Вас приняли в отдел «${dept?.name ?? '-'}». /moe -- ваши задачи.`);
+      }
+      return c.json({ ok: true });
+    }
+
+    if (action === 'join_no') {
+      // В кнопке только заявитель: «join_no:» с ДВУМЯ UUID -- 81 байт, а предел
       // callback_data у Telegram 64, и он отвергал всё сообщение целиком.
       // Организация ищется по заявителю среди тех, где нажавший распоряжается.
       const applicantId = parts[1] ?? '';
       const orgId = applicantId ? await pendingOrgFor(c.env, who.userId, applicantId) : null;
-      const done = !orgId ? false : action === 'join_ok'
-        ? await approveJoin(c.env, who.userId, orgId, applicantId)
-        : await rejectJoin(c.env, who.userId, orgId, applicantId);
+      const done = !orgId ? false : await rejectJoin(c.env, who.userId, orgId, applicantId);
       // Право подтверждать проверяется ВНУТРИ approveJoin/rejectJoin, а не
       // здесь: сообщение с кнопкой живёт в Telegram и может быть переслано
       // кому угодно.
-      await answerCallbackQuery(c.env, cq.id, done ? (action === 'join_ok' ? 'Принят' : 'Отклонён') : 'Заявка недоступна');
+      await answerCallbackQuery(c.env, cq.id, done ? 'Отклонён' : 'Заявка недоступна');
       if (done && cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
-      if (done && action === 'join_ok') {
-        const tg = await c.env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?').bind(applicantId).first<{ telegram_user_id: string | null }>();
-        if (tg?.telegram_user_id) await sendMessage(c.env, tg.telegram_user_id, 'Вас приняли. /moe -- ваши задачи.');
-      }
       return c.json({ ok: true });
     }
 
@@ -537,17 +631,28 @@ botApp.post('/webhook', async (c) => {
     }
     if (st.await === 'new') {
       // Название запомнили, теперь профиль: он решает, какие отделы завести.
-      await show(c.env, chatId, userId, packScreen(text.slice(0, 60)));
+      await show(c.env, chatId, userId, categoryScreen(text.slice(0, 60)));
       return c.json({ ok: true });
     }
     if (st.await === 'pack') {
+      const orgDraft = st.draft ?? 'Моя организация';
+      // «Назад» с экрана отраслей -- к категориям.
+      if (text === BTN.back) {
+        await show(c.env, chatId, userId, categoryScreen(orgDraft));
+        return c.json({ ok: true });
+      }
+      const category = categoryByButton(text);
+      if (category) {
+        await show(c.env, chatId, userId, industryScreen(orgDraft, category.id));
+        return c.json({ ok: true });
+      }
       const chosen = packByButton(text);
       if (!chosen) {
         // Написали текстом вместо нажатия -- переспрашиваем, а не гадаем.
-        await show(c.env, chatId, userId, packScreen(st.draft ?? text.slice(0, 60)));
+        await show(c.env, chatId, userId, st.cat ? industryScreen(orgDraft, st.cat) : categoryScreen(orgDraft));
         return c.json({ ok: true });
       }
-      const orgName = st.draft ?? 'Моя организация';
+      const orgName = orgDraft;
       const { code, departments } = await createOrg(c.env, userId, orgName, chosen.id);
       await sendMessage(c.env, chatId, [
         `Организация «${orgName}» создана. Вы её владелец.`,

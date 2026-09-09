@@ -126,6 +126,7 @@ const FIXTURES: Record<string, Probe> = {
   // блоком ниже («роуты организаций слушаются только своего членства»).
   'GET /orgs/mine': { path: '/orgs/mine', skip: 'отдаёт СВОИ членства; чужих идентификаторов не принимает' },
   'GET /packs': { path: '/packs', skip: 'справочник профилей, одинаковый для всех; данных организации не содержит' },
+  'GET /org/positions': { path: '/org/positions', skip: 'должности профиля СВОЕЙ организации; идентификаторов не принимает' },
   'POST /orgs': { path: '/orgs', method: 'POST', body: { name: 'Своя' }, skip: 'создаёт своё; чужих идентификаторов не принимает' },
   'POST /orgs/join': { path: '/orgs/join', method: 'POST', body: { code: 'ZZZZZZ' }, skip: 'по секретному коду, без идентификаторов; даёт только заявку' },
   'POST /orgs/:orgId/switch': { path: `/orgs/${ORG_B}/switch`, method: 'POST', body: {}, skip: 'переход в СВОЮ вторую организацию законен; чужую отвергает switchOrg -- см. блок ниже' },

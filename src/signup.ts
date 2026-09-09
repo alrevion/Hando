@@ -165,6 +165,10 @@ export async function approveJoin(
   orgId: string,
   applicantId: string,
   role: Role = 'member',
+  /** Отдел (доска), куда сажают новичка. По умолчанию -- первый в организации. */
+  projectId?: string,
+  /** Должность из профиля отрасли. Права не даёт, но её видят коллеги. */
+  position?: string,
 ): Promise<boolean> {
   const approver = await env.DB
     .prepare("SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL")
@@ -172,9 +176,14 @@ export async function approveJoin(
     .first<{ role: Role }>();
   if (!approver || (approver.role !== 'creator' && approver.role !== 'super_admin')) return false;
 
+  // Владельца с кнопки не выдают: владелец у организации один, и передача
+  // владения -- отдельное осознанное действие, а не выбор под уведомлением.
+  if (role === 'creator') return false;
+
   const res = await env.DB
-    .prepare('UPDATE org_memberships SET confirmed_at = ?, role = ? WHERE org_id = ? AND user_id = ? AND confirmed_at IS NULL AND left_at IS NULL')
-    .bind(nowIso(), role, orgId, applicantId)
+    .prepare(`UPDATE org_memberships SET confirmed_at = ?, role = ?, position = COALESCE(?, position)
+              WHERE org_id = ? AND user_id = ? AND confirmed_at IS NULL AND left_at IS NULL`)
+    .bind(nowIso(), role, position ?? null, orgId, applicantId)
     .run();
   if (!res.meta.changes) return false;
 
@@ -182,10 +191,16 @@ export async function approveJoin(
   // приложении выбираются через project_memberships -- без строки человек
   // видит пустое приложение, а бот отказывается принимать у него задачи.
   // Поэтому подтверждение сразу сажает новичка на доску организации.
-  const projectId = await ensureDefaultProject(env, orgId, approverId);
+  // Отдел выбран при подтверждении -- проверяем, что он ИЗ ЭТОЙ организации:
+  // идентификатор приходит из кнопки, а кнопку можно переслать.
+  const own = projectId
+    ? await env.DB.prepare('SELECT id FROM projects WHERE id = ? AND org_id = ? AND archived_at IS NULL')
+        .bind(projectId, orgId).first<{ id: string }>()
+    : null;
+  const target = own?.id ?? await ensureDefaultProject(env, orgId, approverId);
   await env.DB
     .prepare('INSERT OR IGNORE INTO project_memberships (id, project_id, user_id, org_id) VALUES (?, ?, ?, ?)')
-    .bind(uuid(), projectId, applicantId, orgId)
+    .bind(uuid(), target, applicantId, orgId)
     .run();
 
   // Липкий контекст ставится только если человек ещё нигде не работает: у
@@ -246,4 +261,12 @@ export async function pendingOrgFor(env: Env, approverId: string, applicantId: s
      ORDER BY m.created_at LIMIT 1`,
   ).bind(approverId, applicantId).first<{ org_id: string }>();
   return row?.org_id ?? null;
+}
+
+/** Отделы организации по порядку -- ими подписаны кнопки выбора при подтверждении. */
+export async function orgDepartments(env: Env, orgId: string): Promise<{ id: string; name: string }[]> {
+  const { results } = await env.DB
+    .prepare('SELECT id, name FROM projects WHERE org_id = ? AND archived_at IS NULL ORDER BY created_at')
+    .bind(orgId).all<{ id: string; name: string }>();
+  return results;
 }

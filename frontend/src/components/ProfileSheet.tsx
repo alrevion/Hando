@@ -50,11 +50,18 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
   // разошлись бы, и бот с приложением заводили бы разные отделы под одним
   // названием профиля.
   const [packs, setPacks] = useState<OrgPack[]>([]);
+  const [cats, setCats] = useState<{ id: string; title: string; emoji: string }[]>([]);
+  // Отраслей сотня: сначала категория, потом отрасль внутри неё.
+  const [chosenCat, setChosenCat] = useState('other');
   const [chosenPack, setChosenPack] = useState('generic');
 
   const load = () => { getMyOrgs().then(setOrgs).catch(() => setOrgs([])); };
   useEffect(load, []);
-  useEffect(() => { getPacks().then(setPacks).catch(() => setPacks([])); }, []);
+  useEffect(() => {
+    getPacks()
+      .then((c) => { setPacks(c.industries); setCats(c.categories); })
+      .catch(() => { setPacks([]); setCats([]); });
+  }, []);
 
   /** Общая обёртка: одна кнопка -- одно действие -- один разбор ошибки. */
   async function run(fn: () => Promise<unknown>, after?: 'reload' | 'orgs') {
@@ -228,15 +235,33 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
                 которые бот будет понимать как срочные. */}
             <div className="field">
               <span className="lbl">Чем занимаетесь</span>
+              <div className="chips" style={{ paddingBottom: 6 }}>
+                {cats.map((k) => (
+                  <button
+                    key={k.id}
+                    type="button"
+                    className={chosenCat === k.id ? 'chip on' : 'chip'}
+                    onClick={() => {
+                      setChosenCat(k.id);
+                      // Первая отрасль категории -- разумное умолчание: иначе
+                      // остался бы выбор из прежней категории.
+                      const first = packs.find((p) => p.category === k.id);
+                      if (first) setChosenPack(first.id);
+                    }}
+                  >
+                    {k.emoji} {k.title}
+                  </button>
+                ))}
+              </div>
               <div className="chips" style={{ paddingBottom: 0 }}>
-                {packs.map((p) => (
+                {packs.filter((p) => p.category === chosenCat).map((p) => (
                   <button
                     key={p.id}
                     type="button"
                     className={chosenPack === p.id ? 'chip on' : 'chip'}
                     onClick={() => setChosenPack(p.id)}
                   >
-                    {p.emoji} {p.title}
+                    {p.title}
                   </button>
                 ))}
               </div>

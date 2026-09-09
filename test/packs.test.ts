@@ -4,9 +4,10 @@
 // понимание срочности и понимание «ознакомиться». Проверяется каждая.
 import { env as testEnv } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { PACKS, pack, packButton, packByButton } from '../src/packs';
+import { CATEGORIES, PACKS, pack, packButton, packByButton, packsOf } from '../src/packs';
 import { matchPriority, parseByPattern } from '../src/parse';
-import { createOrg, ensureUser } from '../src/signup';
+import { approveJoin, createOrg, ensureUser, joinByCode, orgDepartments } from '../src/signup';
+import { membershipRole } from '../src/auth';
 import { envWith } from './fixture';
 
 const TZ = 'Asia/Tashkent';
@@ -69,6 +70,19 @@ describe('слова срочности зависят от отрасли', () 
     }
   });
 
+  it('вычеркнутое слово не оставляет за собой предлог', () => {
+    // «подготовить кабинет к проверке» -> «проверке» уехало в срочность, и
+    // без чистки оставалось «Подготовить кабинет к».
+    const d = parseByPattern('Азизу подготовить кабинет к проверке', PEOPLE, 'u-self', NOW, TZ, 'school')!;
+    expect(d.priority).toBe('urgent');
+    expect(d.title).toBe('Подготовить кабинет');
+  });
+
+  it('предлог внутри фразы не трогается', () => {
+    const d = parseByPattern('Азизу срочно позвонить в банк', PEOPLE, 'u-self', NOW, TZ, 'generic')!;
+    expect(d.title).toBe('Позвонить в банк');
+  });
+
   it('отраслевое слово не остаётся в названии задачи', () => {
     const d = parseByPattern('Азизу простой на объекте устранить', PEOPLE, 'u-self', NOW, TZ, 'construction')!;
     expect(d.priority).toBe('urgent');
@@ -124,5 +138,88 @@ describe('профиль при создании организации', () => 
     const { orgId } = await createOrg(env, uid, 'Просто фирма');
     const { results } = await testEnv.DB.prepare('SELECT name FROM projects WHERE org_id = ?').bind(orgId).all<{ name: string }>();
     expect(results.map((r) => r.name)).toEqual(['Задачи']);
+  });
+});
+
+describe('каталог отраслей', () => {
+  it('каждая отрасль лежит в существующей категории, и пустых категорий нет', () => {
+    const ids = new Set(CATEGORIES.map((c) => c.id));
+    for (const p of PACKS) expect(ids.has(p.category), p.id).toBe(true);
+    for (const c of CATEGORIES) expect(packsOf(c.id).length, c.id).toBeGreaterThan(0);
+  });
+
+  it('словарь категории достаётся каждой её отрасли', () => {
+    // Ради этого словарь и разделён на два уровня: «пациент ждёт» написано
+    // один раз в категории «Медицина» и работает во всех шести отраслях.
+    for (const p of packsOf('med')) {
+      expect(p.urgent, p.id).toContain('пациент ждёт');
+    }
+  });
+
+  it('своё у отрасли добавляется к общему, а не заменяет его', () => {
+    const dental = pack('dental');
+    expect(dental.urgent).toContain('пациент ждёт');   // от категории
+    expect(dental.urgent).toContain('острая боль');    // своё
+  });
+});
+
+describe('приём в организацию: роль и отдел', () => {
+  const setup = async (packId: string) => {
+    const env = await blank();
+    const owner = await ensureUser(env, 'tg-o-role', 'Владелец', null);
+    const { orgId, code } = await createOrg(env, owner, 'Фирма', packId);
+    const joiner = await ensureUser(env, 'tg-j-role', 'Новичок', null);
+    await joinByCode(env, joiner, code);
+    return { env, owner, orgId, joiner };
+  };
+
+  it('роль берётся из выбора, а не назначается «сотрудником» молча', async () => {
+    const { env, owner, orgId, joiner } = await setup('generic');
+    expect(await approveJoin(env, owner, orgId, joiner, 'admin')).toBe(true);
+    expect(await membershipRole(testEnv.DB, orgId, joiner)).toBe('admin');
+  });
+
+  it('новичок садится В ВЫБРАННЫЙ отдел, а не в первый попавшийся', async () => {
+    const { env, owner, orgId, joiner } = await setup('school');
+    const depts = await orgDepartments(env, orgId);
+    // Школа: «Учебная часть», «Классные руководители», ... Сажаем во второй.
+    expect(await approveJoin(env, owner, orgId, joiner, 'member', depts[1].id)).toBe(true);
+    const { results } = await testEnv.DB
+      .prepare('SELECT project_id FROM project_memberships WHERE user_id = ? AND org_id = ?')
+      .bind(joiner, orgId).all<{ project_id: string }>();
+    expect(results.map((r) => r.project_id)).toEqual([depts[1].id]);
+  });
+
+  it('чужой отдел не принимается: кнопку можно переслать', async () => {
+    const { env, owner, orgId, joiner } = await setup('generic');
+    const other = await ensureUser(env, 'tg-other', 'Другой', null);
+    const { orgId: foreignOrg } = await createOrg(env, other, 'Чужая', 'school');
+    const foreign = await orgDepartments(env, foreignOrg);
+
+    expect(await approveJoin(env, owner, orgId, joiner, 'member', foreign[0].id)).toBe(true);
+    // Принят -- но в СВОЙ отдел: чужой идентификатор молча отброшен.
+    const { results } = await testEnv.DB
+      .prepare('SELECT project_id FROM project_memberships WHERE user_id = ? AND org_id = ?')
+      .bind(joiner, orgId).all<{ project_id: string }>();
+    expect(results.map((r) => r.project_id)).not.toContain(foreign[0].id);
+    expect(results).toHaveLength(1);
+  });
+
+  it('владельца с кнопки не выдают', async () => {
+    // Владелец у организации один, и передача владения -- отдельное осознанное
+    // действие, а не выбор под уведомлением.
+    const { env, owner, orgId, joiner } = await setup('generic');
+    expect(await approveJoin(env, owner, orgId, joiner, 'creator')).toBe(false);
+    expect(await membershipRole(testEnv.DB, orgId, joiner)).toBeNull();
+  });
+
+  it('должность из профиля сохраняется', async () => {
+    const { env, owner, orgId, joiner } = await setup('school');
+    const depts = await orgDepartments(env, orgId);
+    await approveJoin(env, owner, orgId, joiner, 'member', depts[0].id, 'Завуч');
+    const row = await testEnv.DB.prepare('SELECT position FROM org_memberships WHERE org_id = ? AND user_id = ?')
+      .bind(orgId, joiner).first<{ position: string }>();
+    expect(row!.position).toBe('Завуч');
+    expect(pack('school').positions).toContain('Завуч');
   });
 });

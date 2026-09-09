@@ -3,7 +3,8 @@ import { Check, ChevronDown, X } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
 import { isTaskOverdue } from '../lib/overdue';
-import { approveMember, getPendingMembers, rejectMember, type PendingMember } from '../lib/api';
+import { approveMember, getOrgPositions, getPendingMembers, rejectMember, type PendingMember } from '../lib/api';
+import type { Role } from '../types';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
 import { isMine } from '../lib/tasks';
@@ -44,18 +45,34 @@ export function PeopleView() {
   // список просто не появляется.
   const [pending, setPending] = useState<PendingMember[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Кем и куда принять. Выбор живёт на карточке заявки, а не в отдельном
+  // окне: это одно действие в два касания, а не настройка.
+  const [choice, setChoice] = useState<Record<string, { role: Role; project?: string; position?: string }>>({});
+  const [positions, setPositions] = useState<string[]>([]);
   const loadPending = useCallback(() => { getPendingMembers().then(setPending).catch(() => setPending([])); }, []);
   useEffect(loadPending, [loadPending]);
+  // Должности берутся из профиля организации: у школы это «Завуч», у стройки
+  // «Прораб». Печатать их руками каждый раз незачем.
+  useEffect(() => { getOrgPositions().then(setPositions).catch(() => setPositions([])); }, []);
 
   async function decide(userId: string, ok: boolean) {
     setBusyId(userId);
+    const c = choice[userId] ?? { role: 'member' as Role };
     try {
-      await (ok ? approveMember(userId) : rejectMember(userId));
+      await (ok
+        ? approveMember(userId, { role: c.role, project_id: c.project ?? projects[0]?.id, position: c.position })
+        : rejectMember(userId));
     } finally {
       setBusyId(null);
       loadPending();
     }
   }
+
+  const ROLES: { value: Role; label: string }[] = [
+    { value: 'member', label: 'Сотрудник' },
+    { value: 'admin', label: 'Руководитель отдела' },
+    { value: 'super_admin', label: 'Руководитель' },
+  ];
 
   const rows = useMemo<PersonRow[]>(() => {
     const list = users.map((user) => {
@@ -91,7 +108,11 @@ export function PeopleView() {
         <>
           <h2 className="sec-title" style={{ marginTop: 0 }}>Просятся в организацию</h2>
           <ul className="stack" style={{ marginBottom: 6 }}>
-            {pending.map((p) => (
+            {pending.map((p) => {
+              const c = choice[p.user_id] ?? { role: 'member' as Role };
+              const set = (patch: Partial<typeof c>) =>
+                setChoice((prev) => ({ ...prev, [p.user_id]: { ...c, ...patch } }));
+              return (
               <li key={p.user_id} className="card">
                 <div className="t-row" style={{ alignItems: 'center' }}>
                   <span className="avatar avatar-lg">{initials(p.name) || '·'}</span>
@@ -100,6 +121,56 @@ export function PeopleView() {
                     {p.telegram_username ? <span className="t-meta"><span>@{p.telegram_username}</span></span> : null}
                   </span>
                 </div>
+
+                {/* Кем принять -- вопрос обязательный: молчаливый «сотрудник»
+                    и был тем, из-за чего роль приходилось менять потом. */}
+                <div className="sec-title" style={{ margin: '10px 0 6px' }}>Кем принять</div>
+                <div className="chips" style={{ paddingBottom: 6 }}>
+                  {ROLES.map((r) => (
+                    <button
+                      key={r.value}
+                      type="button"
+                      className={c.role === r.value ? 'chip on' : 'chip'}
+                      onClick={() => set({ role: r.value })}
+                    >
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+
+                {projects.length > 1 ? (
+                  <>
+                    <div className="sec-title" style={{ margin: '4px 0 6px' }}>В какой отдел</div>
+                    <div className="chips" style={{ paddingBottom: 6 }}>
+                      {projects.map((pr) => (
+                        <button
+                          key={pr.id}
+                          type="button"
+                          className={(c.project ?? projects[0]?.id) === pr.id ? 'chip on' : 'chip'}
+                          onClick={() => set({ project: pr.id })}
+                        >
+                          {pr.name}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+
+                {positions.length > 0 ? (
+                  <div className="field" style={{ marginBottom: 4 }}>
+                    <label className="lbl" htmlFor={`pos-${p.user_id}`}>Должность</label>
+                    <select
+                      id={`pos-${p.user_id}`}
+                      className="inp"
+                      value={c.position ?? ''}
+                      onChange={(e) => set({ position: e.target.value || undefined })}
+                    >
+                      <option value="">Не указывать</option>
+                      {positions.map((pos) => <option key={pos} value={pos}>{pos}</option>)}
+                    </select>
+                  </div>
+                ) : null}
+
                 <div className="btn-row">
                   <button type="button" className="btn btn-primary" disabled={busyId === p.user_id} onClick={() => decide(p.user_id, true)}>
                     <Check aria-hidden="true" style={{ width: 16, height: 16 }} />
@@ -111,7 +182,8 @@ export function PeopleView() {
                   </button>
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
           <h2 className="sec-title">В организации</h2>
         </>

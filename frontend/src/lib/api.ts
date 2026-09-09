@@ -185,8 +185,13 @@ export function getPendingMembers(): Promise<PendingMember[]> {
   return request<PendingMember[]>('/memberships/pending');
 }
 
-export function approveMember(userId: string): Promise<{ ok: true }> {
-  return request<{ ok: true }>(`/memberships/${userId}/approve`, { method: 'POST' });
+/** Роль, отдел и должность выбирают ПРИ подтверждении, а не «потом»: молчаливый
+ *  «сотрудник» и был тем, из-за чего роль приходилось менять с компьютера. */
+export function approveMember(
+  userId: string,
+  opts: { role: Role; project_id?: string; position?: string },
+): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/memberships/${userId}/approve`, { method: 'POST', body: JSON.stringify(opts) });
 }
 
 export function rejectMember(userId: string): Promise<{ ok: true }> {
@@ -223,11 +228,19 @@ export interface OrgPack {
   id: string;
   title: string;
   emoji: string;
+  category: string;
   departments: string[];
+  positions: string[];
   examples: string[];
 }
 
-export const getPacks = () => request<OrgPack[]>('/packs');
+export interface PackCatalog {
+  categories: { id: string; title: string; emoji: string }[];
+  industries: OrgPack[];
+}
+
+export const getPacks = () => request<PackCatalog>('/packs');
+export const getOrgPositions = () => request<string[]>('/org/positions');
 
 export const createOrg = (name: string, pack: string) =>
   request<{ id: string; name: string; join_code: string }>('/orgs', { method: 'POST', body: JSON.stringify({ name, pack }) });

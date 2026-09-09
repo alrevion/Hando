@@ -10,7 +10,7 @@ import { botApp } from '../src/bot';
 import { apiRoutes } from '../src/routes';
 import { approveJoin, createOrg, ensureDefaultProject, ensureUser, generateJoinCode, joinByCode, pendingOrgFor, rejectJoin } from '../src/signup';
 import { BTN, deleteOrg, leaveOrg, myOrgs, renameOrg, switchOrg } from '../src/menu';
-import { PACKS, packButton } from '../src/packs';
+import { CATEGORIES, PACKS, categoryButton, packButton } from '../src/packs';
 import { membershipRole, resolveOrgId } from '../src/auth';
 import { cookie, envWith, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
@@ -34,14 +34,32 @@ const msg = (id: number, text: string) => ({ message: { chat: { id, type: 'priva
 
 const tapBtn = (env: Env, tgId: number, label: string) => hook(env, msg(tgId, label));
 /**
- * Создание организации через бота -- ДВА шага: название, потом профиль отрасли.
- * Профиль решает, какие отделы завести и какие слова считать срочными, и
- * спрашивается сразу: позже пришлось бы переименовывать уже заполненные доски.
+ * Создание организации через бота -- ТРИ шага: название, категория, отрасль.
+ * Отраслей сотня, плоским списком кнопок это нечитаемо, поэтому сначала
+ * категория. Профиль спрашивается сразу: он решает, какие отделы завести и
+ * какие слова считать срочными, а позже пришлось бы переименовывать доски.
  */
-const createOrgViaBot = async (env: Env, tgId: number, name: string, profile = packButton(PACKS[0])) => {
+const createOrgViaBot = async (env: Env, tgId: number, name: string, packId = 'generic') => {
+  const p = PACKS.find((x) => x.id === packId)!;
+  const cat = CATEGORIES.find((c) => c.id === p.category)!;
   await tapBtn(env, tgId, BTN.create);
   await hook(env, msg(tgId, name));
-  await hook(env, msg(tgId, profile));
+  await hook(env, msg(tgId, categoryButton(cat)));
+  await hook(env, msg(tgId, packButton(p)));
+};
+
+/**
+ * Подтверждение заявки -- ДВА нажатия: «Принять», затем роль. Отдел
+ * спрашивается третьим только когда их несколько.
+ */
+const approveViaBot = async (env: Env, ownerTgId: number, applicantId: string, roleCode = 'm', deptIdx?: number) => {
+  const press = (data: string) => hook(env, {
+    callback_query: { id: 'cb', from: { id: ownerTgId, first_name: 'Д' }, data, message: { chat: { id: ownerTgId }, message_id: 1 } },
+  });
+  await press(`join_ok:${applicantId}`);
+  await press(`jr:${applicantId}:${roleCode}`);
+  // Отдел спрашивается третьим шагом только когда их несколько.
+  if (deptIdx !== undefined) await press(`jd:${applicantId}:${roleCode}${deptIdx}`);
 };
 
 describe('код вступления', () => {
@@ -242,7 +260,8 @@ describe('регистрация целиком через бота -- ПОСТ�
     expect(await resolveOrgId(testEnv.DB, joiner!.id)).toBeNull();
 
     const org = await testEnv.DB.prepare('SELECT id FROM orgs WHERE join_code = ?').bind(code).first<{ id: string }>();
-    await hook(env, { callback_query: { id: 'cb', from: { id: 101, first_name: 'Д' }, data: `join_ok:${joiner!.id}`, message: { chat: { id: 101 }, message_id: 1 } } });
+    // Принять -> роль. Организация с одним отделом третьего вопроса не задаёт.
+    await approveViaBot(env, 101, joiner!.id);
 
     expect(await resolveOrgId(testEnv.DB, joiner!.id)).toBe(org!.id);
     expect(sent(spy).some((m) => m.chat_id === '202' && m.text.includes('приняли'))).toBe(true);
@@ -269,7 +288,7 @@ describe('регистрация целиком через бота -- ПОСТ�
     await tap(env, 909, BTN.join);
     await hook(env, msg(909, code));
     const worker = await testEnv.DB.prepare("SELECT id FROM users WHERE telegram_user_id = '909'").first<{ id: string }>();
-    await hook(env, { callback_query: { id: 'cb', from: { id: 707, first_name: 'Д' }, data: `join_ok:${worker!.id}`, message: { chat: { id: 707 }, message_id: 1 } } });
+    await approveViaBot(env, 707, worker!.id);
 
     await hook(env, msg(909, '/start'));
     const workerRows = (sent(spy).at(-1)! as unknown as { reply_markup?: { keyboard: { text: string }[][] } }).reply_markup!.keyboard;
@@ -447,10 +466,11 @@ describe('заявка доходит до владельца', () => {
       expect(new TextEncoder().encode(d).length).toBeLessThanOrEqual(64);
     }
 
-    // И кнопка работает: нажатие владельца подтверждает заявку.
-    await hook(env, { callback_query: { id: 'cb', from: { id: 501, first_name: 'Д' }, data: datas[0], message: { chat: { id: 501 }, message_id: 7 } } });
+    // И кнопка работает: «Принять» открывает выбор роли, роль подтверждает.
     const joiner = await testEnv.DB.prepare('SELECT id FROM users WHERE telegram_user_id = ?').bind('502').first<{ id: string }>();
-    expect(await membershipRole(testEnv.DB, org!.id, joiner!.id)).toBe('member');
+    await approveViaBot(env, 501, joiner!.id, 'a');
+    // Роль -- та, которую выбрали кнопкой, а не молчаливый «сотрудник».
+    expect(await membershipRole(testEnv.DB, org!.id, joiner!.id)).toBe('admin');
   });
 
   it('нажатие постороннего заявку не подтверждает: кнопку можно переслать', async () => {

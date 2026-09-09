@@ -13,7 +13,7 @@
 import type { Env, Role } from './types';
 import { nowIso } from './db';
 import type { ReplyKeyboard } from './telegram';
-import { PACKS, packButton } from './packs';
+import { CATEGORIES, categoryButton, packButton, packsOf } from './packs';
 
 export const BTN = {
   tasks: '📋 Мои задачи',
@@ -40,6 +40,8 @@ export type BotState = {
   await?: 'name' | 'new' | 'pack' | 'join' | 'rename';
   /** Незаконченный ввод: название организации ждёт выбора профиля. */
   draft?: string;
+  /** Выбранная категория отрасли: второй шаг показывает её отрасли. */
+  cat?: string;
   /** Экран: по нему разбирается нажатие, потому что подписи повторяются. */
   screen?: 'main' | 'orgs' | 'org' | 'profile' | 'billing' | 'confirm_delete';
   /** Организация, открытая в карточке. */
@@ -187,19 +189,19 @@ export function orgScreen(org: OrgRow, userId: string, pending = 0): Screen {
 }
 
 /**
- * Выбор профиля отрасли -- второй шаг создания организации.
+ * Выбор профиля отрасли -- второй шаг создания организации, в ДВА экрана.
  *
- * Профиль спрашивается ОДИН раз и сразу: от него зависят отделы, которые
- * заведутся, и словарь, которым бот будет разбирать фразы. Спросить позже
+ * Отраслей сотня, и плоским списком кнопок это нечитаемо. Сначала категория
+ * (пятнадцать), затем отрасль внутри неё. Профиль спрашивается сразу: от него
+ * зависят отделы, которые заведутся, и словарь разбора, а спросить позже
  * значило бы переименовывать уже заполненные доски.
  *
- * По две кнопки в ряд: подписи длинные («Магазин, торговля»), в три ряда они
- * обрезаются на узком экране.
+ * По две кнопки в ряд: подписи длинные, в три ряда они обрезаются на узком экране.
  */
-export function packScreen(orgName: string): Screen {
+export function categoryScreen(orgName: string): Screen {
   const rows: { text: string }[][] = [];
-  for (let i = 0; i < PACKS.length; i += 2) {
-    rows.push(PACKS.slice(i, i + 2).map((p) => ({ text: packButton(p) })));
+  for (let i = 0; i < CATEGORIES.length; i += 2) {
+    rows.push(CATEGORIES.slice(i, i + 2).map((c) => ({ text: categoryButton(c) })));
   }
   return {
     text: [
@@ -209,6 +211,21 @@ export function packScreen(orgName: string): Screen {
     ].join('\n'),
     keyboard: kb(rows),
     state: { await: 'pack', draft: orgName },
+  };
+}
+
+/** Второй шаг: отрасли выбранной категории. Сотня в один экран не влезает. */
+export function industryScreen(orgName: string, categoryId: string): Screen {
+  const list = packsOf(categoryId);
+  const rows: { text: string }[][] = [];
+  for (let i = 0; i < list.length; i += 2) {
+    rows.push(list.slice(i, i + 2).map((p) => ({ text: packButton(p) })));
+  }
+  rows.push([{ text: BTN.back }]);
+  return {
+    text: 'Уточните -- от этого зависят отделы:',
+    keyboard: kb(rows),
+    state: { await: 'pack', draft: orgName, cat: categoryId },
   };
 }
 
