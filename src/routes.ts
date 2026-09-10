@@ -2,15 +2,19 @@
 // hold business rules. Every mutating action writes an events row (system of record).
 import { type Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
-import type { Role, Task, TaskStatus } from './types';
+import type { Env, Role, Task, TaskStatus } from './types';
 import { logEvent, nowIso, uuid } from './db';
 import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyInitData, verifyOtp, verifySession } from './auth';
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
-import { deleteMessage, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
+import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, buildNotification } from './transition';
 import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
-import { createFromDraft, setTaskDeadline } from './intake';
+import { setTaskDeadline } from './intake';
+import {
+  assigneesOf, confirmDraft, getDraft, listDrafts, mediaOf, patchDraft, removeDraft, renderCreated, renderDraft,
+  saveDraft, type DraftPatch, type DraftRow,
+} from './drafts';
 import { CATEGORIES, PACKS, pack } from './packs';
 import { localIso, parseTask, transcribe } from './parse';
 import { approveJoin, createOrg, joinByCode, pendingRequests, rejectJoin } from './signup';
@@ -430,30 +434,121 @@ apiRoutes.post('/tasks/dictate', async (c) => {
   //
   // Человек нажал «+» на поручениях и сказал «нужно Еве приготовить сырники».
   // Евы в организации нет, разбор никого не нашёл и по общему правилу записал
-  // бы задачу НА АВТОРА -- то есть поручение молча превратилось бы в личную
-  // задачу. Здесь мы этого не делаем: возвращаем разобранное и просим выбрать
-  // человека. Для «моих задач» правило обратное -- там автор и есть адресат.
-  if (mode === 'assigned' && !forced
-      && (draft.assigneeIds.length === 0 || (draft.assigneeIds.length === 1 && draft.assigneeIds[0] === userId))) {
-    return c.json({
-      error: 'Не понял, кому поручение', code: 'NEED_ASSIGNEE',
-      title: draft.title, deadline: draft.deadline, priority: draft.priority, heard: phrase,
-    }, 409);
+  // бы задачу НА АВТОРА. Здесь адресат просто остаётся пустым: карточка
+  // черновика спросит «кому?», и без ответа её не подтвердить.
+  if (mode === 'assigned' && !forced && draft.assigneeIds.length === 1 && draft.assigneeIds[0] === userId) {
+    draft.assigneeIds = [];
   }
 
-  const taskId = await createFromDraft(c.env, { userId, orgId }, draft, null, phrase);
+  // Задача НЕ создаётся: это черновик, и его ещё подтвердят. Разбор
+  // ошибается, и «не тому» должно ловиться до того, как поручение ушло.
+  const row = await saveDraft(c.env, { userId, orgId }, draft, phrase, []);
+  return c.json(await draftView(c.env, row), 201);
+});
+
+// ------------------------------------------------------------ черновики
+//
+// Те же черновики, что в боте: продиктованное в приложении видно в
+// «Черновиках» бота, и наоборот. Карточка в чате правится вслед за правкой
+// здесь -- иначе человек нажал бы «Создать» на уже созданном.
+
+/** Черновик для ответа: имена вместо идентификаторов, счётчик вложений. */
+async function draftView(env: Env, row: DraftRow) {
+  const ids = assigneesOf(row);
+  const names = ids.length === 0 ? [] : (await env.DB.prepare(
+    `SELECT id, name FROM users WHERE id IN (${ids.map(() => '?').join(',')})`,
+  ).bind(...ids).all<{ id: string; name: string }>()).results;
+  return {
+    id: row.id,
+    title: row.title,
+    deadline: row.deadline,
+    priority: row.priority,
+    priority_explicit: row.priority_explicit === 1,
+    kind: row.kind,
+    assignee_ids: ids,
+    assignees: ids.map((id) => names.find((n) => n.id === id)?.name ?? '—'),
+    heard: row.heard,
+    media_count: mediaOf(row).filter((m) => !m.hasAudio).length,
+    created_at: row.created_at,
+  };
+}
+
+/** Черновик по адресу -- только СВОЙ и в СВОЕЙ организации; иначе 404 без деталей. */
+async function ownDraft(c: Context<AppEnv>): Promise<DraftRow | null> {
+  const row = await getDraft(c.env, c.req.param('id') ?? '');
+  if (!row || row.author_id !== c.get('userId') || row.org_id !== c.get('orgId')) return null;
+  return row;
+}
+
+async function orgTz(env: Env, orgId: string): Promise<string> {
+  const org = await env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(orgId).first<{ timezone: string }>();
+  return org?.timezone ?? 'Asia/Tashkent';
+}
+
+apiRoutes.get('/drafts', async (c) => {
+  const rows = await listDrafts(c.env, c.get('userId'), c.get('orgId'));
+  return c.json({ drafts: await Promise.all(rows.map((r) => draftView(c.env, r))) });
+});
+
+apiRoutes.patch('/drafts/:id', async (c) => {
+  const row = await ownDraft(c);
+  if (!row) return c.json({ error: 'not found' }, 404);
+  const b = await c.req.json<{ title?: string; assignee_ids?: string[]; deadline?: string | null; priority?: string }>()
+    .catch(() => ({}) as Record<string, undefined>);
+  const patch: DraftPatch = {};
+  if (b.title !== undefined) {
+    const t = String(b.title).trim();
+    if (t.length < 2 || t.length > 200) return c.json({ error: 'bad title' }, 400);
+    patch.title = t;
+  }
+  if (b.assignee_ids !== undefined) {
+    if (!Array.isArray(b.assignee_ids)) return c.json({ error: 'bad assignees' }, 400);
+    // Только подтверждённые участники СВОЕЙ организации: чужой id -- отказ.
+    const { results } = await c.env.DB.prepare(
+      'SELECT user_id FROM org_memberships WHERE org_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL',
+    ).bind(c.get('orgId')).all<{ user_id: string }>();
+    const known = new Set(results.map((r) => r.user_id));
+    if (b.assignee_ids.some((id) => !known.has(id))) return c.json({ error: 'Такого человека нет в организации' }, 400);
+    patch.assigneeIds = [...new Set(b.assignee_ids)];
+  }
+  const tz = await orgTz(c.env, c.get('orgId'));
+  if (b.deadline !== undefined) {
+    if (b.deadline === null) patch.deadline = null;
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(b.deadline)) {
+      // Дата без часа -- 18:00 в поясе организации, как у кнопок бота.
+      const [y, m, d] = b.deadline.split('-').map(Number);
+      patch.deadline = localIso(y, m, d, 18, tz);
+    } else if (!Number.isNaN(Date.parse(b.deadline))) patch.deadline = new Date(b.deadline).toISOString();
+    else return c.json({ error: 'bad deadline' }, 400);
+  }
+  if (b.priority !== undefined) {
+    if (!PRIORITIES.includes(b.priority)) return c.json({ error: 'bad priority' }, 400);
+    patch.priority = b.priority as DraftRow['priority'];
+    patch.priorityExplicit = true;
+  }
+  const updated = (await patchDraft(c.env, row.id, patch))!;
+  if (updated.telegram_chat_id) await renderDraft(c.env, updated, updated.telegram_chat_id, tz);
+  return c.json(await draftView(c.env, updated));
+});
+
+apiRoutes.post('/drafts/:id/confirm', async (c) => {
+  const row = await ownDraft(c);
+  if (!row) return c.json({ error: 'not found' }, 404);
+  const taskId = await confirmDraft(c.env, row);
   if (!taskId) return c.json({ error: 'Вас не добавили ни на одну доску', code: 'NO_BOARD' }, 409);
+  if (row.telegram_chat_id) await renderCreated(c.env, row, row.telegram_chat_id, await orgTz(c.env, c.get('orgId')));
   await drainOutbox(c.env);
+  return c.json({ id: taskId }, 201);
+});
 
-  const names = draft.assigneeIds.length === 0 ? [] : (await c.env.DB.prepare(
-    `SELECT name FROM users WHERE id IN (${draft.assigneeIds.map(() => '?').join(',')})`,
-  ).bind(...draft.assigneeIds).all<{ name: string }>()).results.map((r) => r.name);
-
-  // Возвращаем, КАК фраза понята: человек видит это сразу, а не через неделю.
-  return c.json({
-    id: taskId, title: draft.title, deadline: draft.deadline,
-    priority: draft.priority, assignees: names, heard: phrase,
-  }, 201);
+apiRoutes.delete('/drafts/:id', async (c) => {
+  const row = await ownDraft(c);
+  if (!row) return c.json({ error: 'not found' }, 404);
+  await removeDraft(c.env, row.id);
+  if (row.telegram_chat_id && row.telegram_message_id) {
+    await editMessageText(c.env, row.telegram_chat_id, row.telegram_message_id, '✖ Черновик удалён.');
+  }
+  return c.json({ ok: true });
 });
 
 // Срок и срочность кнопками -- то же, что кнопки под подтверждением в боте.

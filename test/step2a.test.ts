@@ -61,9 +61,9 @@ const bOnly = { id: 'b1', phone: '+3', name: 'Только Б', role: 'creator',
 // а у creator'а в списках досок своя ветка -- ветка «участник» без него слепа.
 const worker = { id: 'w', phone: '+4', name: 'Сотрудник', role: 'admin', orgs: [ORG_A, ORG_B] };
 
-// Мир: у каждой организации своя доска, задача и вложение.
-const world = () =>
-  envWith({
+// Мир: у каждой организации своя доска, задача, вложение и черновик.
+const world = async () => {
+  const env = await envWith({
     users: [both, aOnly, bOnly, worker],
     memberships: [
       { project_id: 'pa', user_id: 'both', org_id: ORG_A },
@@ -96,6 +96,14 @@ const world = () =>
       { id: 'aa', task_id: 'ta', uploaded_by: 'a1', telegram_message_id: '8', telegram_file_id: 'fa', filename: 'смета-А.pdf', mime_type: 'application/pdf', size_bytes: 5, org_id: ORG_A },
     ],
   });
+  // Черновик человека Б в организации Б. Тема нарочно совпадает с именем
+  // секретного файла: утечку ловит та же проверка тела.
+  await testEnv.DB.prepare(
+    `INSERT INTO drafts (id, org_id, author_id, title, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
+     VALUES ('db', ?, 'b1', 'секрет.pdf', '["b1"]', NULL, 'medium', 0, 'single', 'секрет.pdf', '[]', 'pattern', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+  ).bind(ORG_B).run();
+  return env;
+};
 
 // Карта фикстур: для каждого роута -- запрос, целящийся в ИДЕНТИФИКАТОРЫ
 // ОРГАНИЗАЦИИ Б. `skip` -- роуты, у которых предмета изоляции нет (публичный
@@ -138,6 +146,10 @@ const FIXTURES: Record<string, Probe> = {
   // разбора проверяется по справочнику СВОЕЙ организации.
   'POST /tasks/dictate': { path: '/tasks/dictate', method: 'POST', body: { text: 'позвонить в банк завтра', assignee_id: 'b1' } },
   'PATCH /tasks/:id/quick': { path: '/tasks/tb/quick', method: 'PATCH', body: { priority: 'urgent' } },
+  'GET /drafts': { path: '/drafts', skip: 'отдаёт СВОИ черновики в СВОЕЙ организации; идентификаторов не принимает' },
+  'PATCH /drafts/:id': { path: '/drafts/db', method: 'PATCH', body: { title: 'взломан' } },
+  'POST /drafts/:id/confirm': { path: '/drafts/db/confirm', method: 'POST', body: {} },
+  'DELETE /drafts/:id': { path: '/drafts/db', method: 'DELETE' },
 
   'PATCH /users/:id': { path: '/users/b1', method: 'PATCH', body: { name: 'взломан' } },
   // Заявку организации Б нельзя ни принять, ни отклонить сессией организации А:
@@ -237,6 +249,9 @@ describe('шаг 2a: токен организации А против иден�
     // Проба restore целилась в архивную -- она обязана остаться архивной.
     const arch = await testEnv.DB.prepare("SELECT archived_at FROM projects WHERE id='pb-arch'").first<{ archived_at: string | null }>();
     expect(arch!.archived_at).not.toBeNull();
+    const draft = await testEnv.DB.prepare("SELECT title FROM drafts WHERE id='db'").first<{ title: string }>();
+    expect(draft!.title).toBe('секрет.pdf');
+    expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM tasks WHERE org_id = ?").bind(ORG_B).first<{ n: number }>())!.n).toBe(2);
     const att = await testEnv.DB.prepare("SELECT 1 FROM attachments WHERE id='ab'").first();
     expect(att).not.toBeNull();
   });

@@ -254,20 +254,29 @@ export const leaveOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}
 export const setMyName = (name: string) =>
   request<{ ok: true; name: string }>('/me', { method: 'PATCH', body: JSON.stringify({ name }) });
 
-/** Что система поняла из фразы -- показывается человеку сразу после создания. */
-export interface DictateResult {
+/**
+ * Черновик: как фраза понята. Задачи ещё нет -- она появится только после
+ * «Создать». Тот же черновик виден в «Черновиках» бота.
+ */
+export interface DraftView {
   id: string;
   title: string;
   deadline: string | null;
   priority: Priority;
+  /** Важность названа человеком, а не поставлена по умолчанию. */
+  priority_explicit: boolean;
+  kind: 'single' | 'each' | 'any' | 'ack';
+  assignee_ids: string[];
   assignees: string[];
   heard: string;
+  media_count: number;
+  created_at: string;
 }
 
-/** Задача одной фразой: текстом или голосом. Тот же разбор, что у бота. */
+/** Фраза -- в черновик: текстом или голосом. Тот же разбор, что у бота. */
 export function dictateTask(
   input: ({ text: string } | { audio: Blob }) & { assignee_id?: string; mode?: 'mine' | 'assigned'; priority?: Priority },
-): Promise<DictateResult> {
+): Promise<DraftView> {
   if ('audio' in input) {
     const form = new FormData();
     form.append('audio', input.audio, 'voice.webm');
@@ -276,10 +285,19 @@ export function dictateTask(
     if (input.priority) form.append('priority', input.priority);
     // Заголовок Content-Type НЕ ставим: границу multipart проставляет сам
     // браузер, и ручной заголовок её затрёт.
-    return request<DictateResult>('/tasks/dictate', { method: 'POST', body: form, headers: {} });
+    return request<DraftView>('/tasks/dictate', { method: 'POST', body: form, headers: {} });
   }
-  return request<DictateResult>('/tasks/dictate', { method: 'POST', body: JSON.stringify(input) });
+  return request<DraftView>('/tasks/dictate', { method: 'POST', body: JSON.stringify(input) });
 }
+
+export const getDrafts = () => request<{ drafts: DraftView[] }>('/drafts').then((r) => r.drafts);
+/** Срок принимается и как «2026-09-11»: час дописывает сервер в поясе организации. */
+export const patchDraft = (
+  id: string,
+  patch: { title?: string; assignee_ids?: string[]; deadline?: string | null; priority?: Priority },
+) => request<DraftView>(`/drafts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+export const confirmDraft = (id: string) => request<{ id: string }>(`/drafts/${id}/confirm`, { method: 'POST' });
+export const deleteDraft = (id: string) => request<{ ok: true }>(`/drafts/${id}`, { method: 'DELETE' });
 
 /** Срок и срочность в два касания -- то же, что кнопки под подтверждением бота.
  *  Срок принимается и как «2026-09-11»: час дописывает сервер в поясе организации. */

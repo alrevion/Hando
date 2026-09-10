@@ -143,7 +143,7 @@ export function TaskFormModal({ task, members, otherTasks, onClose, onSubmit }: 
           </div>
 
           <div className="field">
-            <span className="lbl">Срочность</span>
+            <span className="lbl">Важность</span>
             <div className="chips" style={{ paddingBottom: 0 }}>
               {PRIORITIES.map((p) => (
                 <button

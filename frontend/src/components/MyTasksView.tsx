@@ -8,7 +8,7 @@ import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
 import { isMine } from '../lib/tasks';
 
-// Порядок срочности берётся из самого PRIORITIES: он уже перечислен от «Срочно»
+// Порядок важности берётся из самого PRIORITIES: он уже перечислен от «Высокая»
 // к «Низко». Отдельная таблица порядка означала бы вторую копию, которую однажды
 // поправят только в одном месте.
 const PRIORITY_RANK: Record<Priority, number> = Object.fromEntries(

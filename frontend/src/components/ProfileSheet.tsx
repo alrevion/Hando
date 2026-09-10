@@ -3,9 +3,10 @@ import { Sheet } from './Sheet';
 import { Check, LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { User } from '../types';
 import {
-  ApiError, createOrg, deleteOrg, getMe, getMyOrgs, getPacks, joinOrgByCode, leaveOrg,
-  renameOrg, setMyName, switchOrg, type MyOrg, type OrgPack,
+  ApiError, createOrg, deleteOrg, getDrafts, getMe, getMyOrgs, getPacks, joinOrgByCode, leaveOrg,
+  renameOrg, setMyName, switchOrg, type DraftView, type MyOrg, type OrgPack,
 } from '../lib/api';
+import { DraftCard } from './DraftCard';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 
@@ -37,8 +38,13 @@ const JOIN_ERROR: Record<string, string> = {
  */
 export function ProfileSheet({ user, onClose }: { user: User; onClose: () => void }) {
   const { setUser } = useAuth();
-  const { refresh } = useData();
+  const { refresh, users } = useData();
   const [orgs, setOrgs] = useState<MyOrg[]>([]);
+  // Черновики -- то же, что кнопка «Черновики» в боте: продиктованное, но не
+  // подтверждённое. Оно не пропадает и ждёт здесь.
+  const [drafts, setDrafts] = useState<DraftView[]>([]);
+  const loadDrafts = () => { getDrafts().then(setDrafts).catch(() => setDrafts([])); };
+  useEffect(loadDrafts, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -138,6 +144,26 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
             </div>
           </div>
         )}
+
+        {/* ---- черновики ---- */}
+        {drafts.length > 0 ? (
+          <>
+            <h3 className="sec-title">Черновики · {drafts.length}</h3>
+            <ul className="stack">
+              {drafts.map((d) => (
+                <li key={d.id}>
+                  <DraftCard
+                    draft={d}
+                    users={users}
+                    me={user}
+                    onCreated={async () => { loadDrafts(); await refresh(); }}
+                    onDeleted={loadDrafts}
+                  />
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
 
         {/* ---- организации ---- */}
         <h3 className="sec-title">Организации</h3>

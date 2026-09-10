@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Mic, Square, X } from 'lucide-react';
-import type { Priority, User } from '../types';
-import { ApiError, dictateTask, type DictateResult } from '../lib/api';
-import { PRIORITIES } from '../lib/priority';
-import { QuickEdit } from './QuickEdit';
-import { TaskMeta } from './TaskMeta';
+import type { User } from '../types';
+import { ApiError, dictateTask, type DraftView } from '../lib/api';
+import { DraftCard } from './DraftCard';
 import { useData } from '../context/DataContext';
 import { Sheet } from './Sheet';
 
@@ -18,28 +16,24 @@ function canRecord(): boolean {
 /**
  * Новая задача одной фразой: наговорить или написать.
  *
- * Разбирает её тот же код, что разбирает сообщения боту, -- срок и адресат
- * достаются из самой фразы. Поэтому здесь нет полей «срочность», «зависит от»
- * и прочего: подробная форма живёт на доске, а это быстрый ввод под большой
- * палец.
+ * Разбирает её тот же код, что разбирает сообщения боту, и результат -- тот
+ * же ЧЕРНОВИК: карточка «как понял» с полями, которые правятся на месте.
+ * Задача появляется только после «Создать». Полей «кому» и «важность» до
+ * разбора нет нарочно: их видно и правится в карточке, а форма до неё --
+ * это одна фраза под большой палец.
  *
- * `mode` задаёт, кому задача по умолчанию: на «Моих задачах» -- себе, на
- * «Поручениях» и доске нужно выбрать человека, иначе поручение молча осталось
- * бы у автора.
+ * `mode` задаёт, кому по умолчанию: на «Моих задачах» -- себе, на
+ * «Поручениях» адресат без имени во фразе остаётся пустым, и карточка спросит.
  */
 export function CreateSheet({
   mode, me, onClose,
 }: { mode: 'mine' | 'assigned'; me: User; onClose: () => void }) {
-  const { users, tasks, refresh } = useData();
+  const { users, refresh } = useData();
   const [text, setText] = useState('');
-  const [assignee, setAssignee] = useState(mode === 'mine' ? me.id : '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<DictateResult | null>(null);
-  // Срочность: пусто -- «как во фразе», иначе перебивает разбор.
-  const [priority, setPriority] = useState<Priority | ''>('');
-  // Сервер не понял, кому поручение: подсказываем и просим выбрать.
-  const [needWho, setNeedWho] = useState(false);
+  const [draft, setDraft] = useState<DraftView | null>(null);
+  const [created, setCreated] = useState(false);
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
 
@@ -53,23 +47,9 @@ export function CreateSheet({
     setBusy(true);
     setError(null);
     try {
-      const res = await dictateTask({
-        ...body,
-        assignee_id: assignee || undefined,
-        mode,
-        priority: priority || undefined,
-      });
-      setDone(res);
-      setNeedWho(false);
-      await refresh();
+      setDraft(await dictateTask({ ...body, mode }));
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'NEED_ASSIGNEE') {
-        // Имя во фразе не узнано: не назначаем молча на автора, а спрашиваем.
-        setNeedWho(true);
-        setError('Кому это поручение? Во фразе я никого не узнал.');
-      } else {
-        setError(err instanceof ApiError ? err.message : 'Не получилось. Попробуйте ещё раз.');
-      }
+      setError(err instanceof ApiError ? err.message : 'Не получилось. Попробуйте ещё раз.');
     } finally {
       setBusy(false);
     }
@@ -101,41 +81,36 @@ export function CreateSheet({
     }
   }
 
-  // Настоящая задача из общего склада: у неё уже актуальные срок и срочность,
-  // поэтому кнопки правки показывают состояние, а не то, что вернулось разбором.
-  const created = done ? tasks.find((t) => t.id === done.id) : undefined;
-  const needsPerson = mode !== 'mine' && !assignee && needWho;
+  const reset = () => { setDraft(null); setCreated(false); setText(''); };
 
   return (
     <Sheet labelledBy="create-title" onClose={onClose}>
       <div className="sheet-head">
         <h2 id="create-title" className="sheet-title">
-          {mode === 'mine' ? 'Новая задача себе' : 'Новое поручение'}
+          {created ? 'Создано' : draft ? 'Проверьте черновик' : mode === 'mine' ? 'Новая задача себе' : 'Новое поручение'}
         </h2>
         <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
       </div>
 
-      {done ? (
+      {created ? (
         <>
-          {/* Показываем, КАК фраза понята: не тот адресат или не тот срок видно
-              сразу, а не через неделю. */}
-          <div className="alert alert-ok">Записал.</div>
-          {/* Срок и срочность берём из ЖИВОЙ задачи, а не из ответа разбора:
-              их тут же правят кнопками ниже, и карточка обязана это показывать. */}
-          <div className="card">
-            <span className="t-title">{created?.title ?? done.title}</span>
-            <span className="t-meta"><span>Кому: {done.assignees.join(', ') || 'вам'}</span></span>
-            {created ? <TaskMeta task={created} /> : null}
-          </div>
-
-          {/* Срок и срочность правятся прямо здесь: без срока нет ни
-              напоминания, ни просрочки, и заставлять ради этого идти на доску
-              значит почти гарантированно оставить задачу без срока. */}
-          {created ? <QuickEdit task={created} /> : null}
+          <div className="alert alert-ok">Поручение создано{draft?.assignees.length ? ` — ${draft.assignees.join(', ')} получит уведомление` : ''}.</div>
           <div className="btn-row">
-            <button type="button" className="btn" onClick={() => { setDone(null); setText(''); }}>Ещё одну</button>
+            <button type="button" className="btn" onClick={reset}>Ещё одно</button>
             <button type="button" className="btn btn-primary" onClick={onClose}>Готово</button>
           </div>
+        </>
+      ) : draft ? (
+        <>
+          <DraftCard
+            draft={draft}
+            users={users}
+            me={me}
+            onChange={setDraft}
+            onCreated={async () => { setCreated(true); await refresh(); }}
+            onDeleted={reset}
+          />
+          <p className="hint">Черновик не пропадёт: он есть и в «Черновиках» бота, пока вы не нажмёте «Создать».</p>
         </>
       ) : (
         <>
@@ -153,42 +128,7 @@ export function CreateSheet({
                 placeholder={mode === 'mine' ? 'Сдать отчёт в пятницу' : 'Азизу подготовить отчёт до пятницы'}
                 onChange={(e) => setText(e.target.value)}
               />
-              <p className="hint">Срок можно назвать словами: «завтра», «до пятницы», «в пт».</p>
-            </div>
-
-            {mode !== 'mine' ? (
-              <div className="field">
-                <label className="lbl" htmlFor="create-who">Кому</label>
-                <select
-                  id="create-who"
-                  className="inp"
-                  value={assignee}
-                  aria-invalid={needWho}
-                  onChange={(e) => setAssignee(e.target.value)}
-                >
-                  <option value="">Из фразы</option>
-                  {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </select>
-              </div>
-            ) : null}
-
-            <div className="field">
-              <span className="lbl">Срочность</span>
-              <div className="chips" style={{ paddingBottom: 0 }}>
-                <button type="button" className={priority === '' ? 'chip on' : 'chip'} onClick={() => setPriority('')}>
-                  Из фразы
-                </button>
-                {PRIORITIES.map((p) => (
-                  <button
-                    key={p.value}
-                    type="button"
-                    className={priority === p.value ? 'chip on' : 'chip'}
-                    onClick={() => setPriority(p.value)}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
+              <p className="hint">Срок и важность можно назвать словами: «завтра до трёх», «в пт», «срочно». Потом всё можно поправить.</p>
             </div>
 
             <div className="btn-row">
@@ -203,11 +143,10 @@ export function CreateSheet({
                   {recording ? 'Стоп' : 'Наговорить'}
                 </button>
               ) : null}
-              <button type="submit" className="btn btn-primary" disabled={busy || !text.trim() || needsPerson}>
-                {busy ? 'Отправляю…' : 'Создать'}
+              <button type="submit" className="btn btn-primary" disabled={busy || !text.trim()}>
+                {busy ? 'Разбираю…' : 'Далее'}
               </button>
             </div>
-            {needsPerson ? <p className="hint">Выберите, кому поручение, или назовите имя в самой фразе.</p> : null}
           </form>
         </>
       )}

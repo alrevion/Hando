@@ -16,7 +16,8 @@ export async function createFromDraft(
   env: Env,
   who: { userId: string; orgId: string },
   draft: Draft,
-  media: Media | null,
+  /** Вложения черновика. Голосовое тоже здесь -- оно остаётся доказательством. */
+  media: Media[],
   rawPhrase: string,
 ): Promise<string | null> {
   const project = await env.DB.prepare(
@@ -51,7 +52,7 @@ export async function createFromDraft(
     ).bind(taskId, who.orgId, projectId, draft.title, who.userId, draft.kind,
       // source различает разбор паттернами и моделью -- это и есть замер для
       // порога-гейта шага 4b: сколько фраз обошлось без обращения к сети.
-      media?.hasAudio ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.priority, draft.deadline),
+      media.some((m) => m.hasAudio) ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.priority, draft.deadline),
     env.DB.prepare(
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -67,20 +68,20 @@ export async function createFromDraft(
   }
   await env.DB.batch(writes);
 
-  // Файл кладётся ПОСЛЕ задачи и отдельно: сеть может подвести, и терять из-за
-  // этого разобранное поручение нельзя.
-  if (media) {
-    const stored = await storeByFileId(env, media);
-    if (stored) {
-      await env.DB.prepare(
-        `INSERT INTO attachments (id, org_id, task_id, telegram_file_id, telegram_message_id, filename, mime_type, size_bytes, uploaded_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(uuid(), who.orgId, taskId, stored.fileId, stored.messageId, media.filename, media.mimeType, media.sizeBytes, who.userId).run();
-      // Голосовое остаётся доказательством: «покажи, что я тогда сказал».
-      if (media.hasAudio) {
-        await env.DB.prepare('UPDATE tasks SET origin_audio_id = (SELECT id FROM attachments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1) WHERE id = ?')
-          .bind(taskId, taskId).run();
-      }
+  // Файлы кладутся ПОСЛЕ задачи и отдельно: сеть может подвести, и терять
+  // из-за этого разобранное поручение нельзя.
+  for (const m of media) {
+    const stored = await storeByFileId(env, m);
+    if (!stored) continue;
+    const attachmentId = uuid();
+    await env.DB.prepare(
+      `INSERT INTO attachments (id, org_id, task_id, telegram_file_id, telegram_message_id, filename, mime_type, size_bytes, uploaded_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(attachmentId, who.orgId, taskId, stored.fileId, stored.messageId, m.filename, m.mimeType, m.sizeBytes, who.userId).run();
+    // Голосовое остаётся доказательством: «покажи, что я тогда сказал».
+    if (m.hasAudio) {
+      await env.DB.prepare('UPDATE tasks SET origin_audio_id = COALESCE(origin_audio_id, ?) WHERE id = ?')
+        .bind(attachmentId, taskId).run();
     }
   }
   return taskId;

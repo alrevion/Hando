@@ -22,8 +22,10 @@ export type Draft = {
   title: string;
   assigneeIds: string[];
   deadline: string | null;
-  /** Срочность из самой фразы; medium -- когда о ней не сказали. */
+  /** Важность из самой фразы; medium -- когда о ней не сказали. */
   priority: 'urgent' | 'medium' | 'low';
+  /** Названа ли важность словами. Если нет -- черновик предложит кнопки. */
+  priorityExplicit: boolean;
   kind: 'single' | 'each' | 'ack';
   /** Чем разобрано -- для замера порога-гейта шага 4b. */
   source: 'pattern' | 'llm' | 'fallback';
@@ -98,6 +100,17 @@ export function matchPeople(text: string, people: Person[]): { ids: string[]; am
 // Полное слово ИЛИ сокращение. Сокращения обязаны стоять за границами слова:
 // без них «ср» совпало бы внутри «срочно» и «сроки», а «вс» -- внутри «всё».
 // Индекс массива -- номер дня недели у getUTCDay().
+// Родительный падеж: «2 октября», «до 15 марта». Индекс + 1 = номер месяца.
+const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+// «к трём», «до пяти вечера», «к часу». Голос почти всегда даёт числительное
+// словом, а не цифрой -- без этого «завтра до трёх часов дня» теряло время.
+const HOUR_WORDS: Record<string, number> = {
+  'часу': 1, 'одного': 1, 'двух': 2, 'трёх': 3, 'трех': 3, 'четырёх': 4, 'четырех': 4,
+  'пяти': 5, 'шести': 6, 'семи': 7, 'восьми': 8, 'девяти': 9, 'десяти': 10,
+  'одиннадцати': 11, 'двенадцати': 12,
+};
+
 const WEEKDAYS = [
   'воскресень[а-яё]*|вс',
   'понедельник[а-яё]*|пн',
@@ -187,6 +200,23 @@ export function matchDeadline(text: string, now: Date, timeZone: string): { iso:
   }
 
   if (!base) {
+    // «2 октября», «до 15 марта», «к 2 октября 2026 года». Год необязателен:
+    // без него берётся ближайший такой день вперёд -- дата, которая в этом
+    // году уже прошла, означает следующий год.
+    const m = lower.match(new RegExp(
+      `(?:(?:до|к|на|в)\\s+)?(\\d{1,2})(?:-?го)?\\s+(${MONTHS_GEN.join('|')})(?:\\s+(\\d{4})(?:\\s*г(?:ода|\\.)?)?)?`, 'i'));
+    if (m) {
+      const day = Number(m[1]);
+      const month = MONTHS_GEN.indexOf(m[2].toLowerCase()) + 1;
+      const year = m[3] ? Number(m[3]) : today.y;
+      let d = new Date(Date.UTC(year, month - 1, day));
+      if (!m[3] && d < midnight) d = new Date(Date.UTC(year + 1, month - 1, day));
+      base = d;
+      mark(...m[0].split(/\s+/));
+    }
+  }
+
+  if (!base) {
     for (let i = 0; i < WEEKDAYS.length; i++) {
       // Границы слова -- явные (B/E), а не \\b: в JS \\b определена через ASCII и
       // на кириллице не работает. Без них «ср» совпадало бы внутри «срочно».
@@ -217,24 +247,38 @@ export function matchDeadline(text: string, now: Date, timeZone: string): { iso:
     }
   }
 
+  // Время суток, если названо: «к 9 утра», «в 15:00», «до трёх часов дня».
+  // Отрицательный просмотр вперёд: «до 5-го числа» и «до 2 октября» -- это
+  // ДАТЫ, а не пять и два часа утра; раньше они давали срок 05:00 и 02:00.
+  const time = lower.match(new RegExp(
+    `(?:^|\\s)(?:в|к|до)\\s+(\\d{1,2}|${Object.keys(HOUR_WORDS).join('|')})(?::(\\d{2}))?` +
+    `(?![-\\s]*(?:го|числ|${MONTHS_GEN.join('|')}))\\s*(?:час[а-яё]*)?\\s*(утра|дня|вечера|ночи)?`, 'i'));
+
+  // Время без даты -- это сегодня; если сегодня уже прошло -- завтра.
+  const dateSaid = base !== null;
+  if (!base && time) base = midnight;
   if (!base) return { iso: null, usedWords: used };
 
-  // Время суток, если названо: «к 9 утра», «в 15:00».
-  const time = lower.match(/(?:в|к|до)\s+(\d{1,2})(?::(\d{2}))?\s*(утра|дня|вечера)?/);
   if (time) {
-    let h = Number(time[1]);
-    if (time[3] === 'вечера' && h < 12) h += 12;
-    if (time[3] === 'дня' && h < 12) h += 12;
+    const byWord = !/^\d/.test(time[1]);
+    let h = byWord ? HOUR_WORDS[time[1].toLowerCase()] : Number(time[1]);
+    const q = time[3]?.toLowerCase();
+    if ((q === 'вечера' || q === 'дня') && h < 12) h += 12;
+    // «к трём» и «к 3» без уточнения в рабочем разговоре -- это 15:00, а не
+    // три ночи; «в 3:30» с минутами -- тоже. Утро называют словом: «в 6 утра».
+    else if (!q && h >= 1 && h <= 6) h += 12;
     if (h >= 0 && h <= 23) {
-      mark(...time[0].split(/\s+/));
+      mark(...time[0].trim().split(/\s+/));
       const minute = Number(time[2] ?? 0);
       const wall = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), h, minute);
-      const iso = localIso(
+      let iso = localIso(
         new Date(wall).getUTCFullYear(), new Date(wall).getUTCMonth() + 1, new Date(wall).getUTCDate(),
         h, timeZone,
       );
       // Минуты у «в 15:30» дописываются к часу, посчитанному в поясе.
-      return { iso: new Date(new Date(iso).getTime() + minute * 60000).toISOString(), usedWords: used };
+      iso = new Date(new Date(iso).getTime() + minute * 60000).toISOString();
+      if (!dateSaid && new Date(iso) < now) iso = new Date(new Date(iso).getTime() + 864e5).toISOString();
+      return { iso, usedWords: used };
     }
   }
   return { iso: at(base), usedWords: used };
@@ -242,7 +286,9 @@ export function matchDeadline(text: string, now: Date, timeZone: string): { iso:
 
 // ------------------------------------------------------------------ слой паттернов
 
-const LEAD_NOISE = /^(?:пожалуйста|слушай|короче|так|ну|и|а)\s+/i;
+// Служебное начало фразы: «напомни, что…», «нужно, чтобы…», «поставь задачу…».
+// Это не суть поручения, а способ его сказать, и в названии оно не нужно.
+const LEAD_NOISE = /^(?:(?:пожалуйста|слушай|короче|так|ну|и|а|запиши(?:те)?|поставь(?:те)? задачу|напомни(?:те)?(?: мне)?|напомню)[,\s]+(?:что\s+)?)+/i;
 
 // ВАЖНО про регулярки ниже: в JS `\b` и `\w` определены ЧЕРЕЗ ASCII, поэтому
 // `\bзавтра\b` не совпадает НИКОГДА, а `пятниц\w*` обрывается на «ы».
@@ -334,7 +380,7 @@ function buildTitle(text: string, used: Set<string>[]): string {
     // Предлоги НЕ выкидываются огулом: «в банк» -- часть сути поручения. Те,
     // что относились к сроку («до пятницы»), уже вычеркнуты как слова даты.
     .filter((w) => !drop.has(w.toLowerCase().replace(/^[^а-яёa-z0-9]+|[^а-яёa-z0-9]+$/gi, ''))
-      && !/^(?:напомни|поручи|скажи|передай|мне|себе|я)$/i.test(w))
+      && !/^(?:напомни|напомню|поручи|скажи|передай|мне|себе|я|нужно|надо|необходимо|чтобы)$/i.test(w))
     .join(' ')
     .replace(/\s+/g, ' ')
     // Вычеркнутое слово оставляет за собой предлог: «подготовить кабинет к
@@ -364,7 +410,7 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
   // переспроса управление не доходило: фраза уезжала в модель, та тоже не могла
   // выбрать, и задача молча создавалась на самого автора.
   if (ambiguous.length > 0) {
-    return { title: '', assigneeIds: [], deadline: iso, priority, kind: 'single', source: 'pattern', ambiguous };
+    return { title: '', assigneeIds: [], deadline: iso, priority, priorityExplicit: priorityWords.size > 0, kind: 'single', source: 'pattern', ambiguous };
   }
 
   // Адресат не назван, но назван СРОК -- это напоминание себе: «сдать отчёт в
@@ -384,6 +430,7 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
     assigneeIds: assignees,
     deadline: iso,
     priority,
+    priorityExplicit: priorityWords.size > 0,
     // «Ознакомиться» в отрасли называется по-своему: приказ, инструктаж по ТБ,
     // техкарта, стоп-лист. Базовый словарь и отраслевой равноправны.
     kind: ACK_MARKERS.test(clean) || packRe(packId).ack?.test(clean) ? 'ack' : assignees.length > 1 ? 'each' : 'single',
@@ -401,7 +448,7 @@ export async function parseByLlm(env: Env, text: string, people: Person[], model
   const roster = people.map((p) => `${p.id}=${p.name}`).join('; ');
   const prompt = [
     'Разбери поручение в JSON. Отвечай ТОЛЬКО JSON, без пояснений.',
-    'Поля: title (суть без имён и дат), assignee_ids (массив id из списка), deadline (ISO 8601 или null), kind ("single"|"each"|"ack").',
+    'Поля: title (суть поручения: 2-6 слов, повелительная форма, без имён, дат и слов о важности -- «Подготовить отчёт», а не «Артуру нужно подготовить отчёт до пятницы»), assignee_ids (массив id из списка), deadline (ISO 8601 или null), kind ("single"|"each"|"ack").',
     'kind="ack" если это объявление/приказ «ознакомиться», а не задача.',
     `Люди: ${roster}`,
     `Фраза: ${text}`,
@@ -434,8 +481,9 @@ export async function parseByLlm(env: Env, text: string, people: Person[], model
       title: parsed.title.trim(),
       assigneeIds: ids,
       deadline: parsed.deadline ?? null,
-      // Модель о срочности не спрашивается: словарь надёжнее и дешевле.
+      // Модель о важности не спрашивается: словарь надёжнее и дешевле.
       priority: matchPriority(text, packId).priority,
+      priorityExplicit: matchPriority(text, packId).usedWords.size > 0,
       kind: parsed.kind === 'each' || parsed.kind === 'ack' ? parsed.kind : ids.length > 1 ? 'each' : 'single',
       source: 'llm',
       ambiguous: [],
@@ -479,6 +527,7 @@ export async function parseTask(
     assigneeIds: [selfId],
     deadline: null,
     priority,
+    priorityExplicit: priorityWords.size > 0,
     kind: 'single',
     source: 'fallback',
     ambiguous: [],
@@ -502,6 +551,118 @@ export async function transcribe(env: Env, audio: Blob, filename: string): Promi
     if (!res.ok) return null;
     const data = (await res.json()) as { text?: string };
     return data.text?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+
+// ------------------------------------------------------------ правка черновика
+
+export type DraftFields = {
+  title: string;
+  assigneeIds: string[];
+  deadline: string | null;
+  priority: Draft['priority'];
+  priorityExplicit: boolean;
+};
+
+// Слова, которыми люди ПРАВЯТ, а не диктуют заново: «Ивия -- это Ева», «не
+// пятница, а вторник», «замени срок». Такая поправка меняет одно поле и никогда
+// не становится новой темой -- без этого «Ивия это Ева» превратилось бы в
+// поручение с темой «Ивия это».
+const EDIT_MARKERS = /(?:^|[\s,])(?:это|вместо|не\s+\S+,?\s+а|замени[а-яё]*|исправ[а-яё]*|поменя[а-яё]*|измени[а-яё]*|пусть будет)(?:$|[\s,])/i;
+
+/**
+ * Поправка к черновику -- частичное обновление полей.
+ *
+ * Сначала то, что распознаётся само: имя, срок, важность. Затем модель, если
+ * ключ есть: она понимает «Ивия -- это Ева» и «тема не та, надо «сдать отчёт»».
+ * Без модели: имя/срок/важность из поправки заменяют свои поля, а если человек
+ * просто прислал всю фразу заново (есть имя и есть суть) -- заменяется всё.
+ */
+export async function refineDraft(
+  env: Env,
+  current: DraftFields,
+  correction: string,
+  people: Person[],
+  timeZone: string,
+  packId?: string | null,
+  now: Date = new Date(),
+): Promise<Partial<DraftFields>> {
+  const clean = correction.replace(LEAD_NOISE, '').trim();
+  // «не Азизу, а Беку»: тот, кто после «не», -- прежний адресат, его ищем
+  // НЕ надо, иначе черновик получил бы обоих.
+  const who = matchPeople(clean.replace(/(?:^|\s)не\s+\S+,?(?=\s+а\s)/i, ' '), people);
+  const when = matchDeadline(clean, now, timeZone);
+  const pri = matchPriority(clean, packId);
+
+  const patch: Partial<DraftFields> = {};
+  if (who.ids.length > 0 && who.ambiguous.length === 0) patch.assigneeIds = who.ids;
+  if (when.iso) patch.deadline = when.iso;
+  if (pri.usedWords.size > 0) { patch.priority = pri.priority; patch.priorityExplicit = true; }
+
+  const rest = buildTitle(clean, [who.usedWords, when.usedWords, pri.usedWords]);
+  const isEdit = EDIT_MARKERS.test(clean);
+  // Полная фраза заново: назван человек, осталась суть, и это не «X -- это Y».
+  if (!isEdit && who.ids.length > 0 && rest.split(' ').length >= 2) {
+    patch.title = rest[0].toUpperCase() + rest.slice(1);
+  }
+
+  if (env.GROQ_API_KEY) {
+    const byLlm = await refineByLlm(env, current, correction, people, env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b');
+    if (byLlm) return { ...patch, ...byLlm };
+  }
+
+  // Ничего не распозналось и это не правка -- значит человек переформулировал суть.
+  if (Object.keys(patch).length === 0 && !isEdit && rest.length >= 3) {
+    patch.title = rest[0].toUpperCase() + rest.slice(1);
+  }
+  return patch;
+}
+
+async function refineByLlm(
+  env: Env,
+  current: DraftFields,
+  correction: string,
+  people: Person[],
+  model: string,
+): Promise<Partial<DraftFields> | null> {
+  const roster = people.map((p) => `${p.id}=${p.name}`).join('; ');
+  const names = current.assigneeIds.map((id) => people.find((p) => p.id === id)?.name ?? id).join(', ');
+  const prompt = [
+    'Есть черновик поручения. Человек прислал поправку. Верни JSON ТОЛЬКО с полями, которые надо изменить; остальные не включай.',
+    'Возможные поля: title (2-6 слов, повелительная форма, без имён и дат), assignee_ids (массив id из списка), deadline (ISO 8601 или null), priority ("urgent"|"medium"|"low").',
+    `Черновик: title="${current.title}"; кому=${names || '—'}; deadline=${current.deadline ?? 'null'}; priority=${current.priority}.`,
+    `Люди: ${roster}`,
+    `Поправка: ${correction}`,
+  ].join('\n');
+  try {
+    const res = await fetch(`${GROQ}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0, response_format: { type: 'json_object' } }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { title?: string; assignee_ids?: string[]; deadline?: string | null; priority?: string };
+    const out: Partial<DraftFields> = {};
+    if (typeof parsed.title === 'string' && parsed.title.trim().length >= 3) out.title = parsed.title.trim();
+    if (Array.isArray(parsed.assignee_ids)) {
+      const known = new Set(people.map((p) => p.id));
+      const ids = parsed.assignee_ids.filter((id) => known.has(id));
+      if (ids.length > 0) out.assigneeIds = ids;
+    }
+    if (parsed.deadline === null || (typeof parsed.deadline === 'string' && !Number.isNaN(Date.parse(parsed.deadline)))) {
+      if (parsed.deadline !== undefined) out.deadline = parsed.deadline;
+    }
+    if (parsed.priority === 'urgent' || parsed.priority === 'medium' || parsed.priority === 'low') {
+      out.priority = parsed.priority;
+      out.priorityExplicit = true;
+    }
+    return out;
   } catch {
     return null;
   }

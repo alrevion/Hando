@@ -239,11 +239,25 @@ describe('бот: поручение из фразы, из фото и из кр
     }, env);
   const from = { id: 'tg-boss', first_name: 'Директор' };
 
-  it('текстом: задача создана, адресат и срок разобраны', async () => {
+  // Подтверждение -- нажатие «Создать» под карточкой черновика.
+  const confirm = async (env: Env) => {
+    const d = (await testEnv.DB.prepare('SELECT id FROM drafts').first<{ id: string }>())!;
+    await hook(env, { callback_query: { id: 'cb', from, data: `dc:${d.id}`, message: { chat: { id: 'tg-boss' }, message_id: 1 } } });
+  };
+
+  it('текстом: сначала черновик, задача -- только после «Создать»', async () => {
     const env = await world();
-    tg();
+    const spy = tg();
     await hook(env, { message: { chat: { id: 'tg-boss', type: 'private' }, from, text: 'Азизу завтра подготовить отчёт' } });
 
+    // Задачи ещё нет: разбор показан человеку, и он решает.
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM tasks').first<{ n: number }>())!.n).toBe(0);
+    const card = sent(spy).at(-1)!;
+    expect(card).toContain('Черновик');
+    expect(card).toContain('Подготовить отчёт');
+    expect(card).toContain('Азиз');
+
+    await confirm(env);
     const task = await testEnv.DB.prepare('SELECT title, kind, source, deadline FROM tasks').first<{ title: string; kind: string; source: string; deadline: string }>();
     expect(task!.title).toBe('Подготовить отчёт');
     expect(task!.source).toBe('bot'); // разобрано паттернами, без обращения к сети
@@ -251,9 +265,11 @@ describe('бот: поручение из фразы, из фото и из кр
 
     const a = await testEnv.DB.prepare('SELECT user_id FROM task_assignees').first<{ user_id: string }>();
     expect(a!.user_id).toBe('u-aziz');
+    // Черновик исчез: он был путём к задаче, а не второй копией.
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
   });
 
-  it('фото с подписью: задача создана И файл приложен', async () => {
+  it('фото с подписью: черновик с вложением, после «Создать» файл приложен к задаче', async () => {
     const env = await world();
     tg();
     await hook(env, {
@@ -263,6 +279,7 @@ describe('бот: поручение из фразы, из фото и из кр
         caption: 'Азизу завтра починить это',
       },
     });
+    await confirm(env);
     const task = await testEnv.DB.prepare('SELECT id, title FROM tasks').first<{ id: string; title: string }>();
     expect(task!.title).toBe('Починить это');
     const att = await testEnv.DB.prepare('SELECT filename, mime_type FROM attachments WHERE task_id = ?').bind(task!.id).first<{ filename: string; mime_type: string }>();

@@ -20,7 +20,11 @@ import { myAssignee, transitionAssignee } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { approveJoin, createOrg, ensureUser, joinByCode, orgDepartments, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
-import { createFromDraft, setTaskDeadline } from './intake';
+import { setTaskDeadline } from './intake';
+import {
+  assigneesOf, confirmDraft, draftByMessage, formatWhen, getDraft, latestDraft, listDrafts, mediaOf,
+  patchDraft, removeDraft, renderCreated, renderDraft, saveDraft, type DraftPatch,
+} from './drafts';
 import { categoryByButton, packByButton } from './packs';
 import {
   askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
@@ -28,7 +32,7 @@ import {
   setState, switchOrg, type OrgRow, type Screen,
 } from './menu';
 import { download, extractMedia } from './media';
-import { parseTask, transcribe, localIso, localToday } from './parse';
+import { parseTask, refineDraft, transcribe, localIso, localToday } from './parse';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -40,7 +44,11 @@ type TgUser = { id: number; username?: string; first_name?: string; last_name?: 
 type Update = {
   // Медиа-поля описаны в media.ts; здесь они приходят как есть и передаются
   // туда через extractMedia -- дублировать их формы в двух местах незачем.
-  message?: { chat: { id: number; type?: string }; from?: TgUser; text?: string; caption?: string };
+  message?: {
+    chat: { id: number; type?: string }; from?: TgUser; text?: string; caption?: string;
+    /** На что отвечают. Ответ на карточку черновика -- это поправка к нему. */
+    reply_to_message?: { message_id: number };
+  };
   callback_query?: { id: string; from: TgUser; data?: string; message?: { chat: { id: number }; message_id: number } };
 };
 
@@ -138,6 +146,29 @@ function deptKeyboard(applicantId: string, roleCode: string, depts: { name: stri
  * если слов не было -- остаётся средней, и поднять её было негде. В приложении
  * такие кнопки есть; правило «что можно там, можно и тут» требует их и здесь.
  */
+/**
+ * Срок из короткого кода кнопки: t0 -- сегодня, t1 -- завтра, we -- ближайшая
+ * пятница (включая сегодняшнюю), YYYY-MM-DD -- день из календаря. Один расчёт
+ * на задачи и на черновики.
+ */
+function resolveDue(arg: string, today: { y: number; m: number; d: number }, tz: string): string | null {
+  const day = (offset: number) => {
+    const d = new Date(Date.UTC(today.y, today.m - 1, today.d + offset));
+    return localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), DUE_HOUR, tz);
+  };
+  if (arg === 't0') return day(0);
+  if (arg === 't1') return day(1);
+  if (arg === 'we') {
+    const base = new Date(Date.UTC(today.y, today.m - 1, today.d));
+    return day((5 - ((base.getUTCDay() + 6) % 7) + 7) % 7);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(arg)) {
+    const [y, m, d] = arg.split('-').map(Number);
+    return localIso(y, m, d, DUE_HOUR, tz);
+  }
+  return null;
+}
+
 function dueKeyboard(taskId: string): InlineKeyboard {
   return {
     inline_keyboard: [
@@ -164,7 +195,12 @@ function dueKeyboard(taskId: string): InlineKeyboard {
  * вовсе -- он есть только в мини-приложении, а ради одной даты гонять человека
  * в приложение и обратно дороже, чем нажать день прямо в переписке.
  */
-function calendarKeyboard(taskId: string, y: number, m: number, today: { y: number; m: number; d: number }): InlineKeyboard {
+function calendarKeyboard(
+  taskId: string, y: number, m: number, today: { y: number; m: number; d: number },
+  /** Чей срок выбираем: задачи (due/cal) или черновика (dd/dcal). */
+  scope: 'task' | 'draft' = 'task',
+): InlineKeyboard {
+  const P = scope === 'task' ? { due: 'due', cal: 'cal' } : { due: 'dd', cal: 'dcal' };
   const first = new Date(Date.UTC(y, m - 1, 1));
   // Понедельник -- первый столбец: getUTCDay() считает от воскресенья.
   const lead = (first.getUTCDay() + 6) % 7;
@@ -180,9 +216,9 @@ function calendarKeyboard(taskId: string, y: number, m: number, today: { y: numb
 
   const rows: { text: string; callback_data: string }[][] = [
     [
-      { text: '‹', callback_data: `cal:${taskId}:${prevYm}` },
+      { text: '‹', callback_data: `${P.cal}:${taskId}:${prevYm}` },
       { text: `${MONTH_TITLE[m - 1]} ${y}`, callback_data: `noop:${taskId}:` },
-      { text: '›', callback_data: `cal:${taskId}:${nextYm}` },
+      { text: '›', callback_data: `${P.cal}:${taskId}:${nextYm}` },
     ],
     ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((w) => ({ text: w, callback_data: `noop:${taskId}:` })),
   ];
@@ -191,25 +227,17 @@ function calendarKeyboard(taskId: string, y: number, m: number, today: { y: numb
   for (let d = 1; d <= days; d++) {
     const isToday = y === today.y && m === today.m && d === today.d;
     const ymd = `${y}-${pad(m)}-${pad(d)}`;
-    row.push({ text: isToday ? `·${d}·` : String(d), callback_data: `due:${taskId}:${ymd}` });
+    row.push({ text: isToday ? `·${d}·` : String(d), callback_data: `${P.due}:${taskId}:${ymd}` });
     if (row.length === 7) { rows.push(row); row = []; }
   }
   if (row.length > 0) {
     while (row.length < 7) row.push({ text: ' ', callback_data: `noop:${taskId}:` });
     rows.push(row);
   }
-  rows.push([{ text: '‹ Назад', callback_data: `cal:${taskId}:back` }]);
+  rows.push([{ text: '‹ Назад', callback_data: `${P.cal}:${taskId}:back` }]);
   return { inline_keyboard: rows };
 }
 
-/** «12 сентября, 18:00» -- срок словами в поясе организации. */
-function formatWhen(iso: string, timeZone: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const day = new Intl.DateTimeFormat('ru-RU', { timeZone, weekday: 'long', day: 'numeric', month: 'long' }).format(d);
-  const time = new Intl.DateTimeFormat('ru-RU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
-  return `${day}, ${time}`;
-}
 
 /**
  * «Мои поручения» -- то, что человек раздал другим, с состоянием каждого.
@@ -366,6 +394,76 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
 
+    // ------------------------------------------------------------ черновик
+    if (action === 'dc' || action === 'dx' || action === 'de' || action === 'dd' || action === 'dp' || action === 'dcal') {
+      const row = await getDraft(c.env, parts[1] ?? '');
+      // Черновик -- личное: кнопку на чужом (пересланном) сообщении не слушаем.
+      if (!row || row.author_id !== who.userId) {
+        await answerCallbackQuery(c.env, cq.id, 'Черновик недоступен');
+        return c.json({ ok: true });
+      }
+      const orgRow = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(row.org_id).first<{ timezone: string }>();
+      const tz = orgRow?.timezone ?? 'Asia/Tashkent';
+      const chat = cq.message ? String(cq.message.chat.id) : null;
+      const msgId = cq.message ? String(cq.message.message_id) : null;
+
+      if (action === 'dc') {
+        // Самая главная кнопка: только она превращает черновик в поручение.
+        const taskId = await confirmDraft(c.env, row);
+        await answerCallbackQuery(c.env, cq.id, taskId ? 'Создано' : 'Некуда положить');
+        if (chat) {
+          if (taskId) await renderCreated(c.env, row, chat, tz);
+          else await sendMessage(c.env, chat, 'Вас пока не добавили ни на одну доску — попросите руководителя.');
+        }
+        await drainOutbox(c.env);
+        return c.json({ ok: true });
+      }
+      if (action === 'dx') {
+        await removeDraft(c.env, row.id);
+        await answerCallbackQuery(c.env, cq.id, 'Отменено');
+        if (chat && msgId) await editMessageText(c.env, chat, msgId, '✖ Черновик удалён.');
+        return c.json({ ok: true });
+      }
+      if (action === 'de') {
+        // Следующее сообщение -- поправка к этому черновику. Ответ на карточку
+        // работает и без этой кнопки; она для тех, кто про reply не знает.
+        const st = await getState(c.env, who.userId);
+        await setState(c.env, who.userId, { ...st, await: 'fix', fix: row.id });
+        await answerCallbackQuery(c.env, cq.id);
+        if (chat) {
+          await sendMessage(c.env, chat, 'Что поправить? Напишите или наговорите: «не Артуру, а Еве», «срок вторник», «тема — сдать отчёт». Или пришлите всю фразу заново.');
+        }
+        return c.json({ ok: true });
+      }
+      const today = localToday(new Date(), tz);
+      if (action === 'dcal') {
+        const arg = parts[2] ?? '';
+        if (arg === 'back') {
+          await answerCallbackQuery(c.env, cq.id);
+          if (chat) await renderDraft(c.env, row, chat, tz);
+          return c.json({ ok: true });
+        }
+        const [y, m] = arg ? arg.split('-').map(Number) : [today.y, today.m];
+        await answerCallbackQuery(c.env, cq.id);
+        if (chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, calendarKeyboard(row.id, y || today.y, m || today.m, today, 'draft'));
+        return c.json({ ok: true });
+      }
+      if (action === 'dd') {
+        const iso = resolveDue(parts[2] ?? '', today, tz);
+        if (!iso) { await answerCallbackQuery(c.env, cq.id); return c.json({ ok: true }); }
+        const updated = await patchDraft(c.env, row.id, { deadline: iso });
+        await answerCallbackQuery(c.env, cq.id, 'Срок поставлен');
+        if (chat && updated) await renderDraft(c.env, updated, chat, tz);
+        return c.json({ ok: true });
+      }
+      // dp -- важность
+      const lvl = parts[2] === 'u' ? 'urgent' : parts[2] === 'l' ? 'low' : 'medium';
+      const updated = await patchDraft(c.env, row.id, { priority: lvl, priorityExplicit: true });
+      await answerCallbackQuery(c.env, cq.id, 'Важность поставлена');
+      if (chat && updated) await renderDraft(c.env, updated, chat, tz);
+      return c.json({ ok: true });
+    }
+
     if (action === 'join_no') {
       // В кнопке только заявитель: «join_no:» с ДВУМЯ UUID -- 81 байт, а предел
       // callback_data у Telegram 64, и он отвергал всё сообщение целиком.
@@ -485,20 +583,7 @@ botApp.post('/webhook', async (c) => {
         return c.json({ ok: true });
       }
 
-      const arg = parts[2] ?? '';
-      const iso = arg === 't0' ? localIso(today.y, today.m, today.d, DUE_HOUR, tz)
-        : arg === 't1' ? (() => { const d = new Date(Date.UTC(today.y, today.m - 1, today.d + 1)); return localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), DUE_HOUR, tz); })()
-        : arg === 'we' ? (() => {
-            // «Конец недели» -- ближайшая пятница, включая сегодняшнюю: сказанное
-            // в пятницу «к концу недели» означает этот же день, а не следующий.
-            const base = new Date(Date.UTC(today.y, today.m - 1, today.d));
-            const delta = (5 - ((base.getUTCDay() + 6) % 7) + 7) % 7;
-            const d = new Date(base.getTime() + delta * 864e5);
-            return localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), DUE_HOUR, tz);
-          })()
-        : /^\d{4}-\d{2}-\d{2}$/.test(arg) ? (() => { const [y, m, d] = arg.split('-').map(Number); return localIso(y, m, d, DUE_HOUR, tz); })()
-        : null;
-
+      const iso = resolveDue(parts[2] ?? '', today, tz);
       if (!iso) {
         await answerCallbackQuery(c.env, cq.id);
         return c.json({ ok: true });
@@ -622,7 +707,7 @@ botApp.post('/webhook', async (c) => {
   //
   // Печатать приходится только то, чего бот знать не может: имя, название
   // организации или код. Всё остальное -- кнопки.
-  if (st.await && text) {
+  if (st.await && st.await !== 'fix' && text) {
     if (st.await === 'name') {
       const ok = await setDisplayName(c.env, userId, text);
       await sendMessage(c.env, chatId, ok ? 'Имя обновлено.' : 'Слишком короткое имя.');
@@ -766,6 +851,19 @@ botApp.post('/webhook', async (c) => {
       }
       return c.json({ ok: true });
     }
+    case BTN.drafts: {
+      const who2 = await whoIs(c.env, msg.from);
+      if (!who2) return c.json({ ok: true });
+      const rows = await listDrafts(c.env, who2.userId, who2.orgId);
+      if (rows.length === 0) {
+        await sendMessage(c.env, chatId, 'Черновиков нет. Напишите или наговорите поручение — оно появится здесь до подтверждения.');
+        return c.json({ ok: true });
+      }
+      const orgRow = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(who2.orgId).first<{ timezone: string }>();
+      // Каждый черновик -- свежей карточкой: старая могла уехать далеко вверх.
+      for (const row of rows.slice(0, 10)) await renderDraft(c.env, row, chatId, orgRow?.timezone ?? 'Asia/Tashkent', true);
+      return c.json({ ok: true });
+    }
     case BTN.rename:
       if (current) {
         await setState(c.env, userId, { await: 'rename', screen: 'org', org: current.id });
@@ -829,18 +927,19 @@ botApp.post('/webhook', async (c) => {
   // текст, но файл при этом обязан сохраниться.
   const media = extractMedia(msg as never);
   let phrase = (msg.text ?? msg.caption ?? '').trim();
+  const chat = String(msg.chat.id);
 
   if (media?.hasAudio) {
     const blob = await download(c.env, media);
     if (!blob) {
       // 20 МБ -- потолок getFile у Telegram, не наш выбор (ADR-4). Говорим
       // прямо, что делать: короче или файлом.
-      await sendMessage(c.env, String(msg.chat.id), 'Файл больше 20 МБ — Telegram не отдаёт такие боту. Пришлите короче.');
+      await sendMessage(c.env, chat, 'Файл больше 20 МБ — Telegram не отдаёт такие боту. Пришлите короче.');
       return c.json({ ok: true });
     }
     const text = await transcribe(c.env, blob, media.filename);
     if (!text) {
-      await sendMessage(c.env, String(msg.chat.id), 'Не удалось разобрать запись. Напишите текстом, пожалуйста.');
+      await sendMessage(c.env, chat, 'Не удалось разобрать запись. Напишите текстом, пожалуйста.');
       return c.json({ ok: true });
     }
     // Подпись к видео тоже учитывается: человек мог дописать то, чего не сказал.
@@ -848,10 +947,10 @@ botApp.post('/webhook', async (c) => {
   }
 
   if (!phrase && !media) return c.json({ ok: true });
-  if (!phrase) {
-    await sendMessage(c.env, String(msg.chat.id), 'Что с этим сделать? Напишите подпись — я поставлю задачу и приложу файл.');
-    return c.json({ ok: true });
-  }
+
+  const org = await c.env.DB.prepare('SELECT timezone, industry_pack FROM orgs WHERE id = ?').bind(who.orgId)
+    .first<{ timezone: string; industry_pack: string }>();
+  const tz = org?.timezone ?? 'Asia/Tashkent';
 
   // Справочник людей ТЕКУЩЕЙ организации: разбор не должен видеть чужих.
   const { results: people } = await c.env.DB.prepare(
@@ -864,47 +963,58 @@ botApp.post('/webhook', async (c) => {
     aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined,
   }));
 
-  const org = await c.env.DB.prepare('SELECT timezone, industry_pack FROM orgs WHERE id = ?').bind(who.orgId)
-    .first<{ timezone: string; industry_pack: string }>();
-  const draft = await parseTask(c.env, phrase, roster, who.userId, org?.timezone ?? 'Asia/Tashkent', new Date(), org?.industry_pack);
+  // ------------------------------------------------ поправка к черновику
+  //
+  // Ответ на карточку черновика или сообщение после «Изменить» -- это правка,
+  // а не новое поручение. Голосом или текстом, одно поле или вся фраза заново.
+  const replyTo = msg.reply_to_message?.message_id;
+  let target = st.await === 'fix' && st.fix ? await getDraft(c.env, st.fix) : null;
+  if (!target && replyTo) target = await draftByMessage(c.env, chat, String(replyTo));
+  if (target && target.author_id === who.userId) {
+    const patch: DraftPatch = {};
+    // Голос поправки -- не вложение: вложение это фото и документ.
+    if (media && !media.hasAudio) patch.media = [...mediaOf(target), media];
+    if (phrase) {
+      Object.assign(patch, await refineDraft(c.env, {
+        title: target.title, assigneeIds: assigneesOf(target), deadline: target.deadline,
+        priority: target.priority, priorityExplicit: target.priority_explicit === 1,
+      }, phrase, roster, tz, org?.industry_pack));
+    }
+    const updated = await patchDraft(c.env, target.id, patch);
+    if (st.await === 'fix') await setState(c.env, userId, { ...st, await: undefined, fix: undefined });
+    if (updated) await renderDraft(c.env, updated, chat, tz);
+    return c.json({ ok: true });
+  }
+
+  // ------------------------------------------------ файл без подписи
+  //
+  // К последнему черновику -- всегда. Созданной задаче он не достаётся: её
+  // правят только в приложении, а новый файл без слов -- это ещё не поручение.
+  if (!phrase && media) {
+    const last = await latestDraft(c.env, who.userId, who.orgId);
+    if (last) {
+      const updated = await patchDraft(c.env, last.id, { media: [...mediaOf(last), media] });
+      if (updated) await renderDraft(c.env, updated, chat, tz);
+      return c.json({ ok: true });
+    }
+    await sendMessage(c.env, chat, 'Что с этим сделать? Напишите подпись — я заведу черновик и приложу файл.');
+    return c.json({ ok: true });
+  }
+
+  // ------------------------------------------------ новый черновик
+  const draft = await parseTask(c.env, phrase, roster, who.userId, tz, new Date(), org?.industry_pack);
 
   // Неоднозначное имя -- ПЕРЕСПРОС, а не догадка. Поручение, ушедшее не тому,
   // дороже одного вопроса.
   if (draft.ambiguous.length > 0) {
-    await sendMessage(c.env, String(msg.chat.id), `Кого именно вы имели в виду: «${draft.ambiguous.join('», «')}»? Уточните фамилию.`);
+    await sendMessage(c.env, chat, `Кого именно вы имели в виду: «${draft.ambiguous.join('», «')}»? Уточните фамилию.`);
     return c.json({ ok: true });
   }
 
-  const created = await createFromDraft(c.env, who, draft, media, phrase);
-  if (created) {
-    // ПОДТВЕРЖДЕНИЕ АВТОРУ -- обязательное, а не украшение.
-    //
-    // Раньше на успех бот не отвечал ничего: уведомления уходят адресатам, а
-    // автор из рассылки исключён (он это и продиктовал). Поручение самому себе
-    // не порождало вообще ни одного сообщения, и человек видел молчание --
-    // неотличимое от «бот сломался». Здесь же видно, КАК фраза понята: кому и
-    // на когда. Не тому понятый адресат ловится сразу, а не через неделю.
-    const names = draft.assigneeIds.length === 0 ? [] : (await c.env.DB.prepare(
-      `SELECT name FROM users WHERE id IN (${draft.assigneeIds.map(() => '?').join(',')})`,
-    ).bind(...draft.assigneeIds).all<{ name: string }>()).results.map((r) => r.name);
-    const self = draft.assigneeIds.length === 1 && draft.assigneeIds[0] === who.userId;
-    await sendMessage(c.env, String(msg.chat.id), [
-      `✅ ${draft.title}`,
-      `Кому: ${self ? 'вам' : names.join(', ') || '—'}`,
-      `Срочность: ${draft.priority === 'urgent' ? 'срочно' : draft.priority === 'low' ? 'низкая' : 'средняя'}`,
-      `Срок: ${draft.deadline ? formatWhen(draft.deadline, org?.timezone ?? 'Asia/Tashkent') : 'не указан'}`,
-      draft.deadline ? 'Напомню за день до срока.' : 'Поставьте срок кнопкой — и я напомню.',
-    ].join('\n'),
-      // Без срока нет ни напоминания, ни просрочки. Кнопки дешевле, чем просить
-      // переписать всю фразу ради одного слова.
-      draft.deadline ? undefined : dueKeyboard(created));
-  }
-  if (!created) {
-    // Единственная оставшаяся причина отказа: доски в организации есть, а
-    // человека не добавили ни на одну. Говорим прямо, что делать.
-    await sendMessage(c.env, String(msg.chat.id), 'Вас пока не добавили ни на одну доску — попросите руководителя.');
-    return c.json({ ok: true });
-  }
-  await drainOutbox(c.env);
+  // Задача НЕ создаётся здесь. Черновик показывает, как фраза понята, и ждёт
+  // «Создать» -- самой главной кнопки: разбор ошибается, и не тому понятый
+  // адресат должен ловиться до того, как поручение ушло.
+  const row = await saveDraft(c.env, who, draft, phrase, media ? [media] : []);
+  await renderDraft(c.env, row, chat, tz);
   return c.json({ ok: true });
 });

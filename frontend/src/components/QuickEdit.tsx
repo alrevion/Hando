@@ -6,14 +6,14 @@ import { quickEditTask } from '../lib/api';
 import { useData } from '../context/DataContext';
 
 /** «2026-09-11» для сегодня + N дней по часам ТЕЛЕФОНА (выбор-то делает человек). */
-function inDays(n: number): string {
+export function inDays(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() + n);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /** Ближайшая пятница, включая сегодняшнюю: «к концу недели» в пятницу -- сегодня. */
-function endOfWeek(): string {
+export function endOfWeek(): string {
   const d = new Date();
   return inDays((5 - ((d.getDay() + 6) % 7) + 7) % 7);
 }
@@ -43,7 +43,7 @@ export function QuickEdit({ task, onDone }: { task: Task; onDone?: () => void })
 
   return (
     <>
-      <div className="sec-title" style={{ margin: '4px 0 8px' }}>Срочность</div>
+      <div className="sec-title" style={{ margin: '4px 0 8px' }}>Важность</div>
       <div className="chips" style={{ paddingBottom: 8 }}>
         {PRIORITIES.map((p) => (
           <button

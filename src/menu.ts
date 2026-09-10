@@ -33,11 +33,14 @@ export const BTN = {
   editName: '✏️ Изменить имя',
   back: '‹ Назад',
   yes: '❌ Да, удалить',
+  drafts: '📝 Черновики',
 } as const;
 
 /** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
 export type BotState = {
-  await?: 'name' | 'new' | 'pack' | 'join' | 'rename';
+  await?: 'name' | 'new' | 'pack' | 'join' | 'rename' | 'fix';
+  /** Черновик, который ждёт правку после «Изменить». */
+  fix?: string;
   /** Незаконченный ввод: название организации ждёт выбора профиля. */
   draft?: string;
   /** Выбранная категория отрасли: второй шаг показывает её отрасли. */
@@ -128,6 +131,9 @@ export function mainScreen(name: string, orgs: OrgRow[]): Screen {
     keyboard: kb(
       [
         boss ? [{ text: BTN.assigned }, { text: BTN.tasks }] : [{ text: BTN.tasks }, { text: BTN.assigned }],
+        // Черновики -- то, что продиктовано, но не подтверждено. Они не
+        // пропадают, и кнопка нужна, чтобы к ним вернуться.
+        [{ text: BTN.drafts }],
         [{ text: BTN.orgs }],
         [{ text: BTN.billing }],
         [{ text: BTN.profile }],
