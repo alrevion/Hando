@@ -65,9 +65,11 @@ export async function createOrg(
   const code = generateJoinCode();
   const now = nowIso();
   const profile = pack(packId);
+  // Семья и личные дела живут 24/7: графика нет, ночного пола тоже.
+  const home = profile.category === 'home';
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO orgs (id, name, join_code, owner_user_id, industry_pack) VALUES (?, ?, ?, ?, ?)')
-      .bind(orgId, name, code, userId, profile.id),
+    env.DB.prepare('INSERT INTO orgs (id, name, join_code, owner_user_id, industry_pack, always_on, quiet_hours) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(orgId, name, code, userId, profile.id, home ? 1 : 0, home ? 0 : 1),
     env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?, ?, ?, ?, ?)')
       .bind(uuid(), orgId, userId, 'creator', now),
     // Липкий контекст: человек сразу оказывается в созданной организации.

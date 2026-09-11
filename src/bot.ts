@@ -30,10 +30,10 @@ import { categoryByButton, packByButton } from './packs';
 import {
   askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
   billingScreen, categoryScreen, industryScreen, mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
-  setState, switchOrg, type OrgRow, type Screen,
-} from './menu';
+  setState, switchOrg, type OrgRow, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner } from './menu';
 import { download, extractMedia } from './media';
 import { formatWhen, parseTask, refineDraft, transcribe, localIso, localToday } from './parse';
+import { dayEnd, hm, loadSchedule, type OrgSchedule } from './schedule';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -101,7 +101,6 @@ async function connectByInvite(env: Env, tg: TgUser, token: string): Promise<str
 //
 // callback_data: «due:<taskId>:<что>» и «cal:<taskId>:<YYYY-MM>». Обе укладываются
 // в предел Telegram в 64 байта -- 51 и 48 (см. test/callback-data.test.ts).
-const DUE_HOUR = 18;
 const MONTH_TITLE = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 
 // ---------------------------------------------------- приём в организацию
@@ -152,10 +151,15 @@ function deptKeyboard(applicantId: string, roleCode: string, depts: { name: stri
  * пятница (включая сегодняшнюю), YYYY-MM-DD -- день из календаря. Один расчёт
  * на задачи и на черновики.
  */
-function resolveDue(arg: string, today: { y: number; m: number; d: number }, tz: string): string | null {
+function resolveDue(arg: string, today: { y: number; m: number; d: number }, s: OrgSchedule): string | null {
+  const tz = s.timezone;
+  // Конец рабочего дня по графику; у 24/7 -- 23:59.
+  const end = hm(dayEnd(s));
+  const stamp = (y: number, m: number, d: number) =>
+    new Date(Date.parse(localIso(y, m, d, Math.floor(end / 60), tz)) + (end % 60) * 60000).toISOString();
   const day = (offset: number) => {
     const d = new Date(Date.UTC(today.y, today.m - 1, today.d + offset));
-    return localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), DUE_HOUR, tz);
+    return stamp(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
   };
   if (arg === 't0') return day(0);
   if (arg === 't1') return day(1);
@@ -165,7 +169,7 @@ function resolveDue(arg: string, today: { y: number; m: number; d: number }, tz:
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(arg)) {
     const [y, m, d] = arg.split('-').map(Number);
-    return localIso(y, m, d, DUE_HOUR, tz);
+    return stamp(y, m, d);
   }
   return null;
 }
@@ -403,8 +407,8 @@ botApp.post('/webhook', async (c) => {
         await answerCallbackQuery(c.env, cq.id, 'Черновик недоступен');
         return c.json({ ok: true });
       }
-      const orgRow = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(row.org_id).first<{ timezone: string }>();
-      const tz = orgRow?.timezone ?? 'Asia/Tashkent';
+      const sched = await loadSchedule(c.env, row.org_id);
+      const tz = sched.timezone;
       const chat = cq.message ? String(cq.message.chat.id) : null;
       const msgId = cq.message ? String(cq.message.message_id) : null;
 
@@ -450,7 +454,7 @@ botApp.post('/webhook', async (c) => {
         return c.json({ ok: true });
       }
       if (action === 'dd') {
-        const iso = resolveDue(parts[2] ?? '', today, tz);
+        const iso = resolveDue(parts[2] ?? '', today, sched);
         if (!iso) { await answerCallbackQuery(c.env, cq.id); return c.json({ ok: true }); }
         const updated = await patchDraft(c.env, row.id, { deadline: iso });
         await answerCallbackQuery(c.env, cq.id, 'Срок поставлен');
@@ -481,13 +485,15 @@ botApp.post('/webhook', async (c) => {
     }
 
     const taskId = parts[1];
-    const task = taskId
-      ? await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').bind(taskId, who.orgId).first<import('./types').Task>()
-      : null;
-    if (!task) {
+    // Задача -- в СВОЕЙ организации, а не в текущей у нажавшего: напоминание
+    // про задачу второй организации иначе отвечало «Задача недоступна».
+    // Право -- действующее членство именно там.
+    const task = taskId ? await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(taskId).first<Task>() : null;
+    if (!task || !(await membershipRole(c.env.DB, task.org_id, who.userId))) {
       await answerCallbackQuery(c.env, cq.id, 'Задача недоступна');
       return c.json({ ok: true });
     }
+    const orgId = task.org_id;
 
     // Ветка поводов идёт ДО проверки «ты адресат» намеренно: повод адресован
     // АВТОРУ поручения, а он обычно не входит в список исполнителей. Проверка
@@ -517,15 +523,15 @@ botApp.post('/webhook', async (c) => {
           return c.json({ ok: true });
         }
         await c.env.DB.prepare('UPDATE tasks SET confirmed_at = ? WHERE id = ? AND org_id = ?')
-          .bind(nowIso(), task.id, who.orgId).run();
+          .bind(nowIso(), task.id, orgId).run();
         await answerCallbackQuery(c.env, cq.id, 'Принято');
       } else {
         await answerCallbackQuery(c.env, cq.id, 'Напомним исполнителям');
-        // Сброс флага эскалации -- повторное напоминание пойдёт штатным проходом
-        // cron, а не отдельной рассылкой в обход тихих часов.
+        // Стираем запись журнала -- следующий тик cron пошлёт напоминание
+        // заново штатным проходом, а не отдельной рассылкой в обход графика.
         await c.env.DB.prepare(
-          "UPDATE task_assignees SET last_escalated_at = NULL WHERE task_id = ? AND org_id = ? AND state = 'pending'",
-        ).bind(task.id, who.orgId).run();
+          "DELETE FROM reminders WHERE kind IN ('not_accepted','overdue') AND assignee_row_id IN (SELECT id FROM task_assignees WHERE task_id = ? AND org_id = ?)",
+        ).bind(task.id, orgId).run();
       }
       if (cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
       await drainOutbox(c.env);
@@ -545,7 +551,7 @@ botApp.post('/webhook', async (c) => {
         return c.json({ ok: true });
       }
       await c.env.DB.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ? AND org_id = ?')
-        .bind(priority, nowIso(), task.id, who.orgId).run();
+        .bind(priority, nowIso(), task.id, orgId).run();
       await answerCallbackQuery(c.env, cq.id, priority === 'urgent' ? 'Срочная' : 'Не срочная');
       return c.json({ ok: true });
     }
@@ -563,8 +569,8 @@ botApp.post('/webhook', async (c) => {
         await answerCallbackQuery(c.env, cq.id, 'Это не ваше поручение');
         return c.json({ ok: true });
       }
-      const org = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(who.orgId).first<{ timezone: string }>();
-      const tz = org?.timezone ?? 'Asia/Tashkent';
+      const sched = await loadSchedule(c.env, orgId);
+      const tz = sched.timezone;
       const today = localToday(new Date(), tz);
       const chatId = cq.message ? String(cq.message.chat.id) : null;
       const messageId = cq.message ? String(cq.message.message_id) : null;
@@ -584,13 +590,13 @@ botApp.post('/webhook', async (c) => {
         return c.json({ ok: true });
       }
 
-      const iso = resolveDue(parts[2] ?? '', today, tz);
+      const iso = resolveDue(parts[2] ?? '', today, sched);
       if (!iso) {
         await answerCallbackQuery(c.env, cq.id);
         return c.json({ ok: true });
       }
 
-      await setTaskDeadline(c.env, task.id, who.orgId, iso);
+      await setTaskDeadline(c.env, task.id, orgId, iso);
       await answerCallbackQuery(c.env, cq.id, 'Срок поставлен');
       if (chatId && messageId) {
         await editMessageText(c.env, chatId, messageId, [
@@ -637,7 +643,7 @@ botApp.post('/webhook', async (c) => {
         return c.json({ ok: true });
       }
       // ra: без индекса -- показать список, с индексом -- переназначить.
-      const people = await reassignCandidates(c.env, who.orgId, task.author_id);
+      const people = await reassignCandidates(c.env, orgId, task.author_id);
       const pick = parts[2] ?? '';
       if (pick === '') {
         if (people.length === 0) {
@@ -672,7 +678,7 @@ botApp.post('/webhook', async (c) => {
     // Сообщение уходит в ЛИЧКУ адресата (ADR-4), но нажать всё равно может
     // только тот, у кого есть своя строка: пересланное сообщение кнопку не
     // делает чужой.
-    const mine = await myAssignee(c.env, task.id, who.userId, who.orgId);
+    const mine = await myAssignee(c.env, task.id, who.userId, orgId);
     if (!mine) {
       await answerCallbackQuery(c.env, cq.id, 'Это не ваше поручение');
       return c.json({ ok: true });
@@ -850,6 +856,16 @@ botApp.post('/webhook', async (c) => {
       await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
       return c.json({ ok: true });
     }
+    if (st.await === 'digest_time') {
+      const mine = orgs.find((o) => o.is_current) ?? orgs[0];
+      const ok = mine ? await updateOrgSettings(c.env, userId, mine.id, { digest_time: text.trim() }) : false;
+      await sendMessage(c.env, chatId, ok ? 'Час сводки поставлен.' : 'Не понял час. Напишите как 08:30.');
+      if (mine) {
+        const fresh = (await myOrgs(c.env, userId)).find((o) => o.id === mine.id) ?? mine;
+        await show(c.env, chatId, userId, settingsScreen(await notifyPrefs(c.env, userId), { ...fresh, id: fresh.id }, await isOrgOwner(c.env, userId, mine.id)));
+      }
+      return c.json({ ok: true });
+    }
     if (st.await === 'rename' && st.org) {
       const ok = await renameOrg(c.env, userId, st.org, text);
       await sendMessage(c.env, chatId, ok ? 'Переименовано.' : 'Переименовать не удалось.');
@@ -920,7 +936,7 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     case BTN.back:
       // «Назад» зависит от экрана: из карточки -- в список, иначе на главный.
-      await show(c.env, chatId, userId, st.screen === 'org' || st.screen === 'confirm_delete'
+      await show(c.env, chatId, userId, st.screen === 'org' || st.screen === 'confirm_delete' || st.screen === 'settings'
         ? orgsScreen(orgs)
         : mainScreen(myName, orgs));
       return c.json({ ok: true });
@@ -959,6 +975,32 @@ botApp.post('/webhook', async (c) => {
       const orgRow = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(who2.orgId).first<{ timezone: string }>();
       // Каждый черновик -- свежей карточкой: старая могла уехать далеко вверх.
       for (const row of rows.slice(0, 10)) await renderDraft(c.env, row, chatId, orgRow?.timezone ?? 'Asia/Tashkent', true);
+      return c.json({ ok: true });
+    }
+    case BTN.settings:
+    case BTN.notifyAll:
+    case BTN.notifySchedule:
+    case BTN.remind15:
+    case BTN.remind30:
+    case BTN.remind60:
+    case BTN.digestOn:
+    case BTN.digestOff: {
+      const mine = orgs.find((o) => o.is_current) ?? orgs[0];
+      if (!mine) return c.json({ ok: true });
+      if (text === BTN.notifyAll || text === BTN.notifySchedule) {
+        await setNotifyPrefs(c.env, userId, { notify_mode: text === BTN.notifyAll ? 'all' : 'schedule' });
+      } else if (text === BTN.remind15 || text === BTN.remind30 || text === BTN.remind60) {
+        await setNotifyPrefs(c.env, userId, { remind_before_min: text === BTN.remind15 ? 15 : text === BTN.remind30 ? 30 : 60 });
+      } else if (text === BTN.digestOn || text === BTN.digestOff) {
+        await updateOrgSettings(c.env, userId, mine.id, { digest_enabled: text === BTN.digestOn ? 1 : 0 });
+      }
+      const fresh = (await myOrgs(c.env, userId)).find((o) => o.id === mine.id) ?? mine;
+      await show(c.env, chatId, userId, settingsScreen(await notifyPrefs(c.env, userId), { ...fresh, id: fresh.id }, await isOrgOwner(c.env, userId, mine.id)));
+      return c.json({ ok: true });
+    }
+    case BTN.digestTime: {
+      await setState(c.env, userId, { ...st, await: 'digest_time', screen: 'settings' });
+      await sendMessage(c.env, chatId, 'В какой час присылать сводку? Напишите, например: 08:30');
       return c.json({ ok: true });
     }
     case BTN.rename:
@@ -1047,7 +1089,8 @@ botApp.post('/webhook', async (c) => {
 
   const org = await c.env.DB.prepare('SELECT timezone, industry_pack FROM orgs WHERE id = ?').bind(who.orgId)
     .first<{ timezone: string; industry_pack: string }>();
-  const tz = org?.timezone ?? 'Asia/Tashkent';
+  const sched = await loadSchedule(c.env, who.orgId);
+  const tz = sched.timezone;
 
   // Справочник людей ТЕКУЩЕЙ организации: разбор не должен видеть чужих.
   const { results: people } = await c.env.DB.prepare(
@@ -1101,7 +1144,7 @@ botApp.post('/webhook', async (c) => {
       Object.assign(patch, await refineDraft(c.env, {
         title: target.title, assigneeIds: assigneesOf(target), deadline: target.deadline,
         priority: target.priority, priorityExplicit: target.priority_explicit === 1,
-      }, phrase, roster, tz, org?.industry_pack));
+      }, phrase, roster, tz, org?.industry_pack, new Date(), dayEnd(sched)));
     }
     const updated = await patchDraft(c.env, target.id, patch);
     if (st.await === 'fix') await setState(c.env, userId, { ...st, await: undefined, fix: undefined });
@@ -1125,7 +1168,7 @@ botApp.post('/webhook', async (c) => {
   }
 
   // ------------------------------------------------ новый черновик
-  const draft = await parseTask(c.env, phrase, roster, who.userId, tz, new Date(), org?.industry_pack);
+  const draft = await parseTask(c.env, phrase, roster, who.userId, tz, new Date(), org?.industry_pack, dayEnd(sched));
 
   // Неоднозначное имя -- ПЕРЕСПРОС, а не догадка. Поручение, ушедшее не тому,
   // дороже одного вопроса.

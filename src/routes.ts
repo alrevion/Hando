@@ -18,7 +18,8 @@ import {
 import { CATEGORIES, PACKS, pack } from './packs';
 import { localIso, parseTask, transcribe } from './parse';
 import { approveJoin, createOrg, joinByCode, pendingRequests, rejectJoin } from './signup';
-import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, switchOrg } from './menu';
+import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
+import { dayEnd, hm, loadSchedule } from './schedule';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
 // larger, but would then be permanently unretrievable). Enforce the download cap
@@ -136,7 +137,8 @@ apiRoutes.get('/me', async (c) => {
   // между 2a и 2b человек видел бы у себя роль, по которой ему уже ничего не
   // разрешено. org отдаётся клиенту: фронту нужно знать, где он находится.
   const u = await c.env.DB.prepare(
-    `SELECT u.id, u.name, u.phone, m.role AS role, m.position AS position, o.id AS org_id, o.name AS org_name
+    `SELECT u.id, u.name, u.phone, m.role AS role, m.position AS position, o.id AS org_id, o.name AS org_name,
+            COALESCE(u.notify_mode, 'all') AS notify_mode, COALESCE(u.remind_before_min, 30) AS remind_before_min
      FROM users u
      JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL
      JOIN orgs o ON o.id = m.org_id
@@ -417,7 +419,7 @@ apiRoutes.post('/tasks/dictate', async (c) => {
 
   const org = await c.env.DB.prepare('SELECT timezone, industry_pack FROM orgs WHERE id = ?').bind(orgId)
     .first<{ timezone: string; industry_pack: string }>();
-  const draft = await parseTask(c.env, phrase, roster, userId, org?.timezone ?? 'Asia/Tashkent', new Date(), org?.industry_pack);
+  const draft = await parseTask(c.env, phrase, roster, userId, org?.timezone ?? 'Asia/Tashkent', new Date(), org?.industry_pack, dayEnd(await loadSchedule(c.env, orgId)));
   if (draft.ambiguous.length > 0) {
     return c.json({ error: 'Уточните, кого вы имели в виду', code: 'AMBIGUOUS', ambiguous: draft.ambiguous }, 409);
   }
@@ -485,6 +487,13 @@ async function orgTz(env: Env, orgId: string): Promise<string> {
   return org?.timezone ?? 'Asia/Tashkent';
 }
 
+/** «2026-09-11» -> конец рабочего дня организации в её поясе. */
+function atDayEnd(ymd: string, sched: Awaited<ReturnType<typeof loadSchedule>>): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const end = hm(dayEnd(sched));
+  return new Date(Date.parse(localIso(y, m, d, Math.floor(end / 60), sched.timezone)) + (end % 60) * 60000).toISOString();
+}
+
 apiRoutes.get('/drafts', async (c) => {
   const rows = await listDrafts(c.env, c.get('userId'), c.get('orgId'));
   return c.json({ drafts: await Promise.all(rows.map((r) => draftView(c.env, r))) });
@@ -511,13 +520,13 @@ apiRoutes.patch('/drafts/:id', async (c) => {
     if (b.assignee_ids.some((id) => !known.has(id))) return c.json({ error: 'Такого человека нет в организации' }, 400);
     patch.assigneeIds = [...new Set(b.assignee_ids)];
   }
-  const tz = await orgTz(c.env, c.get('orgId'));
+  const sched = await loadSchedule(c.env, c.get('orgId'));
+  const tz = sched.timezone;
   if (b.deadline !== undefined) {
     if (b.deadline === null) patch.deadline = null;
     else if (/^\d{4}-\d{2}-\d{2}$/.test(b.deadline)) {
-      // Дата без часа -- 18:00 в поясе организации, как у кнопок бота.
-      const [y, m, d] = b.deadline.split('-').map(Number);
-      patch.deadline = localIso(y, m, d, 18, tz);
+      // Дата без часа -- конец рабочего дня по графику, как у кнопок бота.
+      patch.deadline = atDayEnd(b.deadline, sched);
     } else if (!Number.isNaN(Date.parse(b.deadline))) patch.deadline = new Date(b.deadline).toISOString();
     else return c.json({ error: 'bad deadline' }, 400);
   }
@@ -579,12 +588,7 @@ apiRoutes.patch('/tasks/:id/quick', requireProjectAccess('task'), async (c) => {
     // в поясе организации, а не на клиенте: у телефона свой пояс, и «пятница»
     // у сотрудника в другом городе означала бы другой момент.
     let iso = b.deadline;
-    if (iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
-      const org = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(c.get('orgId'))
-        .first<{ timezone: string }>();
-      const [y, m, d] = iso.split('-').map(Number);
-      iso = localIso(y, m, d, 18, org?.timezone ?? 'Asia/Tashkent');
-    }
+    if (iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)) iso = atDayEnd(iso, await loadSchedule(c.env, c.get('orgId')));
     // Срок ложится и в задачу, и в строки адресатов: напоминание считает по ним.
     await setTaskDeadline(c.env, task.id, c.get('orgId'), iso);
   }
@@ -665,11 +669,19 @@ apiRoutes.post('/orgs/:orgId/switch', async (c) => {
 });
 
 apiRoutes.patch('/orgs/:orgId', async (c) => {
-  const { name } = await c.req.json<{ name?: string }>().catch(() => ({}) as Record<string, undefined>);
-  if (!name?.trim()) return c.json({ error: 'name required' }, 400);
-  // Право владельца проверяется ВНУТРИ renameOrg -- там же, где для бота.
-  const ok = await renameOrg(c.env, c.get('userId'), c.req.param('orgId'), name.trim());
-  return ok ? c.json({ ok: true }) : c.json({ error: 'not allowed' }, 403);
+  const b = await c.req.json<{ name?: string } & OrgSettingsPatch>().catch(() => ({}) as Record<string, undefined>);
+  const orgId = c.req.param('orgId');
+  // Право владельца проверяется ВНУТРИ renameOrg/updateOrgSettings -- там же, где для бота.
+  if (b.name !== undefined) {
+    if (!b.name.trim()) return c.json({ error: 'name required' }, 400);
+    if (!(await renameOrg(c.env, c.get('userId'), orgId, b.name.trim()))) return c.json({ error: 'not allowed' }, 403);
+  }
+  const { name: _n, ...settings } = b;
+  void _n;
+  if (Object.keys(settings).length > 0) {
+    if (!(await updateOrgSettings(c.env, c.get('userId'), orgId, settings))) return c.json({ error: 'not allowed or bad value' }, 403);
+  } else if (b.name === undefined) return c.json({ error: 'nothing to update' }, 400);
+  return c.json({ ok: true });
 });
 
 apiRoutes.delete('/orgs/:orgId', async (c) => {
@@ -684,10 +696,22 @@ apiRoutes.post('/orgs/:orgId/leave', async (c) => {
 
 /** Своё имя -- то, которое видят коллеги в поручениях. В боте это «Профиль». */
 apiRoutes.patch('/me', async (c) => {
-  const { name } = await c.req.json<{ name?: string }>().catch(() => ({}) as Record<string, undefined>);
-  if (!name?.trim()) return c.json({ error: 'name required' }, 400);
-  const ok = await setDisplayName(c.env, c.get('userId'), name.trim());
-  return ok ? c.json({ ok: true, name: name.trim() }) : c.json({ error: 'name too short' }, 400);
+  const b = await c.req.json<{ name?: string; notify_mode?: string; remind_before_min?: number }>().catch(() => ({}) as Record<string, undefined>);
+  if (b.name !== undefined) {
+    if (!b.name.trim()) return c.json({ error: 'name required' }, 400);
+    if (!(await setDisplayName(c.env, c.get('userId'), b.name.trim()))) return c.json({ error: 'name too short' }, 400);
+  }
+  // Настройки уведомлений -- те же, что в боте под «Организации → Настройки».
+  if (b.notify_mode !== undefined && b.notify_mode !== 'all' && b.notify_mode !== 'schedule') return c.json({ error: 'bad notify_mode' }, 400);
+  if (b.remind_before_min !== undefined && (!Number.isInteger(b.remind_before_min) || b.remind_before_min < 0 || b.remind_before_min > 1440)) {
+    return c.json({ error: 'bad remind_before_min' }, 400);
+  }
+  await setNotifyPrefs(c.env, c.get('userId'), {
+    notify_mode: b.notify_mode as 'all' | 'schedule' | undefined,
+    remind_before_min: b.remind_before_min,
+  });
+  if (b.name === undefined && b.notify_mode === undefined && b.remind_before_min === undefined) return c.json({ error: 'nothing to update' }, 400);
+  return c.json({ ok: true, name: b.name?.trim() });
 });
 
 // ОДИН снимок всей организации вместо «список досок плюс запрос на каждую».

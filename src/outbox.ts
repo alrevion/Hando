@@ -9,6 +9,7 @@ import type { InlineButton } from './telegram';
 import { nowIso } from './db';
 import { deleteMessage, sendMessage } from './telegram';
 import { isQuiet } from './quiet';
+import { inWorkHours, scheduleCols, type OrgSchedule } from './schedule';
 
 type Payload = {
   // Кому, а не куда: адрес резолвится при отправке -- см. transition.ts.
@@ -18,6 +19,8 @@ type Payload = {
   track: boolean;
   // Пробивает тихие часы: срок, наступающий ночью, важнее тишины.
   urgent?: boolean;
+  // Рабочее напоминание: только в рабочее время организации (раздел 21).
+  gated?: boolean;
   keyboard?: InlineButton[][] | null;
 };
 
@@ -32,10 +35,9 @@ const MAX_ATTEMPTS = 10;
  * Строка помечается sent_at ТОЛЬКО после успешной отправки: не дошло -- следующий
  * проход попробует снова, а дубля не будет, потому что первый заход не пометил.
  */
-export async function drainOutbox(env: Env): Promise<number> {
+export async function drainOutbox(env: Env, now: Date = new Date()): Promise<number> {
   const { results } = await env.DB.prepare(
-    `SELECT n.id, n.task_id, n.org_id, n.payload, COALESCE(o.timezone, 'Asia/Tashkent') AS timezone,
-            COALESCE(o.quiet_hours, 1) AS quiet_hours
+    `SELECT n.id, n.task_id, n.org_id, n.payload, ${scheduleCols('o')}
      FROM notifications n
      LEFT JOIN orgs o ON o.id = n.org_id
      -- attempts < MAX: строка, которую не удаётся доставить, обязана выпасть из
@@ -45,9 +47,7 @@ export async function drainOutbox(env: Env): Promise<number> {
      WHERE n.sent_at IS NULL AND n.attempts < ? ORDER BY n.scheduled_at LIMIT ?`,
   )
     .bind(MAX_ATTEMPTS, BATCH)
-    .all<{ id: string; task_id: string; org_id: string | null; payload: string; timezone: string; quiet_hours: number }>();
-
-  const now = new Date();
+    .all<{ id: string; task_id: string; org_id: string | null; payload: string } & Omit<OrgSchedule, 'id'>>();
 
   let sent = 0;
   for (const row of results) {
@@ -61,34 +61,44 @@ export async function drainOutbox(env: Env): Promise<number> {
       continue;
     }
 
-    // ЕДИНСТВЕННАЯ точка, где действуют тихие часы. Строка остаётся
-    // неотправленной и уедет следующим проходом после 08:00 -- не теряется, а
-    // ждёт. Пояс берётся у организации сообщения, а не сервера.
-    if (row.quiet_hours === 1 && isQuiet(now, row.timezone, p.urgent === true)) continue;
-
     // Адрес резолвится СЕЙЧАС, а не при постановке: человек мог подключить бота
     // уже после неё. Не подключил -- строка ЖДЁТ (ADR-4: личка или ничего;
     // падать назад в групповой чат нельзя, это и есть закрываемая утечка).
     //
     // ЧЛЕНСТВО проверяется здесь же и по той же причине, по которой здесь стоят
-    // тихие часы: это единственная точка отправки, и предикат, поставленный
-    // тут, накрывает все четыре источника строк (переходы, три прохода cron,
-    // поводы). requireAuth перечитывает членство на КАЖДОМ запросе, но очередь
-    // живёт без запроса -- уволенный продолжал бы получать заголовки задач
-    // бывшего работодателя бессрочно.
+    // гейты времени: это единственная точка отправки, и предикат, поставленный
+    // тут, накрывает все источники строк (переходы, проходы cron, поводы).
+    // requireAuth перечитывает членство на КАЖДОМ запросе, но очередь живёт без
+    // запроса -- уволенный продолжал бы получать заголовки задач бывшего
+    // работодателя бессрочно. Режим уведомлений -- у получателя, поэтому он
+    // читается вместе с адресом, ДО гейтов.
     const to = await env.DB.prepare(
-      `SELECT u.telegram_user_id FROM users u
+      `SELECT u.telegram_user_id, COALESCE(u.notify_mode, 'all') AS notify_mode FROM users u
        JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL
        WHERE u.id = ?`,
     )
       .bind(row.org_id, p.recipient_user_id)
-      .first<{ telegram_user_id: string | null }>();
+      .first<{ telegram_user_id: string | null; notify_mode: string }>();
     const chatId = to?.telegram_user_id;
     if (!chatId) {
       // Не адресат сейчас (не подключил бота или отозван). Считаем попытку --
       // иначе строка держала бы очередь вечно (см. MAX_ATTEMPTS выше).
       await env.DB.prepare('UPDATE notifications SET attempts = attempts + 1 WHERE id = ?').bind(row.id).run();
       continue;
+    }
+
+    // ЕДИНСТВЕННАЯ точка, где действуют тихие часы и график. Строка остаётся
+    // неотправленной и уедет следующим проходом -- не теряется, а ждёт. Пояс
+    // берётся у организации сообщения, а не сервера. Два гейта:
+    //   -- ночной пол 20:00-08:00 и воскресенье -- для всего несрочного;
+    //   -- рабочие часы графика -- для напоминаний (gated) и для тех, кто
+    //      выбрал «по расписанию». «Сразу из всех» получает переходы сразу.
+    // Срочное (срок, просрочка) пробивает оба: предупреждение после провала
+    // бесполезно.
+    const s: OrgSchedule = { ...row, id: row.org_id ?? '' };
+    if (p.urgent !== true && s.quiet_hours === 1) {
+      if (isQuiet(now, s.timezone)) continue;
+      if ((p.gated === true || to.notify_mode === 'schedule') && !inWorkHours(s, now)) continue;
     }
 
     // КЛЕЙМ перед отправкой, а не пометка после.

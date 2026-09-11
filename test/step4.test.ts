@@ -272,7 +272,7 @@ describe('ревью: у cron нет своего пути отправки', ()
     // Групповой чат проекта -- '-100999'. Не должно быть НИ ОДНОГО.
     expect(sends.map((x) => String(x.chat_id))).not.toContain('-100999');
     // И заголовки действительно ушли -- в личку, а не пропали.
-    expect(sends.some((x) => String(x.text).includes('ПРОСРОЧИЛИ'))).toBe(true);
+    expect(sends.some((x) => String(x.text).includes('Просрочено'))).toBe(true);
   });
 
   it('напоминания cron подчиняются тихим часам, а срочность их пробивает', async () => {
@@ -297,7 +297,7 @@ describe('ревью: у cron нет своего пути отправки', ()
     const sent = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)));
 
     // Просрочка пробивает тишину: предупреждение после провала бесполезно.
-    expect(sent.some((x) => String(x.text).includes('ПРОСРОЧИЛИ'))).toBe(true);
+    expect(sent.some((x) => String(x.text).includes('Просрочено'))).toBe(true);
     // А «пора проверить» подождёт до утра.
     expect(sent.some((x) => String(x.text).includes('Пора проверить'))).toBe(false);
     // И не потеряно: строка ждёт в очереди.
@@ -348,15 +348,16 @@ describe('ревью: находки security-ревью', () => {
 
   it('«напомнить» с кнопки повода доступно только автору', async () => {
     const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss' }]);
-    await testEnv.DB.prepare("UPDATE task_assignees SET last_escalated_at = '2026-01-01' WHERE task_id='t1'").run();
+    await testEnv.DB.prepare("INSERT INTO reminders (assignee_row_id, kind, sent_at) VALUES ('as-t1', 'not_accepted', '2026-01-01')").run();
     tg();
-    // Не автор: без гейта он сбрасывал бы флаг эскалации по любой задаче, и
-    // исполнитель получал бы повторные «ВЫ ПРОСРОЧИЛИ» сквозь тихие часы.
+    const logged = async () => (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM reminders WHERE assignee_row_id='as-t1'").first<{ n: number }>())!.n;
+    // Не автор: без гейта он стирал бы журнал по любой задаче, и исполнитель
+    // получал бы повторные напоминания сквозь график.
     await hook(env, { callback_query: { id: 'c1', from: { id: 'tg-w1' }, data: 'nudge_remind:t1', message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
-    expect((await testEnv.DB.prepare("SELECT last_escalated_at FROM task_assignees WHERE task_id='t1'").first<{ last_escalated_at: string | null }>())!.last_escalated_at).not.toBeNull();
+    expect(await logged()).toBe(1);
 
     await hook(env, { callback_query: { id: 'c2', from: { id: 'tg-boss' }, data: 'nudge_remind:t1', message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
-    expect((await testEnv.DB.prepare("SELECT last_escalated_at FROM task_assignees WHERE task_id='t1'").first<{ last_escalated_at: string | null }>())!.last_escalated_at).toBeNull();
+    expect(await logged()).toBe(0);
   });
 
   it('«принять» с кнопки повода не подтверждает недоделанную задачу', async () => {

@@ -14,6 +14,7 @@ import type { Env, Role } from './types';
 import { nowIso } from './db';
 import type { ReplyKeyboard } from './telegram';
 import { CATEGORIES, categoryButton, packButton, packsOf } from './packs';
+import { digestAt, scheduleCols, type OrgSchedule } from './schedule';
 
 export const BTN = {
   tasks: '📋 Мои задачи',
@@ -34,11 +35,20 @@ export const BTN = {
   back: '‹ Назад',
   yes: '❌ Да, удалить',
   drafts: '📝 Черновики',
+  settings: '⚙️ Настройки',
+  notifyAll: '🔔 Уведомления: сразу из всех',
+  notifySchedule: '🕘 Уведомления: по расписанию',
+  remind15: '⏰ За 15 мин',
+  remind30: '⏰ За 30 мин',
+  remind60: '⏰ За час',
+  digestOn: '📰 Сводка: включить',
+  digestOff: '📰 Сводка: выключить',
+  digestTime: '🕘 Час сводки',
 } as const;
 
 /** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
 export type BotState = {
-  await?: 'name' | 'new' | 'pack' | 'join' | 'rename' | 'fix' | 'late' | 'decline';
+  await?: 'name' | 'new' | 'pack' | 'join' | 'rename' | 'fix' | 'late' | 'decline' | 'digest_time';
   /** Черновик, который ждёт правку после «Изменить». */
   fix?: string;
   /** Задача, по которой ждём причину «не успею» / «отказ». */
@@ -48,7 +58,7 @@ export type BotState = {
   /** Выбранная категория отрасли: второй шаг показывает её отрасли. */
   cat?: string;
   /** Экран: по нему разбирается нажатие, потому что подписи повторяются. */
-  screen?: 'main' | 'orgs' | 'org' | 'profile' | 'billing' | 'confirm_delete';
+  screen?: 'main' | 'orgs' | 'org' | 'profile' | 'billing' | 'confirm_delete' | 'settings';
   /** Организация, открытая в карточке. */
   org?: string;
 };
@@ -56,11 +66,12 @@ export type BotState = {
 export type OrgRow = {
   id: string; name: string; role: Role; is_current: number;
   join_code: string | null; owner_user_id: string | null;
-};
+  industry_pack: string | null;
+} & Omit<OrgSchedule, 'id'>;
 
 export async function myOrgs(env: Env, userId: string): Promise<OrgRow[]> {
   const { results } = await env.DB.prepare(
-    `SELECT o.id, o.name, m.role AS role, o.join_code, o.owner_user_id,
+    `SELECT o.id, o.name, m.role AS role, o.join_code, o.owner_user_id, o.industry_pack, ${scheduleCols('o')},
             CASE WHEN u.current_org_id = o.id THEN 1 ELSE 0 END AS is_current
      FROM org_memberships m
      JOIN orgs o ON o.id = m.org_id
@@ -170,6 +181,9 @@ export function orgsScreen(orgs: OrgRow[]): Screen {
     keyboard: kb([
       ...orgs.map((o) => [{ text: `${o.is_current ? '● ' : '○ '}${o.name}` }]),
       [{ text: BTN.createShort }, { text: BTN.joinShort }],
+      // Уведомления и сводка -- здесь (раздел 21): это настройка человека и
+      // его текущей организации, а не отдельный экран.
+      [{ text: BTN.settings }],
       [{ text: BTN.back }],
     ]),
     state: { screen: 'orgs' },
@@ -237,6 +251,50 @@ export function industryScreen(orgName: string, categoryId: string): Screen {
   };
 }
 
+export type NotifyPrefs = { notify_mode: 'all' | 'schedule'; remind_before_min: number };
+
+export async function notifyPrefs(env: Env, userId: string): Promise<NotifyPrefs> {
+  const row = await env.DB.prepare("SELECT COALESCE(notify_mode, 'all') AS notify_mode, COALESCE(remind_before_min, 30) AS remind_before_min FROM users WHERE id = ?")
+    .bind(userId).first<NotifyPrefs>();
+  return row ?? { notify_mode: 'all', remind_before_min: 30 };
+}
+
+export async function setNotifyPrefs(env: Env, userId: string, patch: Partial<NotifyPrefs>): Promise<void> {
+  const sets: string[] = []; const vals: unknown[] = [];
+  if (patch.notify_mode) { sets.push('notify_mode = ?'); vals.push(patch.notify_mode); }
+  if (patch.remind_before_min !== undefined) { sets.push('remind_before_min = ?'); vals.push(patch.remind_before_min); }
+  if (!sets.length) return;
+  await env.DB.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).bind(...vals, userId).run();
+}
+
+/**
+ * Настройки: режим уведомлений и «за N минут» -- человека; сводка -- организации
+ * (только владельцу). Текущее состояние -- в тексте, кнопки статичны: подпись
+ * reply-кнопки -- это протокол, счётчик в ней сделал бы её подвижной мишенью.
+ */
+export function settingsScreen(prefs: NotifyPrefs, org: OrgSchedule & { name: string }, isOwner: boolean): Screen {
+  const lines = [
+    `Настройки · «${org.name}»`,
+    '',
+    `Уведомления: ${prefs.notify_mode === 'all' ? 'сразу из всех организаций' : 'по графику каждой организации'}`,
+    `Напоминать до срока: за ${prefs.remind_before_min} мин`,
+  ];
+  if (isOwner) {
+    lines.push('', org.always_on
+      ? 'График: 24/7'
+      : `График: ${org.work_start}–${org.work_end}${org.lunch_start && org.lunch_end ? `, обед ${org.lunch_start}–${org.lunch_end}` : ''}`);
+    lines.push(`Сводка: ${org.digest_enabled ? `в ${digestAt(org)}` : 'выключена'}`);
+    lines.push('', 'График работы меняется в приложении: Ещё → Организация.');
+  }
+  const rows: { text: string }[][] = [
+    [{ text: prefs.notify_mode === 'all' ? BTN.notifySchedule : BTN.notifyAll }],
+    [{ text: BTN.remind15 }, { text: BTN.remind30 }, { text: BTN.remind60 }],
+  ];
+  if (isOwner) rows.push([{ text: org.digest_enabled ? BTN.digestOff : BTN.digestOn }, { text: BTN.digestTime }]);
+  rows.push([{ text: BTN.back }]);
+  return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'settings' } };
+}
+
 export function confirmDeleteScreen(org: OrgRow): Screen {
   return {
     text: `Удалить «${org.name}»?\n\nЗадачи и история сохранятся, но организация исчезнет у всех её сотрудников.`,
@@ -285,6 +343,44 @@ export async function switchOrg(env: Env, userId: string, orgId: string): Promis
   ).bind(orgId, userId).first();
   if (!ok) return false;
   await env.DB.prepare('UPDATE users SET current_org_id = ? WHERE id = ?').bind(orgId, userId).run();
+  return true;
+}
+
+/** Владелец: колонка owner_user_id или членство creator. Один предикат на все правки организации. */
+export async function isOrgOwner(env: Env, userId: string, orgId: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT 1 FROM orgs o WHERE o.id = ? AND o.archived_at IS NULL AND (
+       o.owner_user_id = ? OR EXISTS (SELECT 1 FROM org_memberships m
+         WHERE m.org_id = o.id AND m.user_id = ? AND m.role = 'creator'
+           AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL))`,
+  ).bind(orgId, userId, userId).first();
+  return Boolean(row);
+}
+
+export type OrgSettingsPatch = Partial<Pick<OrgSchedule, 'work_days' | 'work_start' | 'work_end' | 'lunch_start' | 'lunch_end' | 'always_on' | 'digest_enabled' | 'digest_time'>>;
+
+const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** График и сводка организации. Проверяет и право, и форму значений: ввод приходит и из бота, и из приложения. */
+export async function updateOrgSettings(env: Env, userId: string, orgId: string, patch: OrgSettingsPatch): Promise<boolean> {
+  if (!(await isOrgOwner(env, userId, orgId))) return false;
+  const sets: string[] = []; const vals: unknown[] = [];
+  const put = (col: string, v: unknown) => { sets.push(`${col} = ?`); vals.push(v); };
+  if (patch.work_days !== undefined) {
+    if (!/^[1-7](,[1-7])*$/.test(patch.work_days)) return false;
+    put('work_days', patch.work_days);
+  }
+  for (const col of ['work_start', 'work_end', 'digest_time', 'lunch_start', 'lunch_end'] as const) {
+    const v = patch[col];
+    if (v === undefined) continue;
+    if (v === null) { if (col === 'work_start' || col === 'work_end') return false; put(col, null); continue; }
+    if (!HM.test(v)) return false;
+    put(col, v);
+  }
+  if (patch.always_on !== undefined) put('always_on', patch.always_on ? 1 : 0);
+  if (patch.digest_enabled !== undefined) put('digest_enabled', patch.digest_enabled ? 1 : 0);
+  if (!sets.length) return true;
+  await env.DB.prepare(`UPDATE orgs SET ${sets.join(', ')} WHERE id = ?`).bind(...vals, orgId).run();
   return true;
 }
 

@@ -90,16 +90,17 @@ describe('шаг 3: рассылка на четырнадцать челове�
     await scheduled({} as ScheduledController, env, {} as ExecutionContext);
     // Это и есть причина переезда таймеров: с по-задачным флагом первая же
     // отправка гасила его, и тринадцать человек не узнавали ничего никогда.
-    const overdue = sends(spy).filter(([, init]) => String(init.body).includes('ПРОСРОЧИЛИ'));
+    const overdue = sends(spy).filter(([, init]) => String(init.body).includes('Просрочено'));
     expect(overdue).toHaveLength(14);
 
-    const { n } = (await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM task_assignees WHERE task_id = ? AND last_escalated_at IS NOT NULL').bind(id).first<{ n: number }>())!;
+    // Журнал напоминаний -- по СТРОКЕ адресата: четырнадцать записей, не одна.
+    const { n } = (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM reminders WHERE kind = 'overdue' AND assignee_row_id IN (SELECT id FROM task_assignees WHERE task_id = ?)").bind(id).first<{ n: number }>())!;
     expect(n).toBe(14);
 
-    // Второй прогон молчит: гейт last_escalated_at держит «ровно один раз».
+    // Второй прогон в тот же час молчит: журнал держит «раз в час».
     const spy2 = tg();
     await scheduled({} as ScheduledController, env, {} as ExecutionContext);
-    expect(sends(spy2).filter(([, i]) => String(i.body).includes('ПРОСРОЧИЛИ'))).toHaveLength(0);
+    expect(sends(spy2).filter(([, i]) => String(i.body).includes('Просрочено'))).toHaveLength(0);
   });
 
   it('один отказ из четырнадцати не блокирует закрытие, четырнадцать дают archived', async () => {

@@ -179,7 +179,11 @@ export function localToday(now: Date, timeZone: string): { y: number; m: number;
   return { y: p.y, m: p.m, d: p.d };
 }
 
-export function matchDeadline(text: string, now: Date, timeZone: string): { iso: string | null; usedWords: Set<string> } {
+export function matchDeadline(
+  text: string, now: Date, timeZone: string,
+  /** Конец дня для «до завтра»/«в пятницу»: конец рабочего дня организации, у 24/7 -- 23:59. */
+  dayEnd = '18:00',
+): { iso: string | null; usedWords: Set<string> } {
   const used = new Set<string>();
   const lower = text.toLowerCase();
 
@@ -189,8 +193,11 @@ export function matchDeadline(text: string, now: Date, timeZone: string): { iso:
   const midnight = new Date(Date.UTC(today.y, today.m - 1, today.d));
 
   /** Местные Y/M/D + час -> настоящий момент времени. */
-  const at = (d: Date, hour = 18) =>
-    localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), hour, timeZone);
+  const at = (d: Date, hour?: number) => {
+    const [h, mi] = hour === undefined ? dayEnd.split(':').map(Number) : [hour, 0];
+    const iso = localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), h, timeZone);
+    return mi ? new Date(Date.parse(iso) + mi * 60000).toISOString() : iso;
+  };
   const mark = (...ws: string[]) => ws.forEach((w) => used.add(w));
 
   let base: Date | null = null;
@@ -406,10 +413,10 @@ function buildTitle(text: string, used: Set<string>[]): string {
  * Уверенность требуется в АДРЕСАТЕ: задача без исполнителя бессмысленна, а
  * угадывать его нельзя. Срок необязателен -- поручения без срока нормальны.
  */
-export function parseByPattern(text: string, people: Person[], selfId: string, now: Date, timeZone: string, packId?: string | null): Draft | null {
+export function parseByPattern(text: string, people: Person[], selfId: string, now: Date, timeZone: string, packId?: string | null, dayEnd?: string): Draft | null {
   const clean = text.replace(LEAD_NOISE, '').trim();
   const { ids, ambiguous, usedWords } = matchPeople(clean, people);
-  const { iso, usedWords: dateWords } = matchDeadline(clean, now, timeZone);
+  const { iso, usedWords: dateWords } = matchDeadline(clean, now, timeZone, dayEnd);
   const { priority, usedWords: priorityWords } = matchPriority(clean, packId);
 
   // «напомни мне завтра...» -- поручение себе. Оно же личный слой: адресат
@@ -518,8 +525,10 @@ export async function parseTask(
   now: Date = new Date(),
   /** Профиль организации: расширяет словари срочности и ознакомления. */
   packId?: string | null,
+  /** Конец дня из графика организации. */
+  dayEnd?: string,
 ): Promise<Draft> {
-  const byPattern = parseByPattern(text, people, selfId, now, timeZone, packId);
+  const byPattern = parseByPattern(text, people, selfId, now, timeZone, packId, dayEnd);
   if (byPattern && byPattern.ambiguous.length > 0) return byPattern;
   if (byPattern) return byPattern;
 
@@ -598,12 +607,13 @@ export async function refineDraft(
   timeZone: string,
   packId?: string | null,
   now: Date = new Date(),
+  dayEnd?: string,
 ): Promise<Partial<DraftFields>> {
   const clean = correction.replace(LEAD_NOISE, '').trim();
   // «не Азизу, а Беку»: тот, кто после «не», -- прежний адресат, его ищем
   // НЕ надо, иначе черновик получил бы обоих.
   const who = matchPeople(clean.replace(/(?:^|\s)не\s+\S+,?(?=\s+а\s)/i, ' '), people);
-  const when = matchDeadline(clean, now, timeZone);
+  const when = matchDeadline(clean, now, timeZone, dayEnd);
   const pri = matchPriority(clean, packId);
 
   const patch: Partial<DraftFields> = {};
