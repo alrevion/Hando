@@ -839,8 +839,12 @@ select.inp {
   transform: scale(0.94);
 }
 .cal-day.is-sel {
-  background: var(--bg2);
-  box-shadow: var(--card-ring);
+  /* Выбранный день -- ЗАЛИВКОЙ, а не рамкой. */
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.cal-day.is-sel .cal-n {
+  color: var(--accent);
+  font-weight: 700;
 }
 .cal-n {
   width: 28px;
@@ -1018,3 +1022,83 @@ select.inp {
     animation: none;
   }
 }
+
+
+/* ---- тосты: одна плашка над доком, без кнопок */
+.toast-host {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--safe-b) + 84px);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 70;
+}
+.toast {
+  background: var(--label);
+  color: var(--bg);
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}
+
+/* ---- «Ещё» */
+.more-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+.more-ic {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.more-ic svg { width: 20px; height: 20px; }
+
+/* ---- диалог с помощником */
+.bubble {
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 16px 16px 16px 4px;
+  background: var(--bg2);
+  box-shadow: var(--card-ring);
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+.bubble-me {
+  align-self: flex-end;
+  border-radius: 16px 16px 4px 16px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* ---- подсказки первых шагов */
+.tips {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg2));
+}
+.tips-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 14px;
+  color: var(--label2);
+  line-height: 1.45;
+}
+.tips-list li + li { margin-top: 3px; }

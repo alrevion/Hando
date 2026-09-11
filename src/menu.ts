@@ -45,11 +45,14 @@ export const BTN = {
   digestOff: '📰 Сводка: выключить',
   digestTime: '🕘 Час сводки',
   invite: '🔗 Ссылка-приглашение',
+  ask: '❓ Вопрос',
 } as const;
 
 /** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
 export type BotState = {
-  await?: 'name' | 'new' | 'pack' | 'join' | 'rename' | 'fix' | 'late' | 'decline' | 'digest_time';
+  await?: 'name' | 'new' | 'pack' | 'join' | 'rename' | 'fix' | 'late' | 'decline' | 'digest_time' | 'ask';
+  /** Последние реплики диалога с помощником -- чтобы уточнения работали. */
+  ask?: { role: 'user' | 'assistant'; text: string }[];
   /** Черновик, который ждёт правку после «Изменить». */
   fix?: string;
   /** Задача, по которой ждём причину «не успею» / «отказ». */
@@ -148,8 +151,8 @@ export function mainScreen(name: string, orgs: OrgRow[]): Screen {
       [
         boss ? [{ text: BTN.assigned }, { text: BTN.tasks }] : [{ text: BTN.tasks }, { text: BTN.assigned }],
         // Черновики -- то, что продиктовано, но не подтверждено. Они не
-        // пропадают, и кнопка нужна, чтобы к ним вернуться.
-        [{ text: BTN.drafts }],
+        // пропадают, и кнопка нужна, чтобы к ним вернуться. «Вопрос» -- помощник.
+        [{ text: BTN.drafts }, { text: BTN.ask }],
         [{ text: BTN.orgs }],
         [{ text: BTN.billing }],
         [{ text: BTN.profile }],
@@ -299,6 +302,24 @@ export function settingsScreen(prefs: NotifyPrefs, org: OrgSchedule & { name: st
   rows.push([{ text: BTN.back }]);
   return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'settings' } };
 }
+
+/** Экран диалога с помощником: любой текст или голос -- вопрос, «Назад» -- выход. */
+export function askScreen(): Screen {
+  return {
+    text: 'Спросите что угодно: «как отметить выполненную?», «за что взяться сначала?», «что у меня горит на неделе?». Можно голосом.',
+    keyboard: kb([[{ text: BTN.back }]], 'Ваш вопрос…'),
+    state: { screen: 'main', await: 'ask', ask: [] },
+  };
+}
+
+/** Тезисы для /start и /help (раздел 23): что умеет и куда нажимать. */
+export const START_TIPS = [
+  'Что умеет Hando:',
+  '• Напишите или наговорите поручение — «Азизу завтра до трёх подготовить отчёт». Я покажу черновик, вы нажмёте «Создать».',
+  '• Адресат получит карточку и ответит кнопками: Принять · Не успею · Отказать.',
+  '• Напомню за час и в срок, а утром пришлю сводку на день.',
+  '• Сдать работу, увидеть этапы, людей и аналитику — в приложении.',
+].join('\n');
 
 export function confirmDeleteScreen(org: OrgRow): Screen {
   return {

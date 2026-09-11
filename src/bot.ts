@@ -30,10 +30,12 @@ import { categoryByButton, packByButton } from './packs';
 import {
   askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
   billingScreen, categoryScreen, industryScreen, mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
-  setState, switchOrg, type OrgRow, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner } from './menu';
+  setState, switchOrg, type OrgRow, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner, askScreen, START_TIPS } from './menu';
 import { download, extractMedia } from './media';
 import { formatWhen, parseTask, refineDraft, transcribe, localIso, localToday } from './parse';
 import { dayEnd, hm, loadSchedule, type OrgSchedule } from './schedule';
+import { askAssistant } from './assistant';
+import { APP_URL } from './transition';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -812,10 +814,15 @@ botApp.post('/webhook', async (c) => {
   //
   // Имя из Telegram для обращения не годится: там латиница, никнейм или пусто.
   // А имя видят коллеги в поручениях. Спрашиваем один раз.
-  if (text === '/start' || text === '/начать' || text === '/menu' || text === '/меню') {
-    await show(c.env, chatId, userId, (await isOnboarded(c.env, userId))
-      ? mainScreen(myName, orgs)
-      : askNameScreen());
+  if (text === '/start' || text === '/начать' || text === '/menu' || text === '/меню' || text === '/help' || text === '/помощь') {
+    const onboarded = await isOnboarded(c.env, userId);
+    if (onboarded) {
+      // Тезисы с кнопкой в приложение (раздел 23): без этого никто не поймёт,
+      // что куда, -- слова владельца. Кнопка инлайновая: в постоянной
+      // клавиатуре приложение и так открывается кнопкой меню Telegram.
+      await sendMessage(c.env, chatId, START_TIPS, { inline_keyboard: [[{ text: '📱 Открыть приложение', web_app: { url: `${APP_URL}/` } }]] });
+    }
+    await show(c.env, chatId, userId, onboarded ? mainScreen(myName, orgs) : askNameScreen());
     return c.json({ ok: true });
   }
   if (!(await isOnboarded(c.env, userId))) {
@@ -840,13 +847,13 @@ botApp.post('/webhook', async (c) => {
   // Кнопка меню перебивает ожидание причины «не успею» / «отказ»: человек
   // передумал, и «Мои задачи» -- не причина. Сама причина разбирается ниже,
   // вместе с голосом (см. хвост: там уже есть расшифровка).
-  if ((st.await === 'late' || st.await === 'decline') && (Object.values(BTN) as string[]).includes(text)) {
-    await setState(c.env, userId, { ...st, await: undefined, task: undefined });
+  if ((st.await === 'late' || st.await === 'decline' || st.await === 'ask') && (Object.values(BTN) as string[]).includes(text)) {
+    await setState(c.env, userId, { ...st, await: undefined, task: undefined, ask: undefined });
     st.await = undefined;
   }
 
   // fix/late/decline разбираются в хвосте: там фраза уже расшифрована и с голоса.
-  if (st.await && st.await !== 'fix' && st.await !== 'late' && st.await !== 'decline' && text) {
+  if (st.await && st.await !== 'fix' && st.await !== 'late' && st.await !== 'decline' && st.await !== 'ask' && text) {
     if (st.await === 'name') {
       const ok = await setDisplayName(c.env, userId, text);
       await sendMessage(c.env, chatId, ok ? 'Имя обновлено.' : 'Слишком короткое имя.');
@@ -1032,6 +1039,9 @@ botApp.post('/webhook', async (c) => {
       await sendMessage(c.env, chatId, 'В какой час присылать сводку? Напишите, например: 08:30');
       return c.json({ ok: true });
     }
+    case BTN.ask:
+      await show(c.env, chatId, userId, askScreen());
+      return c.json({ ok: true });
     case BTN.invite: {
       if (!current) return c.json({ ok: true });
       const code = await inviteCodeFor(c.env, current.id, userId);
@@ -1139,6 +1149,20 @@ botApp.post('/webhook', async (c) => {
     id: p.id, name: p.name,
     aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined,
   }));
+
+  // ------------------------------------------------ вопрос помощнику
+  //
+  // Пока человек в диалоге, каждая фраза -- вопрос, а не поручение. Голос
+  // расшифрован выше. История -- в состоянии, чтобы уточнения работали.
+  if (st.await === 'ask') {
+    if (!phrase) return c.json({ ok: true });
+    const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
+    const history = st.ask ?? [];
+    const answer = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
+    await sendMessage(c.env, chat, answer);
+    await setState(c.env, userId, { ...st, ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: answer }].slice(-6) });
+    return c.json({ ok: true });
+  }
 
   // ------------------------------------------------ причина «не успею» / «отказ»
   //

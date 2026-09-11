@@ -79,6 +79,13 @@ const SCENARIOS: Scenario[] = [
     expectRows: 'accepted',
   },
   {
+    // «Не успею» -- комментарий автору, строка и статус не меняются.
+    name: 'не успею',
+    setup: [move('aziz', 'in_progress')],
+    act: { path: '/tasks/t1/late', method: 'POST', body: { comment: 'болею' }, as: 'aziz' },
+    expectRows: 'accepted',
+  },
+  {
     name: 'правка заголовка после «Принял»',
     setup: [move('aziz', 'in_progress')],
     act: { path: '/tasks/t1', method: 'PATCH', body: { title: 'Другая задача' }, as: 'boss' },

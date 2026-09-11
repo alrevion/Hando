@@ -279,8 +279,8 @@ describe('регистрация целиком через бота -- ПОСТ�
     // Кнопки мини-приложения в клавиатуре нет: у Telegram для этого своя кнопка
     // меню слева от строки ввода.
     expect(rows.flat().map((b) => b.text)).not.toContain('🌐 Приложение');
-    // Черновики, организации, подписка и профиль -- по одной кнопке в ряд.
-    expect(rows.slice(1).map((r) => r.map((b) => b.text))).toEqual([[BTN.drafts], [BTN.orgs], [BTN.billing], [BTN.profile]]);
+    // Черновики и вопрос рядом; организации, подписка и профиль -- по одной кнопке в ряд.
+    expect(rows.slice(1).map((r) => r.map((b) => b.text))).toEqual([[BTN.drafts, BTN.ask], [BTN.orgs], [BTN.billing], [BTN.profile]]);
 
     // Сотрудник приходит узнать, что делать ЕМУ.
     const code = sent(spy).map((m) => m.text).join(' ').match(/[A-Z2-9]{6}/)![0];

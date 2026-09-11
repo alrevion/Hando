@@ -8,7 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
-import { buildAssignees, confirmAssignees, declineAssignee, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
+import { buildAssignees, confirmAssignees, declineAssignee, lateAssignee, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { setTaskDeadline } from './intake';
 import {
@@ -18,8 +18,9 @@ import {
 import { CATEGORIES, PACKS, pack } from './packs';
 import { localIso, parseTask, transcribe } from './parse';
 import { approveJoin, createOrg, inviteCodeFor, inviteLink, joinByCode, notifyApprover, pendingRequests, rejectJoin } from './signup';
-import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers } from './hierarchy';
+import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers, visibleUserIds } from './hierarchy';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
+import { askAssistant, type AskTurn } from './assistant';
 import { dayEnd, hm, loadSchedule } from './schedule';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
@@ -339,6 +340,40 @@ apiRoutes.patch('/users/:id', requireRole('admin', 'super_admin', 'creator'), as
 
   await logEvent(c.env.DB, { actorId: c.get('userId'), orgId: c.get('orgId'), targetType: 'user', targetId, action: 'edited' });
   return c.json({ success: true });
+});
+
+// Карточка человека: сдано в срок, средняя просрочка, принял/отказался, в
+// работе сейчас -- за всё время и за 30 дней. Видит тот, кто видит человека.
+apiRoutes.get('/users/:id/stats', async (c) => {
+  const targetId = c.req.param('id');
+  const orgId = c.get('orgId');
+  const visible = await visibleUserIds(c.env, orgId, c.get('userId'), c.get('role'));
+  if (visible !== 'all' && !visible.has(targetId)) return c.json({ error: 'not found' }, 404);
+  if (!(await membershipRole(c.env.DB, orgId, targetId))) return c.json({ error: 'not found' }, 404);
+  const { results } = await c.env.DB.prepare(
+    `SELECT a.state, a.accepted_at, a.done_at, a.due_at, a.created_at, t.status AS task_status
+     FROM task_assignees a JOIN tasks t ON t.id = a.task_id
+     WHERE a.user_id = ? AND a.org_id = ?`,
+  ).bind(targetId, orgId).all<{ state: string; accepted_at: string | null; done_at: string | null; due_at: string | null; created_at: string; task_status: string }>();
+  const since = Date.now() - 30 * 86400_000;
+  const parse = (v: string) => Date.parse(v.includes('T') ? v : `${v.replace(' ', 'T')}Z`);
+  const stats = (rows: typeof results) => {
+    const done = rows.filter((r) => (r.state === 'done' || r.state === 'confirmed') && r.done_at);
+    const dated = done.filter((r) => r.due_at);
+    const late = dated.filter((r) => parse(r.done_at!) > parse(r.due_at!));
+    const avgLateDays = late.length
+      ? late.reduce((s, r) => s + (parse(r.done_at!) - parse(r.due_at!)) / 86400_000, 0) / late.length
+      : 0;
+    return {
+      done: done.length,
+      on_time_pct: dated.length ? Math.round(((dated.length - late.length) / dated.length) * 100) : null,
+      avg_late_days: Math.round(avgLateDays * 10) / 10,
+      accepted: rows.filter((r) => r.accepted_at).length,
+      declined: rows.filter((r) => r.state === 'declined').length,
+      in_progress: rows.filter((r) => (r.state === 'accepted' || r.state === 'rejected') && r.task_status !== 'archived').length,
+    };
+  };
+  return c.json({ all: stats(results), last30: stats(results.filter((r) => parse(r.created_at) >= since)) });
 });
 
 // Справочник людей -- ПО ДЕРЕВУ (раздел 19): владелец видит всех, руководитель
@@ -759,6 +794,19 @@ apiRoutes.post('/users/:id/unfreeze', requireRole('admin', 'super_admin', 'creat
   await setFrozen(c.env, c.get('orgId'), targetId, false);
   await logEvent(c.env.DB, { actorId: c.get('userId'), orgId: c.get('orgId'), targetType: 'membership', targetId: c.get('orgId'), action: 'unfrozen', comment: targetId });
   return c.json({ ok: true });
+});
+
+// «Вопрос» -- тот же помощник, что кнопка в боте: как пользоваться и за что взяться.
+apiRoutes.post('/ask', async (c) => {
+  const b = await c.req.json<{ question?: string; history?: AskTurn[] }>().catch(() => ({}) as Record<string, undefined>);
+  const question = (b.question ?? '').trim().slice(0, 2000);
+  if (!question) return c.json({ error: 'question required' }, 400);
+  const history = Array.isArray(b.history)
+    ? b.history.filter((h) => (h.role === 'user' || h.role === 'assistant') && typeof h.text === 'string').slice(-6)
+    : [];
+  const me = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(c.get('userId')).first<{ name: string }>();
+  const answer = await askAssistant(c.env, { userId: c.get('userId'), orgId: c.get('orgId'), role: c.get('role'), name: me?.name ?? '' }, question, history);
+  return c.json({ answer });
 });
 
 apiRoutes.patch('/me', async (c) => {
@@ -1382,6 +1430,19 @@ apiRoutes.post('/tasks/:id/decline', requireProjectAccess('task'), async (c) => 
   return c.json({ success: true });
 });
 
+// «Не успею» -- тем же путём, что кнопка бота: строка не меняется, автору
+// уходит комментарий с кнопками «перенести · оставить · переназначить».
+apiRoutes.post('/tasks/:id/late', requireProjectAccess('task'), async (c) => {
+  const task = c.get('task')!;
+  const mine = await myAssignee(c.env, task.id, c.get('userId'), c.get('orgId'));
+  if (!mine) return c.json({ error: 'only an assignee can report' }, 403);
+  const { comment } = await c.req.json<{ comment?: string }>().catch(() => ({ comment: undefined }));
+  if (!comment || !comment.trim()) return c.json({ error: 'comment required' }, 400);
+  if (!(await lateAssignee(c.env, task, mine, c.get('userId'), comment))) return c.json({ error: 'not in progress' }, 409);
+  await drainOutbox(c.env);
+  return c.json({ success: true });
+});
+
 // Список адресатов задачи с их состояниями -- то самое «кто на каком этапе».
 apiRoutes.get('/tasks/:id/assignees', requireProjectAccess('task'), async (c) => {
   const { results } = await c.env.DB.prepare(
@@ -1393,8 +1454,10 @@ apiRoutes.get('/tasks/:id/assignees', requireProjectAccess('task'), async (c) =>
 });
 
 // Delete = archive (never hard delete). super_admin/creator only.
-apiRoutes.delete('/tasks/:id', requireProjectAccess('task'), requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.delete('/tasks/:id', requireProjectAccess('task'), async (c) => {
   const task = c.get('task')!;
+  // Удаляет автор или владелец -- те же, кто отменяет кнопкой в боте.
+  if (!isReviewer(c, task)) return c.json({ error: 'only the author can delete' }, 403);
   await applyTransition(c.env, {
     task, to: 'archived', actorId: c.get('userId'), action: 'deleted',
     set: { telegram_message_id: null },

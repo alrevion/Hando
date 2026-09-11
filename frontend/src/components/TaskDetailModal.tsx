@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Sheet } from './Sheet';
-import { AlertTriangle, CalendarDays, Download, File as FileIcon, X } from 'lucide-react';
+import { AlertTriangle, CalendarDays, Download, File as FileIcon, Paperclip, Pencil, Trash2, X } from 'lucide-react';
 import type { ContentBlock, Task, User } from '../types';
 import { parseContentBlocks } from '../types';
 import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
@@ -9,6 +9,9 @@ import { Lightbox } from './Lightbox';
 import { STATE_PILL, stateLabel } from '../lib/tasks';
 import { QuickEdit } from './QuickEdit';
 import { useAuth } from '../context/AuthContext';
+import { useData } from '../context/DataContext';
+import { ApiError, deleteTask, getAttachments, updateTask, uploadAttachment, type AttachmentRow } from '../lib/api';
+import { toast } from '../lib/toast';
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -65,7 +68,22 @@ export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDet
   // сервере (routes.ts, PATCH /tasks/:id/quick). Кнопок, ведущих в 403, быть
   // не должно.
   const { user: me } = useAuth();
+  const { refresh } = useData();
   const canQuickEdit = !!me && (task.author_id === me.id || me.role === 'creator' || me.role === 'super_admin');
+  // Вложения -- в том числе присланные боту: они лежат в attachments, а не в
+  // content_blocks, и раньше приложение их не показывало вовсе.
+  const [files, setFiles] = useState<AttachmentRow[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  const [busy, setBusy] = useState(false);
+  const loadFiles = () => { getAttachments(task.id).then(setFiles).catch(() => setFiles([])); };
+  useEffect(loadFiles, [task.id]);
+  const inBlocks = new Set(parseContentBlocks(task).flatMap((b) => (b.type === 'image' || b.type === 'file' ? [b.attachment_id] : [])));
+  const extra = files.filter((f) => !inBlocks.has(f.id));
+  async function run(fn: () => Promise<unknown>, done: string) {
+    setBusy(true);
+    try { await fn(); toast(done); await refresh(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(false); }
+  }
   const isOverdue = isTaskOverdue(task);
   const reviewOverdue = isReviewOverdue(task);
   const blocks = parseContentBlocks(task);
@@ -78,7 +96,15 @@ export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDet
   return (
     <Sheet labelledBy="task-detail-title" onClose={onClose}>
         <div className="sheet-head">
-          <h2 id="task-detail-title" className="sheet-title">{task.title}</h2>
+          {editing ? (
+            <form className="grow t-row" style={{ gap: 6 }} onSubmit={async (e) => { e.preventDefault(); if (title.trim() && title.trim() !== task.title) await run(() => updateTask(task.id, { title: title.trim() }), 'Тема изменена'); setEditing(false); }}>
+              <input className="inp grow" autoFocus value={title} aria-label="Тема" onChange={(e) => setTitle(e.target.value)} />
+              <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>Ок</button>
+            </form>
+          ) : <h2 id="task-detail-title" className="sheet-title">{task.title}</h2>}
+          {canQuickEdit && !editing && task.status !== 'done' ? (
+            <button type="button" onClick={() => setEditing(true)} aria-label="Изменить тему" className="btn-icon"><Pencil aria-hidden="true" /></button>
+          ) : null}
           <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">
             <X aria-hidden="true" />
           </button>
@@ -166,6 +192,41 @@ export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDet
               );
             });
           })()}
+        </div>
+
+        {extra.length > 0 ? (
+          <div className="stack" style={{ gap: 6, marginTop: 12 }}>
+            <div className="sec-title" style={{ margin: 0 }}>Вложения</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {extra.filter((f) => f.mime_type.startsWith('image/')).map((f) => (
+                <a key={f.id} href={`/api/attachments/${f.id}/download`} target="_blank" rel="noreferrer">
+                  <img src={`/api/attachments/${f.id}/download`} alt={f.filename} loading="lazy" style={{ width: 132, height: 132, objectFit: 'cover', borderRadius: 12, background: 'var(--fill2)' }} />
+                </a>
+              ))}
+            </div>
+            {extra.filter((f) => !f.mime_type.startsWith('image/')).map((f) => (
+              <a key={f.id} href={`/api/attachments/${f.id}/download`} className="card card-tap"
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--fill2)', boxShadow: 'none', textDecoration: 'none' }}>
+                <FileIcon aria-hidden="true" style={{ width: 18, height: 18, flexShrink: 0, color: 'var(--label3)' }} />
+                <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 15 }}>{f.filename}</span>
+                <span className="muted" style={{ fontSize: 12.5, flexShrink: 0 }}>{formatSize(f.size_bytes)}</span>
+                <Download aria-hidden="true" style={{ width: 16, height: 16, flexShrink: 0, color: 'var(--blue)' }} />
+              </a>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="btn-row" style={{ marginTop: 14 }}>
+          <label className="btn" style={{ position: 'relative', overflow: 'hidden' }}>
+            <Paperclip aria-hidden="true" style={{ width: 16, height: 16 }} />Прикрепить файл
+            <input type="file" disabled={busy} aria-label="Прикрепить файл" style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%' }}
+              onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; await run(() => uploadAttachment(task.id, f), 'Файл приложен'); loadFiles(); e.target.value = ''; }} />
+          </label>
+          {canQuickEdit ? (
+            <button type="button" className="btn btn-danger" disabled={busy} onClick={async () => { if (window.confirm(`Удалить «${task.title}»?`)) { await run(() => deleteTask(task.id), 'Удалено'); onClose(); } }}>
+              <Trash2 aria-hidden="true" style={{ width: 16, height: 16 }} />Удалить
+            </button>
+          ) : null}
         </div>
 
         {canQuickEdit ? <div style={{ marginTop: 18 }}><QuickEdit task={task} /></div> : null}

@@ -1,21 +1,28 @@
 import { useMemo, useState } from 'react';
+import { Check, Trash2, UserRound, X } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
-
+import { useData } from '../context/DataContext';
 import { isTaskOverdue } from '../lib/overdue';
+import { ApiError, confirmTask, deleteTask, rejectTask, updateTask } from '../lib/api';
+import { toast } from '../lib/toast';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
+import { RejectTaskModal } from './RejectTaskModal';
+import { Sheet } from './Sheet';
 
 /**
- * «Мои поручения» -- что человек раздал и кто на каком этапе.
- *
- * Отдельный экран от «Моих задач» по смыслу: сюда смотрят, чтобы узнать чужой
- * прогресс, а не чтобы понять, что делать самому. Директор открывает приложение
- * ради этого экрана, поэтому у него он первый.
+ * «Поручения» -- что я раздал, по этапам (раздел 22): к выполнению, в работе,
+ * сдано. Сданное принимают или возвращают здесь; любое живое -- переназначают
+ * или удаляют. Директор открывает приложение ради этого экрана.
  */
 export function AssignedView({ user }: { user: User }) {
   const { tasks, projects, loading, loadError } = useOrgTasks();
+  const { users, refresh } = useData();
   const [viewing, setViewing] = useState<Task | null>(null);
+  const [rejecting, setRejecting] = useState<Task | null>(null);
+  const [reassigning, setReassigning] = useState<Task | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
   const mine = useMemo(
     () => tasks
@@ -27,11 +34,20 @@ export function AssignedView({ user }: { user: User }) {
       }),
     [tasks, user.id],
   );
+  const sections = [
+    { key: 'todo', title: 'К выполнению', rows: mine.filter(({ task }) => task.status === 'todo') },
+    { key: 'in_progress', title: 'В работе', rows: mine.filter(({ task }) => task.status === 'in_progress') },
+    { key: 'done', title: 'Сдано', rows: mine.filter(({ task }) => task.status === 'done') },
+  ];
+
+  async function act(task: Task, fn: () => Promise<unknown>, done: string) {
+    setBusy(task.id);
+    try { await fn(); toast(done); await refresh(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(null); }
+  }
 
   return (
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
       <h1 className="h1">Мои поручения</h1>
-
       {loadError ? <div role="alert" className="alert alert-err">{loadError}</div> : null}
 
       {loading ? (
@@ -39,35 +55,78 @@ export function AssignedView({ user }: { user: User }) {
       ) : mine.length === 0 ? (
         <div className="empty">
           <b>Вы пока ничего не поручали</b>
-          Наговорите боту: «Азизу завтра подготовить отчёт» -- и поручение появится здесь.
+          Нажмите «+» или наговорите боту: «Азизу завтра подготовить отчёт».
         </div>
-      ) : (
-        <ul className="stack">
-          {mine.map(({ task, projectName }) => {
-            const overdue = isTaskOverdue(task);
-            return (
-              <li key={task.id}>
-                <button
-                  type="button"
-                  onClick={() => setViewing(task)}
-                  className={`card card-tap${overdue ? ' is-overdue' : ''}`}
-                >
-                  <span className="t-title">{task.title}</span>
-                  <TaskMeta
-                    task={task}
-                    projectName={projectName}
-                    showProject={projects.length > 1}
-                    line
-                    showStage={false}
-                    who={(task.assignees ?? []).filter((a) => a.user_id !== user.id).map((a) => ({ name: a.user_name, state: a.state }))}
-                  />
+      ) : sections.map((sec) => sec.rows.length === 0 ? null : (
+        <section key={sec.key}>
+          <h2 className="sec-title">{sec.title} · {sec.rows.length}</h2>
+          <ul className="stack">
+            {sec.rows.map(({ task, projectName }) => {
+              const isBusy = busy === task.id;
+              return (
+                <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
+                  <button type="button" style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }} onClick={() => setViewing(task)}>
+                    <span className="t-title">{task.title}</span>
+                    <TaskMeta task={task} projectName={projectName} showProject={projects.length > 1} line showStage={false}
+                      who={(task.assignees ?? []).filter((a) => a.user_id !== user.id).map((a) => ({ name: a.user_name, state: a.state }))} />
+                  </button>
+                  <div className="btn-row" style={{ marginTop: 10 }}>
+                    {task.status === 'done' && !task.confirmed_at ? (
+                      <>
+                        <button type="button" className="btn btn-sm btn-primary" disabled={isBusy} onClick={() => act(task, () => confirmTask(task.id), 'Принято')}>
+                          <Check aria-hidden="true" style={{ width: 14, height: 14 }} />Принять
+                        </button>
+                        <button type="button" className="btn btn-sm" disabled={isBusy} onClick={() => setRejecting(task)}>
+                          <X aria-hidden="true" style={{ width: 14, height: 14 }} />Вернуть
+                        </button>
+                      </>
+                    ) : task.status === 'done' ? (
+                      <span className="pill pill-green"><span>Принято</span></span>
+                    ) : (
+                      <>
+                        {task.kind === 'single' ? (
+                          <button type="button" className="btn btn-sm" disabled={isBusy} onClick={() => setReassigning(task)}>
+                            <UserRound aria-hidden="true" style={{ width: 14, height: 14 }} />Переназначить
+                          </button>
+                        ) : null}
+                        <button type="button" className="btn btn-sm btn-danger" disabled={isBusy} onClick={() => { if (window.confirm(`Удалить «${task.title}»?`)) void act(task, () => deleteTask(task.id), 'Удалено'); }}>
+                          <Trash2 aria-hidden="true" style={{ width: 14, height: 14 }} />Удалить
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
+
+      {rejecting ? (
+        <RejectTaskModal task={rejecting} onClose={() => setRejecting(null)}
+          onReject={(comment, extraDays) => act(rejecting, () => rejectTask(rejecting.id, comment, extraDays), 'Возвращено в работу')} />
+      ) : null}
+      {reassigning ? (
+        <Sheet labelledBy="reassign-title" onClose={() => setReassigning(null)}>
+          <div className="sheet-head">
+            <h2 id="reassign-title" className="sheet-title">Кому переназначить</h2>
+            <button type="button" onClick={() => setReassigning(null)} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
+          </div>
+          <ul className="stack">
+            {users.filter((u) => u.id !== user.id && !u.frozen_at).map((u) => (
+              <li key={u.id}>
+                <button type="button" className="card card-tap" onClick={async () => {
+                  const t = reassigning; setReassigning(null);
+                  await act(t, () => updateTask(t.id, { responsible_user_id: u.id }), `Теперь у ${u.name}`);
+                }}>
+                  <span className="t-title">{u.name}</span>
+                  {u.position ? <span className="t-meta"><span>{u.position}</span></span> : null}
                 </button>
               </li>
-            );
-          })}
-        </ul>
-      )}
-
+            ))}
+          </ul>
+        </Sheet>
+      ) : null}
       {viewing ? <TaskDetailModal task={viewing} responsible={undefined} onClose={() => setViewing(null)} /> : null}
     </div>
   );

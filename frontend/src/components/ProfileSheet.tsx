@@ -3,18 +3,18 @@ import { Sheet } from './Sheet';
 import { Check, LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { User } from '../types';
 import {
-  ApiError, createOrg, deleteOrg, getDrafts, getMe, getMyOrgs, getPacks, joinOrgByCode, leaveOrg,
-  renameOrg, setMyName, switchOrg, type DraftView, type MyOrg, type OrgPack,
+  ApiError, deleteOrg, getMe, getMyOrgs, leaveOrg,
+  renameOrg, setMyName, switchOrg, type MyOrg,
 } from '../lib/api';
-import { DraftCard } from './DraftCard';
+import { OrgJoinForm } from './OrgJoinForm';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 
 const ROLE_NAME: Record<string, string> = {
   creator: 'Владелец',
   super_admin: 'Руководитель',
-  admin: 'Администратор',
-  member: 'Сотрудник',
+  admin: 'Руководитель отдела',
+  member: 'Участник',
 };
 
 const JOIN_ERROR: Record<string, string> = {
@@ -38,36 +38,18 @@ const JOIN_ERROR: Record<string, string> = {
  */
 export function ProfileSheet({ user, onClose }: { user: User; onClose: () => void }) {
   const { setUser } = useAuth();
-  const { refresh, users } = useData();
+  const { refresh } = useData();
   const [orgs, setOrgs] = useState<MyOrg[]>([]);
-  // Черновики -- то же, что кнопка «Черновики» в боте: продиктованное, но не
-  // подтверждённое. Оно не пропадает и ждёт здесь.
-  const [drafts, setDrafts] = useState<DraftView[]>([]);
-  const loadDrafts = () => { getDrafts().then(setDrafts).catch(() => setDrafts([])); };
-  useEffect(loadDrafts, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   // Что сейчас редактируется: имя, название организации, новая организация, код.
-  const [edit, setEdit] = useState<{ kind: 'name' | 'rename' | 'create' | 'join'; orgId?: string } | null>(null);
+  const [edit, setEdit] = useState<{ kind: 'name' | 'rename' | 'create'; orgId?: string } | null>(null);
   const [draft, setDraft] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  // Профили отрасли приходят с сервера, а не лежат копией здесь: две копии
-  // разошлись бы, и бот с приложением заводили бы разные отделы под одним
-  // названием профиля.
-  const [packs, setPacks] = useState<OrgPack[]>([]);
-  const [cats, setCats] = useState<{ id: string; title: string; emoji: string }[]>([]);
-  // Отраслей сотня: сначала категория, потом отрасль внутри неё.
-  const [chosenCat, setChosenCat] = useState('other');
-  const [chosenPack, setChosenPack] = useState('generic');
 
   const load = () => { getMyOrgs().then(setOrgs).catch(() => setOrgs([])); };
   useEffect(load, []);
-  useEffect(() => {
-    getPacks()
-      .then((c) => { setPacks(c.industries); setCats(c.categories); })
-      .catch(() => { setPacks([]); setCats([]); });
-  }, []);
 
   /** Общая обёртка: одна кнопка -- одно действие -- один разбор ошибки. */
   async function run(fn: () => Promise<unknown>, after?: 'reload' | 'orgs') {
@@ -145,26 +127,6 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
           </div>
         )}
 
-        {/* ---- черновики ---- */}
-        {drafts.length > 0 ? (
-          <>
-            <h3 className="sec-title">Черновики · {drafts.length}</h3>
-            <ul className="stack">
-              {drafts.map((d) => (
-                <li key={d.id}>
-                  <DraftCard
-                    draft={d}
-                    users={users}
-                    me={user}
-                    onCreated={async () => { loadDrafts(); await refresh(); }}
-                    onDeleted={loadDrafts}
-                  />
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : null}
-
         {/* ---- организации ---- */}
         <h3 className="sec-title">Организации</h3>
         <ul className="stack">
@@ -241,80 +203,18 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
         </ul>
 
         {edit?.kind === 'create' ? (
-          // Своя разметка, а не общий field(): у создания два поля, и кнопка
-          // «Сохранить» обязана стоять ПОСЛЕ выбора профиля, а не между ними.
-          <form onSubmit={(e) => { e.preventDefault(); run(() => createOrg(draft.trim(), chosenPack), 'reload'); }}>
-            <div className="field">
-              <label className="lbl" htmlFor="org-name">Как назвать организацию</label>
-              <input
-                id="org-name"
-                className="inp"
-                autoFocus
-                value={draft}
-                placeholder="Например, «Ромашка»"
-                onChange={(e) => setDraft(e.target.value)}
-              />
-            </div>
-
-            {/* Профиль спрашивается ЗДЕСЬ же, а не потом: от него зависят
-                отделы, которые заведутся вместе с организацией, и слова,
-                которые бот будет понимать как срочные. */}
-            <div className="field">
-              <span className="lbl">Чем занимаетесь</span>
-              <div className="chips" style={{ paddingBottom: 6 }}>
-                {cats.map((k) => (
-                  <button
-                    key={k.id}
-                    type="button"
-                    className={chosenCat === k.id ? 'chip on' : 'chip'}
-                    onClick={() => {
-                      setChosenCat(k.id);
-                      // Первая отрасль категории -- разумное умолчание: иначе
-                      // остался бы выбор из прежней категории.
-                      const first = packs.find((p) => p.category === k.id);
-                      if (first) setChosenPack(first.id);
-                    }}
-                  >
-                    {k.emoji} {k.title}
-                  </button>
-                ))}
-              </div>
-              <div className="chips" style={{ paddingBottom: 0 }}>
-                {packs.filter((p) => p.category === chosenCat).map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    className={chosenPack === p.id ? 'chip on' : 'chip'}
-                    onClick={() => setChosenPack(p.id)}
-                  >
-                    {p.title}
-                  </button>
-                ))}
-              </div>
-              <p className="hint">
-                Отделы: {(packs.find((p) => p.id === chosenPack)?.departments ?? []).join(', ')}
-              </p>
-            </div>
-
-            <div className="btn-row">
-              <button type="button" className="btn" onClick={() => { setEdit(null); setDraft(''); }}>Отмена</button>
-              <button type="submit" className="btn btn-primary" disabled={busy || !draft.trim()}>Создать</button>
-            </div>
-          </form>
-        ) : edit?.kind === 'join' ? (
-          field('Код организации', 'Шесть символов', () =>
-            run(async () => {
-              const res = await joinOrgByCode(draft.trim());
-              setInfo(`Заявка в «${res.org_name}» отправлена. Ждём подтверждения.`);
-            }))
+          <OrgJoinForm
+            onCancel={() => setEdit(null)}
+            onDone={async (kind, name) => {
+              if (kind === 'requested') { setInfo(`Заявка в «${name}» отправлена. Ждём подтверждения.`); setEdit(null); load(); return; }
+              await run(async () => {}, 'reload');
+            }}
+          />
         ) : (
           <div className="btn-row">
             <button type="button" className="btn" onClick={() => { setEdit({ kind: 'create' }); setDraft(''); }}>
               <Plus aria-hidden="true" style={{ width: 16, height: 16 }} />
-              Создать
-            </button>
-            <button type="button" className="btn" onClick={() => { setEdit({ kind: 'join' }); setDraft(''); }}>
-              Вступить по коду
+              Создать или вступить
             </button>
           </div>
         )}

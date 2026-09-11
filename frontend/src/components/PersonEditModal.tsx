@@ -23,6 +23,7 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  void canPromoteToSuperAdmin; // ролей три: super_admin больше не выдаётся
   const isCreator = person.role === 'creator';
   const roleLocked = isCreator || isSelf;
 
@@ -41,7 +42,7 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
         name: name.trim(),
         phone: phone.trim(),
         telegram_username: telegramUsername.trim(),
-        ...(roleLocked ? {} : { role: role as 'admin' | 'super_admin' }),
+        ...(roleLocked ? {} : { role: role as 'admin' | 'member' }),
       });
       onSaved();
       onClose();
@@ -136,8 +137,8 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
                 onChange={(e) => setRole(e.target.value as Role)}
                 className="mb-4 w-full rounded-md border border-[var(--hair)] bg-[var(--bg2)] px-3 py-2 text-sm focus-visible:outline-blue-600"
               >
-                <option value="admin">Admin</option>
-                {canPromoteToSuperAdmin || person.role === 'super_admin' ? <option value="super_admin">Super-admin</option> : null}
+                <option value="admin">Руководитель отдела</option>
+                <option value="member">Участник</option>
               </select>
             </>
           )}

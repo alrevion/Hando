@@ -82,8 +82,20 @@ export const createUser = (input: { phone: string; name: string; role: 'super_ad
 // to super_admin is creator-only; the backend re-enforces it.
 export const updateUser = (
   userId: string,
-  input: Partial<{ name: string; phone: string; telegram_username: string; role: 'admin' | 'super_admin' }>,
+  input: Partial<{ name: string; phone: string; telegram_username: string; role: 'admin' | 'member' }>,
 ) => patch<void>(`/users/${userId}`, input);
+// Заморозка и удаление из организации (раздел 19): владелец -- любого,
+// руководитель отдела -- в своём поддереве. Открытые поручения вернутся авторам.
+export const freezeUser = (userId: string) => post<{ ok: true; returned: number }>(`/users/${userId}/freeze`, {});
+export const unfreezeUser = (userId: string) => post<{ ok: true }>(`/users/${userId}/unfreeze`, {});
+export const removeOrgMember = (orgId: string, userId: string) => del<void>(`/orgs/${orgId}/members/${userId}`);
+export interface PersonStats {
+  done: number; on_time_pct: number | null; avg_late_days: number; accepted: number; declined: number; in_progress: number;
+}
+export const getUserStats = (userId: string) => get<{ all: PersonStats; last30: PersonStats }>(`/users/${userId}/stats`);
+/** «Все задания»: обзор поддерева, не всей организации. */
+export const getSubtreeTasks = () => get<{ tasks: Task[] }>('/org/subtree-tasks').then((r) => r.tasks);
+export const getInviteLink = (orgId: string) => get<{ code: string; link: string }>(`/orgs/${orgId}/invite`);
 
 // --- Project memberships ---
 export const addMember = (projectId: string, userId: string) =>
@@ -127,6 +139,11 @@ export const confirmTask = (taskId: string) =>
 export const rejectTask = (taskId: string, comment: string, extraDays: number) =>
   post<Task>(`/tasks/${taskId}/reject`, { comment, extra_days: extraDays });
 export const deleteTask = (taskId: string) => del<void>(`/tasks/${taskId}`);
+// «Не успею» и «Отказать» -- те же, что кнопки под карточкой в боте.
+export const lateTask = (taskId: string, comment: string) => post<void>(`/tasks/${taskId}/late`, { comment });
+export const declineTask = (taskId: string, reason: string) => post<void>(`/tasks/${taskId}/decline`, { reason });
+export interface AttachmentRow { id: string; filename: string; mime_type: string; size_bytes: number; uploaded_by_name: string | null; created_at: string; }
+export const getAttachments = (taskId: string) => get<AttachmentRow[]>(`/tasks/${taskId}/attachments`);
 export const restoreTask = (taskId: string, comment: string) =>
   post<Task>(`/tasks/${taskId}/restore`, { comment });
 
@@ -220,7 +237,22 @@ export interface MyOrg {
   is_current: number;
   join_code: string | null;
   owner_user_id: string | null;
+  industry_pack: string | null;
+  timezone: string;
+  work_days: string;
+  work_start: string;
+  work_end: string;
+  lunch_start: string | null;
+  lunch_end: string | null;
+  always_on: number;
+  digest_enabled: number;
+  digest_time: string | null;
 }
+export type OrgSettingsPatch = Partial<Pick<MyOrg, 'work_days' | 'work_start' | 'work_end' | 'lunch_start' | 'lunch_end' | 'always_on' | 'digest_enabled' | 'digest_time'>>;
+export const updateOrgSettings = (orgId: string, patchBody: OrgSettingsPatch) =>
+  request<{ ok: true }>(`/orgs/${orgId}`, { method: 'PATCH', body: JSON.stringify(patchBody) });
+export const updateMe = (patchBody: { notify_mode?: 'all' | 'schedule'; remind_before_min?: number }) =>
+  request<{ ok: true }>('/me', { method: 'PATCH', body: JSON.stringify(patchBody) });
 
 export const getMyOrgs = () => request<MyOrg[]>('/orgs/mine');
 /** Профиль отрасли: от него зависят отделы организации и словарь разбора. */
@@ -303,3 +335,8 @@ export const deleteDraft = (id: string) => request<{ ok: true }>(`/drafts/${id}`
  *  Срок принимается и как «2026-09-11»: час дописывает сервер в поясе организации. */
 export const quickEditTask = (taskId: string, patch: { deadline?: string | null; priority?: Priority }) =>
   request<{ ok: true }>(`/tasks/${taskId}/quick`, { method: 'PATCH', body: JSON.stringify(patch) });
+
+/** «Вопрос»: диалог с помощником; история -- последние реплики, чтобы уточнения работали. */
+export interface AskTurn { role: 'user' | 'assistant'; text: string }
+export const askAssistant = (question: string, history: AskTurn[]) =>
+  request<{ answer: string }>('/ask', { method: 'POST', body: JSON.stringify({ question, history: history.slice(-6) }) });

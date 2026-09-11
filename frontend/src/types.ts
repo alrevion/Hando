@@ -21,8 +21,16 @@ export interface User {
   // из членства, а не из строки users). В списке GET /api/users их нет, поэтому
   // они опциональны: один тип обслуживает оба ответа, а не два почти одинаковых.
   position?: string | null;
-  org_id?: string;
-  org_name?: string;
+  // null -- сессия без организации: приложение показывает «создайте или вступите».
+  org_id?: string | null;
+  org_name?: string | null;
+  // Заявки, которые ждут решения (только для сессии без организации).
+  pending?: string[];
+  notify_mode?: 'all' | 'schedule';
+  remind_before_min?: number;
+  // Дерево (раздел 19): заморозка и кто пригласил. Только в списке людей.
+  frozen_at?: string | null;
+  invited_by?: string | null;
 }
 
 /** Строка адресата: у каждого своё состояние и свой срок. */

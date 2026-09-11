@@ -14,6 +14,7 @@ import { PersonalArchiveTab } from './components/PersonalArchiveTab';
 import { ArchivedProjectsView } from './components/ArchivedProjectsView';
 import { AccessTab } from './components/AccessTab';
 import { getTask } from './lib/api';
+import { NoOrgScreen } from './components/NoOrgScreen';
 import type { Task } from './types';
 
 function AuthenticatedApp() {
@@ -193,6 +194,8 @@ function AppShell() {
     return <div className="app-frame" style={{ alignItems: 'center', justifyContent: 'center' }}><span className="muted">Загрузка…</span></div>;
   }
   if (!user) return <LoginPage />;
+  // Первая организация -- здесь (раздел 18), а склад данных без неё не нужен.
+  if (user.org_id === null) return <NoOrgScreen user={user} />;
   return (
     <DataProvider>
       <AuthenticatedApp />

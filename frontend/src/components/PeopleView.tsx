@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, X } from 'lucide-react';
+import { Check, ChevronDown, Search, Snowflake, Trash2, X } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
 import { isTaskOverdue } from '../lib/overdue';
-import { approveMember, getOrgPositions, getPendingMembers, rejectMember, type PendingMember } from '../lib/api';
+import { ApiError, approveMember, freezeUser, getOrgPositions, getPendingMembers, getUserStats, rejectMember, removeOrgMember, unfreezeUser, updateUser, type PendingMember, type PersonStats } from '../lib/api';
+import { useAuth } from '../context/AuthContext';
+import { useData } from '../context/DataContext';
+import { toast } from '../lib/toast';
 import type { Role } from '../types';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
@@ -45,6 +48,16 @@ export function PeopleView() {
   // список просто не появляется.
   const [pending, setPending] = useState<PendingMember[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const { user: me } = useAuth();
+  const { refresh } = useData();
+  const [query, setQuery] = useState('');
+  // Аналитика по человеку грузится при раскрытии карточки, а не на весь список.
+  const [stats, setStats] = useState<Record<string, { all: PersonStats; last30: PersonStats }>>({});
+  const canManage = !!me && me.role !== 'member';
+  async function manage(userId: string, fn: () => Promise<unknown>, done: string) {
+    setBusyId(userId);
+    try { await fn(); toast(done); await refresh(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusyId(null); }
+  }
   // Кем и куда принять. Выбор живёт на карточке заявки, а не в отдельном
   // окне: это одно действие в два касания, а не настройка.
   const [choice, setChoice] = useState<Record<string, { role: Role; project?: string; position?: string }>>({});
@@ -68,14 +81,16 @@ export function PeopleView() {
     }
   }
 
+  // Ролей три (решение 10.09): владельца с кнопки не выдают.
   const ROLES: { value: Role; label: string }[] = [
-    { value: 'member', label: 'Сотрудник' },
+    { value: 'member', label: 'Участник' },
     { value: 'admin', label: 'Руководитель отдела' },
-    { value: 'super_admin', label: 'Руководитель' },
   ];
+  const ROLE_NAME: Record<string, string> = { creator: 'Владелец', super_admin: 'Руководитель', admin: 'Руководитель отдела', member: 'Участник' };
 
   const rows = useMemo<PersonRow[]>(() => {
-    const list = users.map((user) => {
+    const q = query.trim().toLowerCase();
+    const list = users.filter((u) => !q || u.name.toLowerCase().includes(q) || (u.position ?? '').toLowerCase().includes(q)).map((user) => {
       const own = tasks.filter(({ task }) => isMine(task, user.id));
       return {
         user,
@@ -94,14 +109,20 @@ export function PeopleView() {
         b.in_progress.length - a.in_progress.length ||
         a.user.name.localeCompare(b.user.name),
     );
-  }, [tasks, users]);
+  }, [tasks, users, query]);
 
   return (
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
       <h1 className="h1">Люди</h1>
 
       {loadError ? <div role="alert" className="alert alert-err">{loadError}</div> : null}
-      {forbidden ? <div role="alert" className="alert alert-warn">Справочник организации доступен только руководителям.</div> : null}
+      {forbidden ? <div role="alert" className="alert alert-warn">Список людей недоступен.</div> : null}
+      <div className="field" style={{ marginBottom: 10 }}>
+        <div className="t-row" style={{ alignItems: 'center', gap: 8 }}>
+          <Search aria-hidden="true" style={{ width: 16, height: 16, color: 'var(--label3)', flexShrink: 0 }} />
+          <input className="inp grow" aria-label="Найти человека" placeholder="Найти человека" value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
+      </div>
 
       {/* Заявки выше списка: это единственное, что здесь требует решения. */}
       {pending.length > 0 ? (
@@ -205,7 +226,10 @@ export function PeopleView() {
               <li key={row.user.id} className="card" style={{ padding: 0 }}>
                 <button
                   type="button"
-                  onClick={() => setExpandedId(expanded ? null : row.user.id)}
+                  onClick={() => {
+                    setExpandedId(expanded ? null : row.user.id);
+                    if (!expanded && !stats[row.user.id]) getUserStats(row.user.id).then((st) => setStats((p) => ({ ...p, [row.user.id]: st }))).catch(() => {});
+                  }}
                   aria-expanded={expanded}
                   className="card card-tap"
                   style={{ boxShadow: 'none' }}
@@ -215,7 +239,8 @@ export function PeopleView() {
                     <span className="grow">
                       <span className="t-title">{row.user.name}</span>
                       <span className="t-meta">
-                        {row.user.position ? <span>{row.user.position}</span> : null}
+                        <span>{row.user.position || ROLE_NAME[row.user.role] || ''}</span>
+                        {row.user.frozen_at ? <span className="c-orange">заморожен</span> : null}
                         {/* Без Telegram-хэндла человека нельзя ни упомянуть, ни довести
                             до него уведомление -- на экране руководителя это такой же
                             факт о ходе работы, как счётчики этапов. */}
@@ -243,6 +268,36 @@ export function PeopleView() {
                   </span>
                 </button>
 
+                {expanded ? (
+                  <div style={{ borderTop: '0.5px solid var(--sep)', padding: '10px 12px 4px' }}>
+                    {(() => {
+                      const st = stats[row.user.id];
+                      if (!st) return <p className="muted" style={{ fontSize: 13 }}>Считаю…</p>;
+                      const line = (label: string, s: PersonStats) => (
+                        <div key={label} className="t-meta" style={{ display: 'block', marginBottom: 4 }}>
+                          <b>{label}:</b> сдано {s.done}{s.on_time_pct !== null ? ` · в срок ${s.on_time_pct}%` : ''}{s.avg_late_days > 0 ? ` · просрочка ${s.avg_late_days} дн.` : ''} · принял {s.accepted} · отказался {s.declined} · в работе {s.in_progress}
+                        </div>
+                      );
+                      return <>{line('30 дней', st.last30)}{line('Всё время', st.all)}</>;
+                    })()}
+                    {canManage && me && row.user.id !== me.id && row.user.role !== 'creator' ? (
+                      <div className="btn-row" style={{ marginTop: 8 }}>
+                        <select className="inp" style={{ width: 'auto', padding: '6px 10px' }} aria-label="Роль" value={row.user.role === 'super_admin' ? 'admin' : row.user.role} disabled={busyId === row.user.id}
+                          onChange={(e) => manage(row.user.id, () => updateUser(row.user.id, { role: e.target.value as 'admin' | 'member' }), 'Роль изменена')}>
+                          {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                        </select>
+                        <button type="button" className="btn btn-sm" disabled={busyId === row.user.id}
+                          onClick={() => manage(row.user.id, () => (row.user.frozen_at ? unfreezeUser(row.user.id) : freezeUser(row.user.id)), row.user.frozen_at ? 'Разморожен' : 'Заморожен, поручения вернулись авторам')}>
+                          <Snowflake aria-hidden="true" style={{ width: 14, height: 14 }} />{row.user.frozen_at ? 'Разморозить' : 'Заморозить'}
+                        </button>
+                        <button type="button" className="btn btn-sm btn-danger" disabled={busyId === row.user.id}
+                          onClick={() => { if (me.org_id && window.confirm(`Удалить ${row.user.name} из организации? История сохранится.`)) void manage(row.user.id, () => removeOrgMember(me.org_id as string, row.user.id), 'Удалён'); }}>
+                          <Trash2 aria-hidden="true" style={{ width: 14, height: 14 }} />Удалить
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 {expanded ? (
                   <ul style={{ borderTop: '0.5px solid var(--sep)', padding: '6px 8px 8px' }}>
                     {active.length === 0 ? (
