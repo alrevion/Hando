@@ -75,6 +75,25 @@ describe('шаг 3: рассылка на четырнадцать челове�
     expect(states[0].n).toBe(13);
   });
 
+  it('автор двигает этапы за исполнителя: pending -> accepted -> done одним нажатием; посторонний -- нет', async () => {
+    const env = await world();
+    tg();
+    const res = await apiRoutes.request('/projects/p1/tasks',
+      json(await cookie('boss', 'creator', ORG_A), { title: 'Купить бумагу', assignee_ids: ['u0'], deadline: '2030-01-01T00:00:00.000Z' }), env);
+    const { id } = await res.json<{ id: string }>();
+    // Не адресат и не автор -- 403.
+    expect((await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('u1', 'member', ORG_A), { to: 'in_progress' }), env)).status).toBe(403);
+    // Автор: в работу.
+    expect((await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'in_progress' }), env)).status).toBe(200);
+    expect((await testEnv.DB.prepare('SELECT state FROM task_assignees WHERE task_id = ?').bind(id).first<{ state: string }>())!.state).toBe('accepted');
+    expect((await testEnv.DB.prepare('SELECT status FROM tasks WHERE id = ?').bind(id).first<{ status: string }>())!.status).toBe('in_progress');
+    // Автор: сдано -- задача ждёт его же «Принять».
+    expect((await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'done' }), env)).status).toBe(200);
+    expect((await testEnv.DB.prepare('SELECT status, confirmed_at FROM tasks WHERE id = ?').bind(id).first<{ status: string; confirmed_at: string | null }>())).toMatchObject({ status: 'done', confirmed_at: null });
+    // Повторно двигать нечего.
+    expect((await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'done' }), env)).status).toBe(409);
+  });
+
   it('у каждого адресата СВОЙ таймер: cron предупреждает всех, а не одного', async () => {
     const env = await world();
     tg();

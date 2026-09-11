@@ -420,7 +420,9 @@ body {
   transform: scale(0.985);
 }
 .card.is-overdue {
-  box-shadow: var(--card-ring), inset 3px 0 0 var(--red);
+  /* Просрочку показывает красная плашка срока внутри карточки, а не полоса
+     слева: полоса читается как «сгенерированный» интерфейс. */
+  box-shadow: var(--card-ring);
 }
 
 .t-title {
@@ -615,9 +617,7 @@ body {
 .btn-primary {
   background: var(--accent);
   color: var(--accent-fg);
-  text-transform: uppercase;
-  letter-spacing: 1.1px;
-  font-size: 14px;
+  font-weight: 600;
 }
 .btn-primary:active {
   filter: brightness(0.9);
@@ -632,7 +632,6 @@ body {
   padding: 0 14px;
   border-radius: 999px;
   font-size: 13px;
-  letter-spacing: 0.4px;
 }
 .btn-icon {
   /* flex-shrink: 0 обязателен: кнопка живёт в flex-строке рядом с длинным

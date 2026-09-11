@@ -8,7 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
-import { buildAssignees, confirmAssignees, declineAssignee, lateAssignee, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
+import { buildAssignees, canTransition, confirmAssignees, declineAssignee, lateAssignee, loadAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { setTaskDeadline } from './intake';
 import {
@@ -1401,19 +1401,28 @@ async function isReviewer(c: Context<AppEnv>, task: Task): Promise<boolean> {
 // адресата, а статус задачи -- её свёртка.
 
 apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
-  const task = c.get('task')!;
+  let task = c.get('task')!;
   const orgId = c.get('orgId');
-  // Правило «двигает только ответственный» стало «двигает СВОЮ строку каждый
-  // адресат»: у рассылки на 14 человек единственного ответственного нет.
-  const mine = await myAssignee(c.env, task.id, c.get('userId'), orgId);
-  if (!mine) return c.json({ error: 'only an assignee can move this task' }, 403);
-
+  const userId = c.get('userId');
   const { to } = await c.req.json<{ to?: TaskStatus }>().catch(() => ({ to: undefined }));
   if (!to) return c.json({ error: 'to required' }, 400);
   // Словарь фронта -- в состояния адресата: доска говорит статусами задачи,
   // а движется теперь строка человека.
   const target = to === 'in_progress' ? 'accepted' : to === 'done' ? 'done' : null;
   if (!target) return c.json({ error: `invalid transition ${task.status} -> ${to}` }, 409);
+
+  // Правило «двигает только ответственный» стало «двигает СВОЮ строку каждый
+  // адресат»: у рассылки на 14 человек единственного ответственного нет.
+  // Автор (и тот, кто принимает работу) двигает ЗА адресатов: стрелки на
+  // карточке поручения -- механизм доски, а исполнитель может и не открывать
+  // приложение. Ведёт по цепочке pending -> accepted -> done одним нажатием.
+  const mine = await myAssignee(c.env, task.id, userId, orgId);
+  const rows = mine ? [mine]
+    : (await isReviewer(c, task))
+      ? (await loadAssignees(c.env, task.id, orgId)).filter((r) => canTransition(r.state, target) || (target === 'done' && r.state === 'pending'))
+      : null;
+  if (!rows) return c.json({ error: 'only an assignee can move this task' }, 403);
+  if (!rows.length) return c.json({ error: `invalid transition ${task.status} -> ${to}` }, 409);
 
   // "Draft the contract" must be done before "review the contract" can start --
   // a single predecessor task that has to reach done/archived first.
@@ -1426,13 +1435,21 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
     }
   }
 
-  const res = await transitionAssignee(c.env, {
-    task, assignee: mine, to: target, actorId: c.get('userId'),
-    notify: target === 'accepted'
-      ? { emoji: '🚀', label: 'В работе', track: true }
-      : { emoji: '✅', label: 'Готово', deletePrevious: true },
-  });
-  if (!res.ok) return c.json({ error: res.error }, 409);
+  const notify = target === 'accepted'
+    ? { emoji: '🚀', label: 'В работе', track: true }
+    : { emoji: '✅', label: 'Готово', deletePrevious: true };
+  for (const row of rows) {
+    // Цепочка -- только за исполнителя: сам он идёт по этапам, как и в боте.
+    const steps: AssigneeState[] = !mine && target === 'done' && row.state === 'pending' ? ['accepted', 'done'] : [target];
+    let assignee = row;
+    for (const step of steps) {
+      const res = await transitionAssignee(c.env, { task, assignee, to: step, actorId: userId, notify: step === target ? notify : undefined });
+      if (!res.ok) return c.json({ error: res.error }, 409);
+      assignee = { ...assignee, state: step, accepted_at: assignee.accepted_at ?? nowIso() };
+      // Свёртка читает статус из объекта: после перехода он уже другой.
+      task = (await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>()) ?? task;
+    }
+  }
   await drainOutbox(c.env);
   return c.json({ success: true });
 });

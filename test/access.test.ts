@@ -138,29 +138,29 @@ describe('access control', () => {
     fetchSpy.mockRestore();
   });
 
-  it('a super_admin/creator who is NOT the responsible person is also forbidden from moving a task -- no role override', async () => {
+  it('владелец двигает этапы за исполнителя (он принимает работу), посторонний админ -- нет', async () => {
     const env = await envWith({
       users: [
         { id: 'a1', phone: '+1', name: 'Responsible', role: 'admin' },
-        { id: 's1', phone: '+9', name: 'S', role: 'super_admin' },
+        { id: 'x1', phone: '+9', name: 'Outsider', role: 'admin' },
         { id: 'c1', phone: '+0', name: 'C', role: 'creator' },
       ],
       memberships: [],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'a1', deadline: null }],
     });
-    const bySuperAdmin = await apiRoutes.request(
+    const byOutsider = await apiRoutes.request(
       '/tasks/t1/move',
-      { method: 'POST', headers: { Cookie: await cookie('s1', 'super_admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ to: 'in_progress' }) },
+      { method: 'POST', headers: { Cookie: await cookie('x1', 'admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ to: 'in_progress' }) },
       env,
     );
-    expect(bySuperAdmin.status).toBe(403);
+    expect(byOutsider.status).toBe(403);
     const byCreator = await apiRoutes.request(
       '/tasks/t1/move',
       { method: 'POST', headers: { Cookie: await cookie('c1', 'creator'), 'Content-Type': 'application/json' }, body: JSON.stringify({ to: 'in_progress' }) },
       env,
     );
-    expect(byCreator.status).toBe(403);
+    expect(byCreator.status).toBe(200);
   });
 
   it('a super_admin who is neither a member nor the project creator is forbidden -- each board has its own people', async () => {

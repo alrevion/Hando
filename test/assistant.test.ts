@@ -64,6 +64,32 @@ describe('помощник', () => {
     expect(a).toBe('Начните с отчёта: срок в субботу.');
   });
 
+  it('«удали …» -- удаляет своё поручение сам, чужое -- нет', async () => {
+    const env = await world();
+    tg();
+    // w1 -- адресат, не автор: удалить не вправе.
+    const no = await askAssistant(env, { userId: 'w1', orgId: ORG_A, role: 'member', name: 'Азиз' }, 'удали купить бумагу');
+    expect(no).toContain('Что именно удалить');
+    expect((await testEnv.DB.prepare("SELECT status FROM tasks WHERE id='t2'").first<{ status: string }>())!.status).toBe('todo');
+    // boss -- автор: удаляет.
+    const yes = await askAssistant(env, { userId: 'boss', orgId: ORG_A, role: 'creator', name: 'Директор' }, 'удали задачу купить бумагу');
+    expect(yes).toContain('Удалено: «Купить бумагу»');
+    expect((await testEnv.DB.prepare("SELECT status FROM tasks WHERE id='t2'").first<{ status: string }>())!.status).toBe('archived');
+  });
+
+  it('с моделью: JSON с delete -- удаляется только разрешённое, reply без markdown', async () => {
+    const env = { ...(await world()), GROQ_API_KEY: 'k' };
+    restore = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).includes('groq')) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply: 'Готово, **убрал** дубль.', delete: ['t2', 'nope'] }) } }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+    });
+    const a = await askAssistant(env, { userId: 'boss', orgId: ORG_A, role: 'creator', name: 'Директор' }, 'удали дубль', []);
+    expect(a).toBe('Готово, убрал дубль.\n\nУдалено: «Купить бумагу».');
+    expect((await testEnv.DB.prepare("SELECT status FROM tasks WHERE id='t2'").first<{ status: string }>())!.status).toBe('archived');
+  });
+
   it('бот: «Вопрос» открывает диалог, фраза -- вопрос, а не поручение; «Назад» выходит', async () => {
     const env = await world();
     const spy = tg();

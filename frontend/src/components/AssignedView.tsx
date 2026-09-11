@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Check, Trash2, UserRound, X } from 'lucide-react';
+import { ArrowRight, Check, Trash2, UserRound, X } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
 import { useData } from '../context/DataContext';
 import { isTaskOverdue } from '../lib/overdue';
-import { ApiError, confirmTask, deleteTask, rejectTask, updateTask } from '../lib/api';
+import { ApiError, confirmTask, deleteTask, moveTask, rejectTask, updateTask } from '../lib/api';
 import { toast } from '../lib/toast';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
@@ -86,6 +86,11 @@ export function AssignedView({ user }: { user: User }) {
                       <span className="pill pill-green"><span>Принято</span></span>
                     ) : (
                       <>
+                        {/* Стрелка этапа -- механизм доски: автор двигает за исполнителя. */}
+                        <button type="button" className="btn btn-sm" disabled={isBusy}
+                          onClick={() => act(task, () => moveTask(task.id, task.status === 'todo' ? 'in_progress' : 'done'), task.status === 'todo' ? 'В работе' : 'Сдано')}>
+                          <ArrowRight aria-hidden="true" style={{ width: 14, height: 14 }} />{task.status === 'todo' ? 'В работу' : 'Сдано'}
+                        </button>
                         {task.kind === 'single' ? (
                           <button type="button" className="btn btn-sm" disabled={isBusy} onClick={() => setReassigning(task)}>
                             <UserRound aria-hidden="true" style={{ width: 14, height: 14 }} />Переназначить

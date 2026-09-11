@@ -231,16 +231,18 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
             <input type="file" disabled={busy} aria-label="Прикрепить файл" style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%' }}
               onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; await run(() => uploadAttachment(task.id, f), 'Файл приложен'); loadFiles(); e.target.value = ''; }} />
           </label>
-          {canQuickEdit ? (
-            <button type="button" className="btn btn-danger" disabled={busy} onClick={async () => { if (window.confirm(`Удалить «${task.title}»?`)) { await run(() => deleteTask(task.id), 'Удалено'); onClose(); } }}>
-              <Trash2 aria-hidden="true" style={{ width: 16, height: 16 }} />Удалить
-            </button>
-          ) : null}
         </div>
 
         {canQuickEdit ? <div style={{ marginTop: 18 }}><QuickEdit task={task} /></div> : null}
 
         {actions ? <div className="stack" style={{ gap: 8, marginTop: 20 }}>{actions}</div> : null}
+
+        {/* Разрушительное -- последним и отдельно: по правилам шторок iOS. */}
+        {canQuickEdit ? (
+          <button type="button" className="btn btn-danger" style={{ marginTop: 28 }} disabled={busy} onClick={async () => { if (window.confirm(`Удалить «${task.title}»?`)) { await run(() => deleteTask(task.id), 'Удалено'); onClose(); } }}>
+            <Trash2 aria-hidden="true" style={{ width: 16, height: 16 }} />Удалить задачу
+          </button>
+        ) : null}
 
       {/* Просмотр фото поверх шторки: свой слой, поэтому живёт рядом с ней. */}
       {lightboxIndex !== null ? (
