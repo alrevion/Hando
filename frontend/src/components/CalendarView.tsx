@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { ShowMore, usePaging } from './ShowMore';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
@@ -82,6 +83,8 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
   const todayKey = localDayKey(new Date());
 
   const selectedTasks = byDay.get(selected) ?? [];
+  // Счёт начинается заново на каждый выбранный день.
+  const { shown, more } = usePaging(selected);
   const selectedDate = new Date(`${selected}T00:00:00`);
 
   return (
@@ -144,7 +147,7 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
         <p className="muted" style={{ padding: '4px 4px 0' }}>На этот день сроков нет.</p>
       ) : (
         <ul className="stack">
-          {selectedTasks.map(({ task, projectName }) => {
+          {selectedTasks.slice(0, shown).map(({ task, projectName }) => {
             const overdue = isTaskOverdue(task);
             const who = usersById.get(assigneeKey(task))?.name ?? task.assignees?.[0]?.user_name;
             return (
@@ -166,6 +169,7 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
           })}
         </ul>
       )}
+      <ShowMore total={selectedTasks.length} shown={shown} onMore={more} />
 
       {undated > 0 ? (
         <p className="hint" style={{ marginTop: 14 }}>Без срока: {undated} -- такие задачи в сетку не попадают.</p>

@@ -646,7 +646,12 @@ apiRoutes.post('/drafts/:id/attachments', async (c) => {
   if (file.size > MAX_ATTACHMENT_BYTES) return c.json({ error: 'Файл больше 20 МБ' }, 413);
 
   const mime = file.type || 'application/octet-stream';
-  const { fileId } = await sendDocument(c.env, c.env.TELEGRAM_STORAGE_CHAT_ID, file, file.name);
+  // Склад -- бот-группа Telegram, и она может не ответить. Молчаливая пятисотка
+  // выглядит как «кнопка не работает»: человек жмёт ещё раз, а причина не
+  // названа. Говорим прямо.
+  const stored = await sendDocument(c.env, c.env.TELEGRAM_STORAGE_CHAT_ID, file, file.name).catch(() => null);
+  if (!stored) return c.json({ error: 'Файл не сохранился. Попробуйте ещё раз или пришлите его боту в чат.' }, 502);
+  const { fileId } = stored;
   const media = [...mediaOf(row), {
     kind: mime.startsWith('image/') ? 'photo' as const : 'document' as const,
     fileId, filename: file.name, mimeType: mime, sizeBytes: file.size, hasAudio: false,
@@ -1689,7 +1694,9 @@ apiRoutes.post('/tasks/:id/attachments', requireProjectAccess('task'), async (c)
   if (file.size > MAX_ATTACHMENT_BYTES) return c.json({ error: 'file exceeds the 20MB limit' }, 413);
 
   const mime = file.type || 'application/octet-stream';
-  const { fileId, messageId } = await sendDocument(c.env, c.env.TELEGRAM_STORAGE_CHAT_ID, file, file.name);
+  const stored = await sendDocument(c.env, c.env.TELEGRAM_STORAGE_CHAT_ID, file, file.name).catch(() => null);
+  if (!stored) return c.json({ error: 'Файл не сохранился. Попробуйте ещё раз или пришлите его боту в чат.' }, 502);
+  const { fileId, messageId } = stored;
   const id = uuid();
   await c.env.DB.prepare(
     `INSERT INTO attachments (id, org_id, task_id, telegram_file_id, telegram_message_id, filename, mime_type, size_bytes, uploaded_by)

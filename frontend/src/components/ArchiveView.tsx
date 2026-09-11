@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { ShowMore, usePaging } from './ShowMore';
 import { RotateCcw } from 'lucide-react';
 import type { ArchivedTaskEntry, Task, User } from '../types';
 import { ApiError, getMyArchive, getProjectArchive, restoreTask } from '../lib/api';
@@ -66,7 +67,7 @@ export function ArchiveView({ user }: { user: User }) {
       {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
       <h2 className="sec-title">Моё сданное и закрытое</h2>
       {mine === null ? <p className="muted">Загрузка…</p> : mine.length === 0 ? <p className="muted">Пока пусто.</p> : (
-        <ul className="stack">{mine.map((e) => entry(e, false))}</ul>
+        <Paged items={mine} render={(e) => entry(e, false)} />
       )}
       {owner ? projects.map((p) => {
         const list = org[p.id];
@@ -74,7 +75,7 @@ export function ArchiveView({ user }: { user: User }) {
         return (
           <section key={p.id}>
             <h2 className="sec-title">Архив · {p.name}</h2>
-            <ul className="stack">{list.map((e) => entry(e, true))}</ul>
+            <Paged items={list} render={(e) => entry(e, true)} />
           </section>
         );
       }) : null}
@@ -90,5 +91,19 @@ export function ArchiveView({ user }: { user: User }) {
           onClose={() => setRestoring(null)} />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Список архива порциями. Отдельный компонент нужен из-за состояния: у «моего»
+ * архива и у каждой доски свой счётчик показанных, а хук в цикле не позвать.
+ */
+function Paged({ items, render }: { items: ArchivedTaskEntry[]; render: (e: ArchivedTaskEntry) => ReactNode }) {
+  const { shown, more } = usePaging(items.length === 0);
+  return (
+    <>
+      <ul className="stack">{items.slice(0, shown).map(render)}</ul>
+      <ShowMore total={items.length} shown={shown} onMore={more} />
+    </>
   );
 }
