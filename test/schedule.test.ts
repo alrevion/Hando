@@ -44,11 +44,15 @@ describe('график', () => {
     expect(inWorkHours({ ...SCHED, always_on: 1 }, new Date('2026-09-12T20:00:00Z'))).toBe(true);
   });
 
-  it('«до завтра» -- конец рабочего дня по графику; у 24/7 -- 23:59', () => {
+  it('«до завтра» -- конец СЕГОДНЯШНИХ суток, 23:59 при любом графике', () => {
+    // Предлог меняет смысл: «сдать до завтра» -- это успеть, пока завтра не
+    // наступило. Прежде разбор давал завтрашний вечер, то есть лишние сутки.
+    // Час здесь не из графика: в полночь и наступает то самое «завтра».
     const local = (iso: string) => new Intl.DateTimeFormat('ru-RU', { timeZone: TZ, day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
-    expect(local(matchDeadline('сдать до завтра', NOW, TZ, '17:30').iso!)).toBe('11, 17:30');
-    expect(local(matchDeadline('сдать до завтра', NOW, TZ, dayEnd({ ...SCHED, always_on: 1 })).iso!)).toBe('11, 23:59');
-    expect(local(matchDeadline('сдать до завтра', NOW, TZ).iso!)).toBe('11, 18:00');
+    expect(local(matchDeadline('сдать до завтра', NOW, TZ, '17:30').iso!)).toBe('10, 23:59');
+    expect(local(matchDeadline('сдать до завтра', NOW, TZ, dayEnd({ ...SCHED, always_on: 1 })).iso!)).toBe('10, 23:59');
+    // А просто «завтра» -- завтрашний день по графику организации.
+    expect(local(matchDeadline('сдать завтра', NOW, TZ, '17:30').iso!)).toBe('11, 17:30');
   });
 });
 

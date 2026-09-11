@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { toast } from '../lib/toast';
 import type { Role } from '../types';
+import { Confirm } from './Confirm';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
 import { isMine } from '../lib/tasks';
@@ -17,6 +18,10 @@ const STAGE_LABEL: Record<'todo' | 'in_progress' | 'done', string> = {
   in_progress: 'В работе',
   done: 'На проверке',
 };
+
+// Список людей подгружаем по 10: поиск всё равно идёт по всем (rows строится
+// из полного users), лимит только режет то, что рисуется на экране.
+const PAGE_SIZE = 10;
 
 interface PersonRow {
   user: User;
@@ -51,6 +56,13 @@ export function PeopleView() {
   const { user: me } = useAuth();
   const { refresh } = useData();
   const [query, setQuery] = useState('');
+  const [shown, setShown] = useState(PAGE_SIZE);
+  // Новый поиск -- новый лимит: иначе после фильтра остаток старой пагинации
+  // мог оставить список обрезанным без кнопки «ещё», чтобы это заметить.
+  useEffect(() => { setShown(PAGE_SIZE); }, [query]);
+  // Рискованное действие спрашивает подтверждение через Confirm, а не
+  // window.confirm; kind определяет заголовок, текст и вызов API.
+  const [confirmAction, setConfirmAction] = useState<{ user: User; kind: 'delete' | 'freeze' | 'unfreeze' } | null>(null);
   // Аналитика по человеку грузится при раскрытии карточки, а не на весь список.
   // null -- посчитать не удалось: иначе «Считаю…» крутилось бы вечно.
   const [stats, setStats] = useState<Record<string, { all: PersonStats; last30: PersonStats } | null>>({});
@@ -134,9 +146,10 @@ export function PeopleView() {
       {loadError ? <div role="alert" className="alert alert-err">{loadError}</div> : null}
       {forbidden ? <div role="alert" className="alert alert-warn">Список людей недоступен.</div> : null}
       <div className="field" style={{ marginBottom: 10 }}>
-        <div className="t-row" style={{ alignItems: 'center', gap: 8 }}>
-          <Search aria-hidden="true" style={{ width: 16, height: 16, color: 'var(--label3)', flexShrink: 0 }} />
-          <input className="inp grow" aria-label="Найти человека" placeholder="Найти человека" value={query} onChange={(e) => setQuery(e.target.value)} />
+        {/* Лупа внутри поля, слева от текста -- обычный паттерн поиска. */}
+        <div className="search-wrap">
+          <Search aria-hidden="true" className="search-ic" />
+          <input className="inp inp-search" aria-label="Найти человека" placeholder="Найти человека" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
       </div>
 
@@ -235,8 +248,9 @@ export function PeopleView() {
           Пришлите сотруднику код организации из бота -- он появится здесь.
         </div>
       ) : (
+        <>
         <ul className="stack">
-          {rows.map((row) => {
+          {rows.slice(0, shown).map((row) => {
             const expanded = expandedId === row.user.id;
             const active = [...row.todo, ...row.in_progress, ...row.done];
             return (
@@ -299,19 +313,25 @@ export function PeopleView() {
                       return <>{line('30 дней', st.last30)}{line('Всё время', st.all)}</>;
                     })()}
                     {canManage && me && row.user.id !== me.id && row.user.role !== 'creator' && managed.has(row.user.id) ? (
-                      <div className="btn-row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
-                        <select className="inp" style={{ width: 'auto', padding: '6px 10px' }} aria-label="Роль" value={row.user.role === 'super_admin' ? 'admin' : row.user.role} disabled={busyId === row.user.id}
+                      <div style={{ marginTop: 8 }}>
+                        {/* select-sm подгоняет высоту и скругление под .btn-sm рядом,
+                            иначе строка выглядит рваной. */}
+                        <select className="inp select-sm" style={{ width: 'auto' }} aria-label="Роль" value={row.user.role === 'super_admin' ? 'admin' : row.user.role} disabled={busyId === row.user.id}
                           onChange={(e) => manage(row.user.id, () => updateUser(row.user.id, { role: e.target.value as 'admin' | 'member' }), 'Роль изменена')}>
                           {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                         </select>
-                        <button type="button" className="btn btn-sm" disabled={busyId === row.user.id}
-                          onClick={() => manage(row.user.id, () => (row.user.frozen_at ? unfreezeUser(row.user.id) : freezeUser(row.user.id)), row.user.frozen_at ? 'Разморожен' : 'Заморожен, поручения вернулись авторам')}>
-                          <Snowflake aria-hidden="true" style={{ width: 14, height: 14 }} />{row.user.frozen_at ? 'Разморозить' : 'Заморозить'}
-                        </button>
-                        <button type="button" className="btn btn-sm btn-danger" disabled={busyId === row.user.id}
-                          onClick={() => { if (me.org_id && window.confirm(`Удалить ${row.user.name} из организации? История сохранится.`)) void manage(row.user.id, () => removeOrgMember(me.org_id as string, row.user.id), 'Удалён'); }}>
-                          <Trash2 aria-hidden="true" style={{ width: 14, height: 14 }} />Удалить
-                        </button>
+                        {/* Заморозить и удалить -- один ряд: select живёт строкой выше,
+                            чтобы длинное название роли не отталкивало «Удалить» вниз. */}
+                        <div className="btn-row" style={{ marginTop: 8 }}>
+                          <button type="button" className="btn btn-sm" disabled={busyId === row.user.id}
+                            onClick={() => setConfirmAction({ user: row.user, kind: row.user.frozen_at ? 'unfreeze' : 'freeze' })}>
+                            <Snowflake aria-hidden="true" style={{ width: 14, height: 14 }} />{row.user.frozen_at ? 'Разморозить' : 'Заморозить'}
+                          </button>
+                          <button type="button" className="btn btn-sm btn-danger" disabled={busyId === row.user.id}
+                            onClick={() => setConfirmAction({ user: row.user, kind: 'delete' })}>
+                            <Trash2 aria-hidden="true" style={{ width: 14, height: 14 }} />Удалить
+                          </button>
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -343,10 +363,46 @@ export function PeopleView() {
             );
           })}
         </ul>
+        {/* «Показать ещё» вместо автоподгрузки на скролле -- проще и
+            надёжнее в WebView Telegram. */}
+        {shown < rows.length ? (
+          <button type="button" className="btn" style={{ marginTop: 10 }} onClick={() => setShown((n) => n + PAGE_SIZE)}>
+            Показать ещё
+          </button>
+        ) : null}
+        </>
       )}
 
       {viewing ? (
         <TaskDetailModal task={viewing.task} responsible={viewing.responsible} onClose={() => setViewing(null)} />
+      ) : null}
+
+      {confirmAction ? (
+        <Confirm
+          title={
+            confirmAction.kind === 'delete' ? `Удалить ${confirmAction.user.name} из организации?`
+              : confirmAction.kind === 'freeze' ? `Заморозить ${confirmAction.user.name}?`
+              : `Разморозить ${confirmAction.user.name}?`
+          }
+          text={
+            confirmAction.kind === 'delete' ? 'Открытые поручения вернутся авторам. История сохранится.'
+              : confirmAction.kind === 'freeze' ? 'Открытые поручения сразу вернутся авторам. История сохранится.'
+              : 'Снова сможет получать и выполнять поручения.'
+          }
+          confirmLabel={confirmAction.kind === 'delete' ? 'Удалить' : confirmAction.kind === 'freeze' ? 'Заморозить' : 'Разморозить'}
+          onConfirm={() => {
+            const { user, kind } = confirmAction;
+            // manage() сам ловит ошибку и показывает toast, наружу не бросает --
+            // диалог просто закроется, а не покажет ошибку в своём тексте.
+            if (kind === 'delete') {
+              if (!me?.org_id) return;
+              return manage(user.id, () => removeOrgMember(me.org_id as string, user.id), 'Удалён');
+            }
+            if (kind === 'freeze') return manage(user.id, () => freezeUser(user.id), 'Заморожен, поручения вернулись авторам');
+            return manage(user.id, () => unfreezeUser(user.id), 'Разморожен');
+          }}
+          onClose={() => setConfirmAction(null)}
+        />
       ) : null}
     </div>
   );

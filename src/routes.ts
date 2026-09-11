@@ -506,6 +506,7 @@ async function draftView(env: Env, row: DraftRow) {
   return {
     id: row.id,
     title: row.title,
+    description: row.description ?? '',
     deadline: row.deadline,
     priority: row.priority,
     priority_explicit: row.priority_explicit === 1,
@@ -542,48 +543,82 @@ apiRoutes.get('/drafts', async (c) => {
   return c.json({ drafts: await Promise.all(rows.map((r) => draftView(c.env, r))) });
 });
 
-apiRoutes.patch('/drafts/:id', async (c) => {
-  const row = await ownDraft(c);
-  if (!row) return c.json({ error: 'not found' }, 404);
-  const b = await c.req.json<{ title?: string; assignee_ids?: string[]; deadline?: string | null; priority?: string }>()
-    .catch(() => ({}) as Record<string, undefined>);
+/**
+ * Проверяет и применяет правки черновика. Один разбор тела на два маршрута:
+ * PATCH (бот и список черновиков) и подтверждение с правками одним запросом
+ * (карточка в приложении). Две копии этих проверок разошлись бы на первой же
+ * правке, а цена расхождения -- поручение не тому человеку.
+ */
+async function applyDraftEdits(
+  c: Context<AppEnv>, row: DraftRow, b: Record<string, unknown>,
+): Promise<{ row: DraftRow } | { error: string }> {
   const patch: DraftPatch = {};
   if (b.title !== undefined) {
     const t = String(b.title).trim();
-    if (t.length < 2 || t.length > 200) return c.json({ error: 'bad title' }, 400);
+    if (t.length < 2 || t.length > 200) return { error: 'bad title' };
     patch.title = t;
   }
+  if (b.description !== undefined) {
+    const d = b.description === null ? null : String(b.description).slice(0, 4000);
+    patch.description = d && d.trim() ? d : null;
+  }
   if (b.assignee_ids !== undefined) {
-    if (!Array.isArray(b.assignee_ids)) return c.json({ error: 'bad assignees' }, 400);
+    if (!Array.isArray(b.assignee_ids)) return { error: 'bad assignees' };
+    const ids = (b.assignee_ids as unknown[]).map(String);
     // Только те, кому этот человек вправе поручать (дерево): чужой id -- отказ.
-    if (!(await canAssign(c.env, c.get('orgId'), c.get('userId'), c.get('role'), b.assignee_ids))) {
-      return c.json({ error: 'Такого человека нет в организации' }, 400);
+    if (!(await canAssign(c.env, c.get('orgId'), c.get('userId'), c.get('role'), ids))) {
+      return { error: 'Такого человека нет в организации' };
     }
-    patch.assigneeIds = [...new Set(b.assignee_ids)];
+    patch.assigneeIds = [...new Set(ids)];
   }
   const sched = await loadSchedule(c.env, c.get('orgId'));
-  const tz = sched.timezone;
   if (b.deadline !== undefined) {
-    if (b.deadline === null) patch.deadline = null;
-    else if (/^\d{4}-\d{2}-\d{2}$/.test(b.deadline)) {
+    const dl = b.deadline;
+    if (dl === null) patch.deadline = null;
+    else if (typeof dl === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dl)) {
       // Дата без часа -- конец рабочего дня по графику, как у кнопок бота.
-      patch.deadline = atDayEnd(b.deadline, sched);
-    } else if (!Number.isNaN(Date.parse(b.deadline))) patch.deadline = new Date(b.deadline).toISOString();
-    else return c.json({ error: 'bad deadline' }, 400);
+      patch.deadline = atDayEnd(dl, sched);
+    } else if (typeof dl === 'string' && !Number.isNaN(Date.parse(dl))) patch.deadline = new Date(dl).toISOString();
+    else return { error: 'bad deadline' };
   }
   if (b.priority !== undefined) {
-    if (!PRIORITIES.includes(b.priority)) return c.json({ error: 'bad priority' }, 400);
-    patch.priority = b.priority as DraftRow['priority'];
+    if (!PRIORITIES.includes(String(b.priority))) return { error: 'bad priority' };
+    patch.priority = String(b.priority) as DraftRow['priority'];
     patch.priorityExplicit = true;
   }
   const updated = (await patchDraft(c.env, row.id, patch))!;
-  if (updated.telegram_chat_id) await renderDraft(c.env, updated, updated.telegram_chat_id, tz);
-  return c.json(await draftView(c.env, updated));
+  // Карточка в чате правится вслед: иначе человек нажал бы «Создать» на
+  // карточке со старым сроком.
+  if (updated.telegram_chat_id) await renderDraft(c.env, updated, updated.telegram_chat_id, sched.timezone);
+  return { row: updated };
+}
+
+apiRoutes.patch('/drafts/:id', async (c) => {
+  const row = await ownDraft(c);
+  if (!row) return c.json({ error: 'not found' }, 404);
+  const b = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  const res = await applyDraftEdits(c, row, b);
+  if ('error' in res) return c.json({ error: res.error }, 400);
+  return c.json(await draftView(c.env, res.row));
 });
 
 apiRoutes.post('/drafts/:id/confirm', async (c) => {
-  const row = await ownDraft(c);
+  let row = await ownDraft(c);
   if (!row) return c.json({ error: 'not found' }, 404);
+
+  // Правки едут ВМЕСТЕ с подтверждением, одним запросом.
+  //
+  // Раньше каждое нажатие в карточке (срок, важность, кому) уходило на сервер
+  // отдельно, и человек ждал сеть на каждый чип. Теперь карточка правится
+  // на устройстве, а сюда приезжает уже итог. Отдельный PATCH остался: им
+  // пользуется бот и правка черновика в списке.
+  const edits = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  if (edits && Object.keys(edits).length > 0) {
+    const res = await applyDraftEdits(c, row, edits);
+    if ('error' in res) return c.json({ error: res.error }, 400);
+    row = res.row;
+  }
+
   // Адресаты перепроверяются при подтверждении: с момента разбора кого-то
   // могли заморозить или отозвать.
   if (!(await draftAssignable(c.env, row))) return c.json({ error: 'Кому-то из адресатов сейчас поручать нельзя', code: 'NOT_ASSIGNABLE' }, 409);
@@ -592,6 +627,33 @@ apiRoutes.post('/drafts/:id/confirm', async (c) => {
   if (row.telegram_chat_id) await renderCreated(c.env, row, row.telegram_chat_id, await orgTz(c.env, c.get('orgId')));
   await drainOutbox(c.env);
   return c.json({ id: taskId }, 201);
+});
+
+/**
+ * Вложение к ЧЕРНОВИКУ. У задачи такой маршрут был всегда, у черновика -- нет,
+ * и приложить файл до создания было нельзя вовсе: приходилось сперва создать
+ * поручение, а потом его править. Файл ложится в тот же склад (бот-группа) и
+ * доезжает до задачи вместе с подтверждением -- как вложение, присланное боту.
+ */
+apiRoutes.post('/drafts/:id/attachments', async (c) => {
+  const row = await ownDraft(c);
+  if (!row) return c.json({ error: 'not found' }, 404);
+  const declaredLen = Number(c.req.header('content-length') ?? 0);
+  if (declaredLen > MAX_ATTACHMENT_BYTES + 4096) return c.json({ error: 'Файл больше 20 МБ' }, 413);
+  const body = await c.req.parseBody();
+  const file = body.file;
+  if (!(file instanceof File)) return c.json({ error: 'file required' }, 400);
+  if (file.size > MAX_ATTACHMENT_BYTES) return c.json({ error: 'Файл больше 20 МБ' }, 413);
+
+  const mime = file.type || 'application/octet-stream';
+  const { fileId } = await sendDocument(c.env, c.env.TELEGRAM_STORAGE_CHAT_ID, file, file.name);
+  const media = [...mediaOf(row), {
+    kind: mime.startsWith('image/') ? 'photo' as const : 'document' as const,
+    fileId, filename: file.name, mimeType: mime, sizeBytes: file.size, hasAudio: false,
+  }];
+  const updated = (await patchDraft(c.env, row.id, { media }))!;
+  if (updated.telegram_chat_id) await renderDraft(c.env, updated, updated.telegram_chat_id, await orgTz(c.env, c.get('orgId')));
+  return c.json(await draftView(c.env, updated), 201);
 });
 
 apiRoutes.delete('/drafts/:id', async (c) => {
@@ -798,6 +860,25 @@ apiRoutes.post('/users/:id/unfreeze', requireRole('admin', 'super_admin', 'creat
 });
 
 // «Вопрос» -- тот же помощник, что кнопка в боте: как пользоваться и за что взяться.
+/**
+ * Вопрос ГОЛОСОМ. В боте спросить голосом можно было всегда, в приложении --
+ * нет: расшифровка жила только на пути создания задачи, и записанный вопрос
+ * уехал бы в черновик поручения. Тот же whisper, тот же помощник, просто
+ * вход -- файл.
+ */
+apiRoutes.post('/ask/dictate', async (c) => {
+  const form = await c.req.parseBody();
+  const audio = form.audio;
+  if (!(audio instanceof File)) return c.json({ error: 'audio required' }, 400);
+  if (audio.size > MAX_ATTACHMENT_BYTES) return c.json({ error: 'Запись слишком длинная' }, 413);
+  const question = (await transcribe(c.env, audio, audio.name || 'voice.webm'))?.trim();
+  if (!question) return c.json({ error: 'Не удалось разобрать запись. Напишите текстом.' }, 422);
+  const me = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(c.get('userId')).first<{ name: string }>();
+  const answer = await askAssistant(c.env, { userId: c.get('userId'), orgId: c.get('orgId'), role: c.get('role'), name: me?.name ?? '' }, question, []);
+  // Вопрос возвращается тоже: человек должен видеть, что именно услышано.
+  return c.json({ question, answer });
+});
+
 apiRoutes.post('/ask', async (c) => {
   const b = await c.req.json<{ question?: string; history?: AskTurn[] }>().catch(() => ({}) as Record<string, undefined>);
   const question = (b.question ?? '').trim().slice(0, 2000);

@@ -292,6 +292,7 @@ export const setMyName = (name: string) =>
 export interface DraftView {
   id: string;
   title: string;
+  description: string;
   deadline: string | null;
   priority: Priority;
   /** Важность названа человеком, а не поставлена по умолчанию. */
@@ -327,7 +328,18 @@ export const patchDraft = (
   id: string,
   patch: { title?: string; assignee_ids?: string[]; deadline?: string | null; priority?: Priority },
 ) => request<DraftView>(`/drafts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
-export const confirmDraft = (id: string) => request<{ id: string }>(`/drafts/${id}/confirm`, { method: 'POST' });
+// Правки едут ВМЕСТЕ с подтверждением: карточка правится на устройстве, и
+// сеть трогается ровно один раз -- на «Создать».
+export const confirmDraft = (id: string, edits?: DraftEdits) =>
+  request<{ id: string }>(`/drafts/${id}/confirm`, { method: 'POST', body: JSON.stringify(edits ?? {}) });
+
+export type DraftEdits = Partial<{
+  title: string;
+  description: string | null;
+  assignee_ids: string[];
+  deadline: string | null;
+  priority: Priority;
+}>;
 export const deleteDraft = (id: string) => request<{ ok: true }>(`/drafts/${id}`, { method: 'DELETE' });
 
 /** Срок и срочность в два касания -- то же, что кнопки под подтверждением бота.
@@ -337,5 +349,19 @@ export const quickEditTask = (taskId: string, patch: { deadline?: string | null;
 
 /** «Вопрос»: диалог с помощником; история -- последние реплики, чтобы уточнения работали. */
 export interface AskTurn { role: 'user' | 'assistant'; text: string }
+/** Вопрос голосом: запись уходит на расшифровку, обратно -- и текст, и ответ. */
+export const askByVoice = (audio: Blob) => {
+  const form = new FormData();
+  form.append('audio', audio, 'question.webm');
+  return request<{ question: string; answer: string }>('/ask/dictate', { method: 'POST', body: form, headers: {} });
+};
+
+/** Вложение к черновику -- до того, как поручение создано. */
+export const uploadDraftFile = (draftId: string, file: File) => {
+  const form = new FormData();
+  form.append('file', file);
+  return request<DraftView>(`/drafts/${draftId}/attachments`, { method: 'POST', body: form, headers: {} });
+};
+
 export const askAssistant = (question: string, history: AskTurn[]) =>
   request<{ answer: string }>('/ask', { method: 'POST', body: JSON.stringify({ question, history: history.slice(-6) }) });

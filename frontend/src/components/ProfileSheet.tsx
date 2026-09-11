@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Sheet } from './Sheet';
-import { Check, LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { User } from '../types';
 import {
   ApiError, deleteOrg, getMe, getMyOrgs, leaveOrg,
   renameOrg, setMyName, switchOrg, type MyOrg,
 } from '../lib/api';
 import { OrgJoinForm } from './OrgJoinForm';
+import { Confirm } from './Confirm';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 
@@ -46,7 +47,8 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
   // Что сейчас редактируется: имя, название организации, новая организация, код.
   const [edit, setEdit] = useState<{ kind: 'name' | 'rename' | 'create'; orgId?: string } | null>(null);
   const [draft, setDraft] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Имя нужно самому Confirm -- строгий режим сверяет набранное со словом.
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
 
   const load = () => { getMyOrgs().then(setOrgs).catch(() => setOrgs([])); };
   useEffect(load, []);
@@ -173,17 +175,10 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
                             <Pencil aria-hidden="true" style={{ width: 14, height: 14 }} />
                             Переименовать
                           </button>
-                          {confirmDelete === org.id ? (
-                            <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => run(() => deleteOrg(org.id), 'reload')}>
-                              <Check aria-hidden="true" style={{ width: 14, height: 14 }} />
-                              Точно удалить
-                            </button>
-                          ) : (
-                            <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => setConfirmDelete(org.id)}>
-                              <Trash2 aria-hidden="true" style={{ width: 14, height: 14 }} />
-                              Удалить
-                            </button>
-                          )}
+                          <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => setConfirmDelete({ id: org.id, name: org.name })}>
+                            <Trash2 aria-hidden="true" style={{ width: 14, height: 14 }} />
+                            Удалить
+                          </button>
                         </>
                       ) : (
                         <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => run(() => leaveOrg(org.id), 'reload')}>
@@ -192,15 +187,28 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
                         </button>
                       )}
                     </div>
-                    {confirmDelete === org.id ? (
-                      <p className="hint">Задачи и история сохранятся, но организация исчезнет у всех её сотрудников.</p>
-                    ) : null}
                   </>
                 )}
               </li>
             );
           })}
         </ul>
+
+        {confirmDelete ? (
+          <Confirm
+            title={`Удалить «${confirmDelete.name}»?`}
+            text="Задачи и история сохранятся, но организация исчезнет у всех её сотрудников."
+            confirmLabel="Удалить"
+            confirmWord={confirmDelete.name}
+            onConfirm={async () => {
+              await deleteOrg(confirmDelete.id);
+              setUser((await getMe()).user);
+              await refresh();
+              load();
+            }}
+            onClose={() => setConfirmDelete(null)}
+          />
+        ) : null}
 
         {edit?.kind === 'create' ? (
           <OrgJoinForm

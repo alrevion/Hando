@@ -241,17 +241,29 @@ export function matchDeadline(
   const midnight = new Date(Date.UTC(today.y, today.m - 1, today.d));
 
   /** Местные Y/M/D + час -> настоящий момент времени. */
+  // Объявлено ДО замыкания at: оно читает эту переменную при вызове.
+  let hardEnd: string | null = null;
   const at = (d: Date, hour?: number) => {
-    const [h, mi] = hour === undefined ? dayEnd.split(':').map(Number) : [hour, 0];
+    const [h, mi] = hour === undefined ? (hardEnd ?? dayEnd).split(':').map(Number) : [hour, 0];
     const iso = localIso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), h, timeZone);
     return mi ? new Date(Date.parse(iso) + mi * 60000).toISOString() : iso;
   };
   const mark = (...ws: string[]) => ws.forEach((w) => used.add(w));
 
   let base: Date | null = null;
+  // «ДО завтра» -- это СЕГОДНЯ до конца суток, а не завтрашний день.
+  //
+  // Предлог здесь меняет смысл на противоположный: «сдать до завтра» значит
+  // «успеть, пока не наступило завтра». Разбор ставил срок на завтрашний
+  // вечер, то есть давал лишние сутки на то, что просили сегодня. Час
+  // принудительно 23:59, а не конец рабочего дня: именно в полночь наступает
+  // то самое «завтра», до которого просили успеть.
   // Порядок важен: «послезавтра» содержит «завтра» как подстроку.
   if (word('сегодня').test(lower)) { base = midnight; mark('сегодня'); }
   else if (word('послезавтра').test(lower)) { base = new Date(midnight.getTime() + 2 * 864e5); mark('послезавтра'); }
+  else if (/(?:^|[\s,.;:!?«»"'()-])до\s+завтра(?=$|[\s,.;:!?«»"'()-])/i.test(lower)) {
+    base = midnight; hardEnd = '23:59'; mark('до', 'завтра');
+  }
   else if (word('завтра').test(lower)) { base = new Date(midnight.getTime() + 864e5); mark('завтра'); }
 
   if (!base) {

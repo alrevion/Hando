@@ -1,17 +1,24 @@
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import type { User } from '../types';
 import { getMe } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { OrgJoinForm } from './OrgJoinForm';
+import { Sheet } from './Sheet';
 
 /**
  * Первая организация создаётся ЗДЕСЬ (раздел 18): сессия без организации
  * законна, и приложение обязано открываться с «создайте или вступите», а не
  * отправлять человека в бота.
+ *
+ * Форма -- в модальном окне, а не прямо на экране: так владелец описал шаги
+ * («сверху переключатель, потом название, потом отрасль»), и то же окно
+ * используется в профиле (см. ProfileSheet) -- один путь везде.
  */
 export function NoOrgScreen({ user }: { user: User }) {
   const { setUser } = useAuth();
   const [info, setInfo] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const pending = user.pending ?? [];
   // Заявку подтверждают в чужом Telegram: опрашиваем, чтобы экран открылся сам.
   useEffect(() => {
@@ -33,13 +40,25 @@ export function NoOrgScreen({ user }: { user: User }) {
             <span className="t-meta"><span>{pending.join(', ')} — ждём подтверждения. Как примут, приложение откроется само.</span></span>
           </div>
         ) : null}
-        <div className="card">
-          <OrgJoinForm onDone={async (kind, name) => {
-            if (kind === 'requested') setInfo(`Заявка в «${name}» отправлена. Ждём подтверждения.`);
-            setUser((await getMe()).user);
-          }} />
-        </div>
+        <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Создать или вступить</button>
       </div>
+
+      {open ? (
+        <Sheet labelledBy="join-title" onClose={() => setOpen(false)}>
+          <div className="sheet-head">
+            <h2 id="join-title" className="sheet-title">Создать или вступить</h2>
+            <button type="button" onClick={() => setOpen(false)} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
+          </div>
+          <OrgJoinForm
+            onCancel={() => setOpen(false)}
+            onDone={async (kind, name) => {
+              if (kind === 'requested') { setInfo(`Заявка в «${name}» отправлена. Ждём подтверждения.`); setOpen(false); return; }
+              setOpen(false);
+              setUser((await getMe()).user);
+            }}
+          />
+        </Sheet>
+      ) : null}
     </div>
   );
 }

@@ -151,10 +151,12 @@ const FIXTURES: Record<string, Probe> = {
   'GET /org/subtree-tasks': { path: '/org/subtree-tasks', skip: 'поддерево в СВОЕЙ организации; идентификаторов не принимает' },
   'POST /users/:id/freeze': { path: '/users/b1/freeze', method: 'POST', body: {} },
   'GET /users/:id/stats': { path: '/users/b1/stats' },
+  'POST /ask/dictate': { path: '/ask/dictate', method: 'POST', body: {} },
   'POST /ask': { path: '/ask', method: 'POST', body: { question: 'x' }, skip: 'отвечает по СВОИМ задачам; идентификаторов не принимает' },
   'POST /tasks/:id/late': { path: '/tasks/tb/late', method: 'POST', body: { comment: 'x' } },
   'POST /users/:id/unfreeze': { path: '/users/b1/unfreeze', method: 'POST', body: {} },
   'PATCH /drafts/:id': { path: '/drafts/db', method: 'PATCH', body: { title: 'взломан' } },
+  'POST /drafts/:id/attachments': { path: '/drafts/none/attachments', method: 'POST', body: {} },
   'POST /drafts/:id/confirm': { path: '/drafts/db/confirm', method: 'POST', body: {} },
   'DELETE /drafts/:id': { path: '/drafts/db', method: 'DELETE' },
 

@@ -4,6 +4,7 @@ import type { User } from '../types';
 import { ApiError, dictateTask, type DraftView } from '../lib/api';
 import { DraftCard } from './DraftCard';
 import { useData } from '../context/DataContext';
+import { toast } from '../lib/toast';
 import { Sheet } from './Sheet';
 
 /** Есть ли в этом браузере запись с микрофона. В WebView Telegram бывает и нет. */
@@ -33,7 +34,6 @@ export function CreateSheet({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftView | null>(null);
-  const [created, setCreated] = useState(false);
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
 
@@ -81,36 +81,35 @@ export function CreateSheet({
     }
   }
 
-  const reset = () => { setDraft(null); setCreated(false); setText(''); };
+  const reset = () => { setDraft(null); setText(''); };
 
   return (
     <Sheet labelledBy="create-title" onClose={onClose}>
       <div className="sheet-head">
         <h2 id="create-title" className="sheet-title">
-          {created ? 'Создано' : draft ? 'Проверьте черновик' : mode === 'mine' ? 'Новая задача себе' : 'Новое поручение'}
+          {draft ? 'Проверьте черновик' : mode === 'mine' ? 'Новая задача себе' : 'Новое поручение'}
         </h2>
         <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
       </div>
 
-      {created ? (
-        <>
-          <div className="alert alert-ok">Поручение создано{draft?.assignees.length ? ` — ${draft.assignees.join(', ')} получит уведомление` : ''}.</div>
-          <div className="btn-row">
-            <button type="button" className="btn" onClick={reset}>Ещё одно</button>
-            <button type="button" className="btn btn-primary" onClick={onClose}>Готово</button>
-          </div>
-        </>
-      ) : draft ? (
+      {draft ? (
         <>
           <DraftCard
             draft={draft}
             users={users}
             me={me}
-            onChange={setDraft}
-            onCreated={async () => { setCreated(true); await refresh(); }}
+            mode={mode}
+            // Отдельного экрана «Создано» больше нет: он заставлял нажимать
+            // «Готово» ради того, что и так очевидно. Тост говорит то же самое
+            // и не отнимает ход.
+            onCreated={async () => {
+              toast(mode === 'mine' ? 'Задача создана' : 'Поручение отправлено');
+              await refresh();
+              onClose();
+            }}
             onDeleted={reset}
           />
-          <p className="hint">Черновик не пропадёт: он есть и в «Черновиках» бота, пока вы не нажмёте «Создать».</p>
+          <p className="hint">Правки сохранятся, когда нажмёте «Создать». Сам черновик есть и в «Черновиках» бота.</p>
         </>
       ) : (
         <>

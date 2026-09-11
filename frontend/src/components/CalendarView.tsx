@@ -86,12 +86,7 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
 
   return (
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
-      <div className="h1-row">
-        <h1 className="h1">Календарь</h1>
-        <button type="button" className="btn btn-sm" onClick={() => { const d = new Date(); setCursor(d); setSelected(localDayKey(d)); }}>
-          Сегодня
-        </button>
-      </div>
+      <h1 className="h1">Календарь</h1>
 
       {loadError ? <div role="alert" className="alert alert-err">{loadError}</div> : null}
 
@@ -100,6 +95,16 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
           <span className="grow" style={{ fontSize: 17, fontWeight: 700 }}>
             {cap(new Date(year, month, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }))}
           </span>
+          {/* «Сегодня» -- в начале строки навигации, слева от «Предыдущего месяца»
+              (владелец просил переставить сюда из шапки экрана). Подсвечена, когда
+              выбран сегодняшний день -- кнопка тогда показывает ещё и состояние. */}
+          <button
+            type="button"
+            className={`btn btn-sm${selected === todayKey ? ' on' : ''}`}
+            onClick={() => { const d = new Date(); setCursor(d); setSelected(localDayKey(d)); }}
+          >
+            Сегодня
+          </button>
           <button type="button" aria-label="Предыдущий месяц" className="btn-icon" onClick={() => setCursor(new Date(year, month - 1, 1))}>
             <ChevronLeft aria-hidden="true" />
           </button>

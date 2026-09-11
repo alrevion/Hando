@@ -1101,3 +1101,126 @@ select.inp {
   line-height: 1.45;
 }
 .tips-list li + li { margin-top: 3px; }
+
+/* ---- сегментный переключатель («Создать» / «Вступить по коду») ----
+   Тот же приём, что у .nav-indicator в BottomNav: одна подложка едет между
+   вариантами transform: translateX, а не гаснет один вариант и загорается
+   другой -- глаз видит, откуда и куда ушёл выбор. */
+.segmented {
+  position: relative;
+  display: flex;
+  padding: 3px;
+  background: var(--fill2);
+  border-radius: var(--r-sm);
+  margin-bottom: 16px;
+}
+.segmented-indicator {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / var(--n, 2));
+  border-radius: calc(var(--r-sm) - 3px);
+  background: var(--bg2);
+  box-shadow: var(--card-ring);
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+}
+.segmented-btn {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 40px;
+  padding: 0 10px;
+  border: none;
+  background: none;
+  border-radius: calc(var(--r-sm) - 3px);
+  color: var(--label2);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.segmented-btn.on {
+  color: var(--label);
+}
+@media (prefers-reduced-motion: reduce) {
+  .segmented-indicator {
+    transition: none;
+  }
+}
+
+/* ---- «Сегодня» в календаре: тот же приём, что у .chip.on -- заливка
+   акцентом, когда выбранный день и есть сегодняшний. */
+.btn-sm.on {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* ---- строка ввода в «Вопросе»: микрофон, поле и отправка одним рядом, как
+   в мессенджерах, а не отдельная форма с кнопкой на всю ширину. */
+.ask-compose {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+/* Поле именно в этой форме -- невысокое: общий .inp рассчитан на текстовые
+   описания задач (min-height: 96px), тут же нужна обычная строка чата. */
+.ask-compose .inp {
+  min-height: 40px;
+  padding: 10px 14px;
+  resize: none;
+}
+
+/* Индикатор «печатает» вместо текста «Думаю…»: три точки внутри того же
+   .bubble, чтобы ответ помощника визуально не прыгал по экрану, когда
+   индикатор сменяется настоящим текстом. */
+.typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--label3);
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.typing span:nth-child(2) { animation-delay: 0.15s; }
+.typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing span { animation: none; }
+}
+
+/* ---- поиск людей: лупа внутри поля, слева от текста ---- */
+.search-wrap {
+  position: relative;
+}
+.search-ic {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--label3);
+  pointer-events: none;
+}
+.inp-search {
+  padding-left: 40px;
+}
+
+/* ---- select рядом с .btn-sm: та же высота и скругление, ряд выглядит ровно ---- */
+.select-sm {
+  height: 36px;
+  border-radius: 999px;
+  font-size: 13px;
+}

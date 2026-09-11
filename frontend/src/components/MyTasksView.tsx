@@ -16,6 +16,8 @@ const PRIORITY_RANK: Record<Priority, number> = Object.fromEntries(
   PRIORITIES.map((p, index) => [p.value, index]),
 ) as Record<Priority, number>;
 
+const PAGE = 10;
+
 type Section = { key: 'todo' | 'in_progress' | 'review'; title: string; rows: ReturnType<typeof useOrgTasks>['tasks'] };
 
 /**
@@ -47,6 +49,12 @@ export function MyTasksView({ user }: { user: User }) {
     { key: 'review', title: 'Сдано, на проверке', rows: sort(mine.filter(({ task }) => myRow(task, user.id)?.state === 'done' && !task.confirmed_at)) },
   ];
   const total = sections.reduce((n, s) => n + s.rows.length, 0);
+  // Этапы сегментами -- те же колонки доски, только внутри «Задач»: один этап
+  // на экране вместо трёх списков подряд.
+  const [stage, setStage] = useState(0);
+  const [shown, setShown] = useState(PAGE);
+  const current = sections[stage];
+  const visible = current.rows.slice(0, shown);
 
   /** true -- получилось; ошибку показывает тостом, а шторка решает сама, закрываться ли. */
   async function act(task: Task, fn: () => Promise<unknown>, done: string): Promise<boolean> {
@@ -76,11 +84,22 @@ export function MyTasksView({ user }: { user: User }) {
           <b>Активных задач нет</b>
           Новые поручения появятся здесь и в боте.
         </div>
-      ) : sections.map((sec) => sec.rows.length === 0 ? null : (
-        <section key={sec.key}>
-          <h2 className="sec-title">{sec.title} · {sec.rows.length}</h2>
+      ) : (
+        <>
+          <div className="segmented" role="tablist" aria-label="Этап">
+            <div className="segmented-indicator" style={{ transform: `translateX(${stage * 100}%)` }} aria-hidden="true" />
+            {sections.map((sec, i) => (
+              <button key={sec.key} type="button" role="tab" aria-selected={i === stage}
+                className={i === stage ? 'segmented-btn on' : 'segmented-btn'}
+                onClick={() => { setStage(i); setShown(PAGE); }}>
+                {sec.key === 'review' ? 'Сдано' : sec.title}{sec.rows.length > 0 ? ` · ${sec.rows.length}` : ''}
+              </button>
+            ))}
+          </div>
+
+          {current.rows.length === 0 ? <p className="muted" style={{ marginTop: 16 }}>Здесь пока пусто.</p> : null}
           <ul className="stack">
-            {sec.rows.map(({ task, projectName }) => {
+            {visible.map(({ task, projectName }) => {
               const dep = task.depends_on_task_id ? byId.get(task.depends_on_task_id) : undefined;
               const blockedBy = dep && dep.status !== 'done' && dep.status !== 'archived' ? dep.title : undefined;
               const state = myRow(task, user.id)?.state;
@@ -92,7 +111,7 @@ export function MyTasksView({ user }: { user: User }) {
                     <TaskMeta task={task} projectName={projectName} showProject={projects.length > 1} line showStage={false}
                       extra={blockedBy ? <span className="pill pill-orange"><Lock aria-hidden="true" /><span>Ждёт «{blockedBy}»</span></span> : null} />
                   </button>
-                  {sec.key !== 'review' ? (
+                  {current.key !== 'review' ? (
                     <div className="btn-row" style={{ marginTop: 10 }}>
                       {state === 'pending' ? (
                         <button type="button" className="btn btn-sm btn-primary" disabled={isBusy || !!blockedBy} onClick={() => act(task, () => moveTask(task.id, 'in_progress'), 'Взято в работу')}>
@@ -115,8 +134,13 @@ export function MyTasksView({ user }: { user: User }) {
               );
             })}
           </ul>
-        </section>
-      ))}
+          {current.rows.length > visible.length ? (
+            <button type="button" className="btn" style={{ marginTop: 12 }} onClick={() => setShown((n) => n + PAGE)}>
+              Показать ещё
+            </button>
+          ) : null}
+        </>
+      )}
 
       {asking ? (
         <AskText

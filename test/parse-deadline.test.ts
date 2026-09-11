@@ -39,3 +39,19 @@ describe('поручение самому себе', () => {
     expect(parseByPattern('надо бы разобраться с этим', people, 'me', NOW, TZ)).toBeNull();
   });
 });
+
+describe('«до завтра» -- это сегодня', () => {
+  it('предлог меняет смысл: срок ставится на конец СЕГОДНЯШНИХ суток', () => {
+    // Пятница 11 сентября 2026, 14:00 в Ташкенте.
+    const now = new Date('2026-09-11T09:00:00.000Z');
+    const due = matchDeadline('Нужно создать презентацию и сдать её до завтра', now, 'Asia/Tashkent', '18:00').iso!;
+    const local = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Asia/Tashkent', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(due));
+    expect(local).toContain('11.09');
+    expect(local).toContain('23:59');
+    // А просто «завтра» -- завтрашний день по графику организации.
+    const tomorrow = matchDeadline('сдать завтра', now, 'Asia/Tashkent', '18:00').iso!;
+    const t = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Asia/Tashkent', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(tomorrow));
+    expect(t).toContain('12.09');
+    expect(t).toContain('18:00');
+  });
+});

@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import { ArrowRight, Check, Trash2, UserRound, X } from 'lucide-react';
+import { Check, Trash2, UserRound, X } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
 import { useData } from '../context/DataContext';
 import { isTaskOverdue } from '../lib/overdue';
-import { ApiError, confirmTask, deleteTask, moveTask, rejectTask, updateTask } from '../lib/api';
+import { ApiError, confirmTask, deleteTask, rejectTask, updateTask } from '../lib/api';
 import { toast } from '../lib/toast';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
@@ -16,6 +16,8 @@ import { Sheet } from './Sheet';
  * сдано. Сданное принимают или возвращают здесь; любое живое -- переназначают
  * или удаляют. Директор открывает приложение ради этого экрана.
  */
+const PAGE = 10;
+
 export function AssignedView({ user }: { user: User }) {
   const { tasks, projects, loading, loadError } = useOrgTasks();
   const { users, refresh } = useData();
@@ -35,11 +37,20 @@ export function AssignedView({ user }: { user: User }) {
       }),
     [tasks, user.id],
   );
+  // Этапы -- сегментами, как были колонки доски: один этап на экране, а не три
+  // списка подряд. Доску убрали, а её главное свойство («вижу, что где стоит»)
+  // осталось здесь.
   const sections = [
     { key: 'todo', title: 'К выполнению', rows: mine.filter(({ task }) => task.status === 'todo') },
     { key: 'in_progress', title: 'В работе', rows: mine.filter(({ task }) => task.status === 'in_progress') },
     { key: 'done', title: 'Сдано', rows: mine.filter(({ task }) => task.status === 'done') },
   ];
+  const [stage, setStage] = useState(0);
+  // Длинные списки грузятся порциями: на сотне поручений экран иначе думает
+  // секунду только на отрисовку.
+  const [shown, setShown] = useState(PAGE);
+  const current = sections[stage];
+  const visible = current.rows.slice(0, shown);
 
   /** true -- получилось; ошибку показывает тостом, а шторка решает сама, закрываться ли. */
   async function act(task: Task, fn: () => Promise<unknown>, done: string): Promise<boolean> {
@@ -59,11 +70,22 @@ export function AssignedView({ user }: { user: User }) {
           <b>Вы пока ничего не поручали</b>
           Нажмите «+» или наговорите боту: «Азизу завтра подготовить отчёт».
         </div>
-      ) : sections.map((sec) => sec.rows.length === 0 ? null : (
-        <section key={sec.key}>
-          <h2 className="sec-title">{sec.title} · {sec.rows.length}</h2>
+      ) : (
+        <>
+          <div className="segmented" role="tablist" aria-label="Этап">
+            <div className="segmented-indicator" style={{ transform: `translateX(${stage * 100}%)` }} aria-hidden="true" />
+            {sections.map((sec, i) => (
+              <button key={sec.key} type="button" role="tab" aria-selected={i === stage}
+                className={i === stage ? 'segmented-btn on' : 'segmented-btn'}
+                onClick={() => { setStage(i); setShown(PAGE); }}>
+                {sec.title}{sec.rows.length > 0 ? ` · ${sec.rows.length}` : ''}
+              </button>
+            ))}
+          </div>
+
+          {current.rows.length === 0 ? <p className="muted" style={{ marginTop: 16 }}>Здесь пока пусто.</p> : null}
           <ul className="stack">
-            {sec.rows.map(({ task, projectName }) => {
+            {visible.map(({ task, projectName }) => {
               const isBusy = busy.has(task.id);
               return (
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
@@ -86,11 +108,6 @@ export function AssignedView({ user }: { user: User }) {
                       <span className="pill pill-green"><span>Принято</span></span>
                     ) : (
                       <>
-                        {/* Стрелка этапа -- механизм доски: автор двигает за исполнителя. */}
-                        <button type="button" className="btn btn-sm" disabled={isBusy}
-                          onClick={() => act(task, () => moveTask(task.id, task.status === 'todo' ? 'in_progress' : 'done'), task.status === 'todo' ? 'В работе' : 'Сдано')}>
-                          <ArrowRight aria-hidden="true" style={{ width: 14, height: 14 }} />{task.status === 'todo' ? 'В работу' : 'Сдано'}
-                        </button>
                         {task.kind === 'single' ? (
                           <button type="button" className="btn btn-sm" disabled={isBusy} onClick={() => setReassigning(task)}>
                             <UserRound aria-hidden="true" style={{ width: 14, height: 14 }} />Переназначить
@@ -106,8 +123,13 @@ export function AssignedView({ user }: { user: User }) {
               );
             })}
           </ul>
-        </section>
-      ))}
+          {current.rows.length > visible.length ? (
+            <button type="button" className="btn" style={{ marginTop: 12 }} onClick={() => setShown((n) => n + PAGE)}>
+              Показать ещё
+            </button>
+          ) : null}
+        </>
+      )}
 
       {rejecting ? (
         <RejectTaskModal task={rejecting} onClose={() => setRejecting(null)}

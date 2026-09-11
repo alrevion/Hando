@@ -19,6 +19,8 @@ export async function createFromDraft(
   /** Вложения черновика. Голосовое тоже здесь -- оно остаётся доказательством. */
   media: Media[],
   rawPhrase: string,
+  /** Содержание: подробности, которые человек дописал к теме в приложении. */
+  description?: string | null,
 ): Promise<string | null> {
   const project = await env.DB.prepare(
     `SELECT p.id, p.telegram_chat_id FROM projects p
@@ -48,8 +50,8 @@ export async function createFromDraft(
   const writes = [
     env.DB.prepare(
       `INSERT INTO tasks (id, org_id, project_id, title, description, author_id, kind, source, status, priority, deadline)
-       VALUES (?, ?, ?, ?, '', ?, ?, ?, 'todo', ?, ?)`,
-    ).bind(taskId, who.orgId, projectId, draft.title, who.userId, draft.kind,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?)`,
+    ).bind(taskId, who.orgId, projectId, draft.title, description ?? '', who.userId, draft.kind,
       // source различает разбор паттернами и моделью -- это и есть замер для
       // порога-гейта шага 4b: сколько фраз обошлось без обращения к сети.
       media.some((m) => m.hasAudio) ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.priority, draft.deadline),

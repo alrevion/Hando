@@ -1,13 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Sheet } from './Sheet';
-import { AlertTriangle, CalendarDays, Download, File as FileIcon, Paperclip, Pencil, Trash2, X } from 'lucide-react';
-import type { ContentBlock, Task, User } from '../types';
+import { AlertTriangle, CalendarDays, Download, File as FileIcon, Paperclip, Trash2, X } from 'lucide-react';
+import type { ContentBlock, Priority, Task, User } from '../types';
 import { parseContentBlocks } from '../types';
 import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
 import { formatDeadlineDays, isReviewOverdue, isTaskOverdue } from '../lib/overdue';
 import { Lightbox } from './Lightbox';
 import { STATE_PILL, stateLabel } from '../lib/tasks';
-import { QuickEdit } from './QuickEdit';
+import { endOfWeek, inDays } from './QuickEdit';
+import { PRIORITIES } from '../lib/priority';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { ApiError, deleteTask, getAttachments, updateTask, uploadAttachment, type AttachmentRow } from '../lib/api';
@@ -65,7 +66,7 @@ function formatDeadline(deadline: string) {
 export function TaskDetailModal({ task: opened, responsible, onClose, actions }: TaskDetailModalProps) {
   // Живая строка из склада: после правки или перехода шторка обязана показать
   // новое, а не снимок, с которым её открыли.
-  const { refresh, tasks: live } = useData();
+  const { refresh, tasks: live, users } = useData();
   const task = live.find((t) => t.id === opened.id) ?? opened;
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // Срок и срочность правит автор или руководитель -- те же правила, что на
@@ -76,8 +77,11 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
   // Вложения -- в том числе присланные боту: они лежат в attachments, а не в
   // content_blocks, и раньше приложение их не показывало вовсе.
   const [files, setFiles] = useState<AttachmentRow[]>([]);
-  const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
+  const [desc, setDesc] = useState(task.description ?? '');
+  const [deadline, setDeadline] = useState<string | null>(task.deadline ?? null);
+  const [priority, setPriority] = useState<Priority>(task.priority);
+  const [who, setWho] = useState((task.assignees ?? [])[0]?.user_id ?? '');
   const [busy, setBusy] = useState(false);
   const [filesTick, setFilesTick] = useState(0);
   const loadFiles = () => setFilesTick((n) => n + 1);
@@ -100,20 +104,22 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
     .filter((b): b is Extract<ContentBlock, { type: 'image' }> => b.type === 'image')
     .map((b) => ({ src: `/api/attachments/${b.attachment_id}/download`, alt: task.title }));
   const assignees = task.assignees ?? [];
+  // Сервер разрешает правку в todo, а в работе -- только владельцу
+  // (routes.ts, PATCH /tasks/:id). Кнопок, ведущих в 403, быть не должно.
+  const canEdit = canQuickEdit && (task.status === 'todo'
+    || (task.status === 'in_progress' && (me?.role === 'creator' || me?.role === 'super_admin')));
+  const single = (task.kind ?? 'single') === 'single';
+  const people = users.some((u) => u.id === me?.id) || !me ? users : [me, ...users];
+  const dirty = title.trim() !== task.title
+    || desc !== (task.description ?? '')
+    || deadline !== (task.deadline ?? null)
+    || priority !== task.priority
+    || (single && who !== ((task.assignees ?? [])[0]?.user_id ?? ''));
 
   return (
     <Sheet labelledBy="task-detail-title" onClose={onClose}>
         <div className="sheet-head">
-          {editing ? (
-            <form className="grow t-row" style={{ gap: 6 }} onSubmit={async (e) => { e.preventDefault(); if (title.trim() && title.trim() !== task.title) await run(() => updateTask(task.id, { title: title.trim() }), 'Тема изменена'); setEditing(false); }}>
-              <input className="inp grow" autoFocus value={title} aria-label="Тема" onChange={(e) => setTitle(e.target.value)} />
-              <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>Ок</button>
-            </form>
-          ) : <h2 id="task-detail-title" className="sheet-title">{task.title}</h2>}
-          {/* Тема правится в todo; в работе -- только владельцем, и это возврат в todo (routes PATCH /tasks/:id). */}
-          {canQuickEdit && !editing && (task.status === 'todo' || (task.status === 'in_progress' && me?.role !== 'member' && me?.role !== 'admin')) ? (
-            <button type="button" onClick={() => setEditing(true)} aria-label="Изменить тему" className="btn-icon"><Pencil aria-hidden="true" /></button>
-          ) : null}
+          <h2 id="task-detail-title" className="sheet-title">{task.title}</h2>
           <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">
             <X aria-hidden="true" />
           </button>
@@ -233,7 +239,75 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
           </label>
         </div>
 
-        {canQuickEdit ? <div style={{ marginTop: 18 }}><QuickEdit task={task} /></div> : null}
+        {/* ПРАВКА -- та же форма, что при создании: тема, кому, содержание,
+            важность, срок, в том же порядке. Раньше экран правки выглядел
+            иначе, чем экран создания, и это приходилось заново разгадывать.
+            Правки живут на устройстве и уходят одним запросом по «Сохранить»:
+            сеть не дёргается на каждое нажатие. */}
+        {canEdit ? (
+          <div className="stack" style={{ marginTop: 18, gap: 12 }}>
+            <div className="sec-title" style={{ margin: 0 }}>Изменить</div>
+
+            <div className="field">
+              <label className="lbl" htmlFor="t-title">Тема</label>
+              <input id="t-title" className="inp" value={title} disabled={busy} onChange={(e) => setTitle(e.target.value)} />
+            </div>
+
+            {single ? (
+              <div className="field">
+                <label className="lbl" htmlFor="t-who">Кому</label>
+                <select id="t-who" className="inp" value={who} disabled={busy} onChange={(e) => setWho(e.target.value)}>
+                  {people.map((u) => <option key={u.id} value={u.id}>{u.id === me?.id ? 'Мне' : u.name}</option>)}
+                </select>
+              </div>
+            ) : null}
+
+            <div className="field">
+              <label className="lbl" htmlFor="t-desc">Содержание</label>
+              <textarea id="t-desc" className="inp" rows={3} value={desc} disabled={busy}
+                placeholder="Подробности, если нужны" onChange={(e) => setDesc(e.target.value)} />
+            </div>
+
+            <div>
+              <div className="sec-title" style={{ margin: '0 0 8px' }}>Важность</div>
+              <div className="chips" style={{ paddingBottom: 0 }}>
+                {PRIORITIES.map((p) => (
+                  <button key={p.value} type="button" disabled={busy}
+                    className={priority === p.value ? 'chip on' : 'chip'}
+                    onClick={() => setPriority(p.value as Priority)}>{p.label}</button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="sec-title" style={{ margin: '0 0 8px' }}>Срок{deadline ? '' : ' не указан'}</div>
+              <div className="chips" style={{ paddingBottom: 0, flexWrap: 'wrap', overflowX: 'visible' }}>
+                <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(inDays(0))}>Сегодня</button>
+                <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(inDays(1))}>Завтра</button>
+                <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(endOfWeek())}>В конце недели</button>
+                {deadline ? <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(null)}>Убрать</button> : null}
+                <label className="chip" style={{ position: 'relative', overflow: 'hidden' }}>
+                  <CalendarDays aria-hidden="true" style={{ width: 14, height: 14 }} />
+                  Дата
+                  <input type="date" disabled={busy} value={deadline ? deadline.slice(0, 10) : ''}
+                    onChange={(e) => { if (e.target.value) setDeadline(e.target.value); }}
+                    style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%' }} />
+                </label>
+              </div>
+            </div>
+
+            <button type="button" className="btn btn-primary" disabled={busy || !dirty || title.trim().length < 2}
+              onClick={() => run(() => updateTask(task.id, {
+                title: title.trim(),
+                description: desc,
+                ...(single && who && who !== (task.assignees ?? [])[0]?.user_id ? { responsible_user_id: who } : {}),
+                deadline,
+                priority,
+              }), 'Сохранено')}>
+              Сохранить
+            </button>
+          </div>
+        ) : null}
 
         {actions ? <div className="stack" style={{ gap: 8, marginTop: 20 }}>{actions}</div> : null}
 

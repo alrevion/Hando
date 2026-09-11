@@ -26,6 +26,7 @@ export type DraftRow = {
   assignee_ids: string; // JSON
   deadline: string | null;
   priority: 'urgent' | 'medium' | 'low';
+  description: string | null;
   priority_explicit: number;
   kind: 'single' | 'each' | 'any' | 'ack';
   heard: string;
@@ -56,8 +57,8 @@ export async function saveDraft(
   const id = uuid();
   const now = nowIso();
   await env.DB.prepare(
-    `INSERT INTO drafts (id, org_id, author_id, title, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO drafts (id, org_id, author_id, title, description, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
+     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     id, who.orgId, who.userId, draft.title, JSON.stringify(draft.assigneeIds), draft.deadline,
     draft.priority, draft.priorityExplicit ? 1 : 0, draft.kind, heard.slice(0, 1000),
@@ -98,6 +99,7 @@ export async function latestDraft(env: Env, authorId: string, orgId: string): Pr
 
 export type DraftPatch = Partial<{
   title: string;
+  description: string | null;
   assigneeIds: string[];
   deadline: string | null;
   priority: DraftRow['priority'];
@@ -113,6 +115,7 @@ export async function patchDraft(env: Env, id: string, patch: DraftPatch): Promi
   const vals: unknown[] = [];
   const put = (col: string, v: unknown) => { sets.push(`${col} = ?`); vals.push(v); };
   if (patch.title !== undefined) put('title', patch.title);
+  if (patch.description !== undefined) put('description', patch.description);
   if (patch.assigneeIds !== undefined) put('assignee_ids', JSON.stringify(patch.assigneeIds));
   if (patch.deadline !== undefined) put('deadline', patch.deadline);
   if (patch.priority !== undefined) put('priority', patch.priority);
@@ -160,7 +163,7 @@ export async function confirmDraft(env: Env, row: DraftRow): Promise<string | nu
     source: row.source === 'llm' || row.source === 'fallback' ? row.source : 'pattern',
     ambiguous: [],
   };
-  const taskId = await createFromDraft(env, { userId: row.author_id, orgId: row.org_id }, draft, mediaOf(row), row.heard);
+  const taskId = await createFromDraft(env, { userId: row.author_id, orgId: row.org_id }, draft, mediaOf(row), row.heard, row.description);
   if (taskId) await removeDraft(env, row.id);
   return taskId;
 }

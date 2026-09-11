@@ -7,7 +7,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { toast } from '../lib/toast';
-import { AskText } from './AskText';
+import { Confirm } from './Confirm';
 
 const DAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
@@ -47,13 +47,20 @@ export function OrgView({ user }: { user: User }) {
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
       <h1 className="h1">Организация</h1>
 
+      {/* Карточки идут в .stack -- без него они склеивались без отступа друг
+          на друга, и экран выглядел «криво». */}
+      <div className="stack">
       <div className="card">
+        <div className="sec-title" style={{ marginTop: 0 }}>Организация</div>
         {owner ? (
           <form className="field" style={{ marginBottom: 0 }} onSubmit={async (e) => { e.preventDefault(); if (!name.trim() || name.trim() === org.name) return; setBusy(true); try { await renameOrg(org.id, name.trim()); toast('Переименовано'); setUser((await getMe()).user); load(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(false); } }}>
             <label className="lbl" htmlFor="org-title">Название</label>
             <div className="t-row" style={{ gap: 8 }}>
               <input id="org-title" className="inp" style={{ flex: '1 1 auto', minWidth: 0 }} value={name} onChange={(e) => setName(e.target.value)} />
-              <button type="submit" className="btn" style={{ flex: '0 0 auto' }} disabled={busy || !name.trim() || name.trim() === org.name}>Сохранить</button>
+              {/* width: auto ломает flex-basis, унаследованный от .btn (width:
+                  100%) -- без него кнопка растягивалась на всю строку, а поле
+                  рядом схлопывалось в узкий квадратик. */}
+              <button type="submit" className="btn" style={{ flex: '0 0 auto', width: 'auto' }} disabled={busy || !name.trim() || name.trim() === org.name}>Сохранить</button>
             </div>
           </form>
         ) : <span className="t-title">{org.name}</span>}
@@ -89,7 +96,7 @@ export function OrgView({ user }: { user: User }) {
           </div>
           <form className="t-row" style={{ gap: 8 }} onSubmit={async (e) => { e.preventDefault(); if (!dept.trim()) return; setBusy(true); try { await createProject(dept.trim()); toast('Отдел добавлен'); setDept(''); await refresh(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(false); } }}>
             <input className="inp" style={{ flex: '1 1 auto', minWidth: 0 }} value={dept} placeholder="Новый отдел" onChange={(e) => setDept(e.target.value)} />
-            <button type="submit" className="btn" style={{ flex: '0 0 auto' }} disabled={busy || !dept.trim()}><Plus aria-hidden="true" style={{ width: 16, height: 16 }} />Добавить</button>
+            <button type="submit" className="btn" style={{ flex: '0 0 auto', width: 'auto' }} disabled={busy || !dept.trim()}><Plus aria-hidden="true" style={{ width: 16, height: 16 }} />Добавить</button>
           </form>
           <p className="hint">Отдел — это доска: кого туда приняли, тот видит её задачи.</p>
         </div>
@@ -157,17 +164,22 @@ export function OrgView({ user }: { user: User }) {
           </div>
         </>
       ) : null}
+      </div>
 
       {confirmDelete ? (
-        <AskText title={`Удалить «${org.name}»?`} placeholder="Введите название организации" submitLabel="Удалить" danger
-          onSubmit={async (text) => {
-            if (text.trim() !== org.name) throw new Error('Название не совпадает.');
+        <Confirm
+          title={`Удалить «${org.name}»?`}
+          text="Задачи и история сохранятся, но организация исчезнет у всех её сотрудников."
+          confirmLabel="Удалить"
+          confirmWord={org.name}
+          onConfirm={async () => {
             await deleteOrg(org.id);
             setUser((await getMe()).user);
             await refresh();
             toast('Организация удалена');
           }}
-          onClose={() => setConfirmDelete(false)} />
+          onClose={() => setConfirmDelete(false)}
+        />
       ) : null}
     </div>
   );
