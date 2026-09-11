@@ -104,6 +104,54 @@ export function matchPeople(text: string, people: Person[]): { ids: string[]; am
   return { ids, ambiguous, usedWords };
 }
 
+/**
+ * Запоминает слово, которым человека назвали в поправке.
+ *
+ * Правка «не Азизу, а Беку» проходит через модель ровно потому, что «Беку» не
+ * совпало ни с «Бекзод», ни с его фамилией. Модель сказала, кто это, -- значит
+ * следующий раз можно обойтись без неё: слово ложится в псевдонимы человека, и
+ * дальше его ловят правила. Это и есть «первый случай -- новый, остальные из
+ * памяти», только без всякой векторной базы.
+ *
+ * Правило намеренно узкое: учим, ТОЛЬКО когда после вычёркивания известных слов
+ * осталось ровно одно непонятое. Два кандидата -- уже догадка, а поручение, ушедшее
+ * не тому, дороже несохранённого прозвища.
+ *
+ * ponytail: форма запоминается как сказана («беку»), склонения множатся отдельными
+ * строками. Приводить к основе -- отдельная работа, она нужна, только если список
+ * начнёт упираться в потолок.
+ */
+export async function learnAlias(env: Env, correction: string, people: Person[], assigneeId: string): Promise<string | null> {
+  const clean = correction.replace(LEAD_NOISE, '').trim();
+  const who = matchPeople(clean, people);
+  // Человека уже узнали правилами -- учить нечему.
+  if (who.ids.includes(assigneeId)) return null;
+
+  // Обе стороны чистятся ОДИНАКОВО: matchPeople кладёт в usedWords слово как
+  // есть, вместе с запятой, и «азизу,» не совпало бы с «азизу» -- вычеркнутое
+  // имя вернулось бы вторым кандидатом, и учить было бы нечего.
+  const bare = (w: string) => w.toLowerCase().replace(/^[^а-яёa-z0-9]+|[^а-яёa-z0-9]+$/gi, '');
+  const known = new Set([...who.usedWords].map(bare));
+  const rest = clean.split(/\s+/)
+    .map(bare)
+    .filter((w) => w.length >= 2 && w.length <= 20 && !/\d/.test(w) && !known.has(w) && !ALIAS_NOISE.test(w));
+  const uniq = [...new Set(rest)];
+  if (uniq.length !== 1) return null;
+
+  const alias = uniq[0];
+  const row = await env.DB.prepare('SELECT aliases FROM users WHERE id = ?').bind(assigneeId).first<{ aliases: string | null }>();
+  let list: string[] = [];
+  try { list = row?.aliases ? (JSON.parse(row.aliases) as string[]) : []; } catch { list = []; }
+  if (list.some((a) => a.toLowerCase() === alias)) return null;
+  // Потолок -- чтобы список не рос вечно от опечаток: новое вытесняет старое.
+  const next = [...list, alias].slice(-10);
+  await env.DB.prepare('UPDATE users SET aliases = ? WHERE id = ?').bind(JSON.stringify(next), assigneeId).run();
+  return alias;
+}
+
+// Слова поправки, которые прозвищем быть не могут.
+const ALIAS_NOISE = /^(?:не|а|и|это|тогда|лучше|вместо|давай|пусть|поручи|поручить|назначь|переназначь|отдай|передай|him|её|его|ему|ей|там|же|то|но|да|нет|надо|нужно|срок|важно|важность|задача|поручение)$/i;
+
 // ------------------------------------------------------------------ сроки
 
 // Полное слово ИЛИ сокращение. Сокращения обязаны стоять за границами слова:

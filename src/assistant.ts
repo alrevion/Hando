@@ -4,6 +4,7 @@
 // выполненную?», и на «за что взяться?», задавая уточняющие вопросы.
 import type { Env, Role } from './types';
 import { formatWhen } from './parse';
+import { nowIso } from './db';
 import { loadSchedule } from './schedule';
 import { applyTransition } from './transition';
 import { drainOutbox } from './outbox';
@@ -211,6 +212,18 @@ const QUESTION = new RegExp(`^(как|что|чего|чем|почему|зач
 // Просьба К БОТУ: он это делает сам, а не заводит поручение человеку.
 const TO_BOT = new RegExp(`^(удали|удалить|убери|убрать|отмени|отменить|сотри|напомни|напомните|поторопи|подтолкни|покажи|показать|найди|перечисли|список)${EDGE}`, 'i');
 
+/**
+ * Отпечаток фразы: по нему ищется прежний разбор. Хранить сам текст нельзя --
+ * таблица общая на всех арендаторов (см. миграцию 0023), и заголовок чужого
+ * поручения в ней делать нечего.
+ */
+async function fingerprint(text: string): Promise<string> {
+  const normal = text.toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z0-9?]+/gi, ' ').trim();
+  const bytes = new TextEncoder().encode(normal);
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(hash)].slice(0, 16).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export async function classifyIntent(env: Env, text: string, hasName: boolean): Promise<Intent> {
   const t = text.trim();
   if (!t) return 'task';
@@ -220,6 +233,18 @@ export async function classifyIntent(env: Env, text: string, hasName: boolean): 
   // Названный человек плюс глагол -- поручение, спрашивать модель не о чем.
   if (hasName) return 'task';
   if (!env.GROQ_API_KEY) return 'task';
+
+  // ПАМЯТЬ: ту же фразу второй раз модели не носим. Первый случай -- новый,
+  // дальше ответ берётся отсюда, и это единственное место, где слой окупается:
+  // «спасибо», «ок», «что у меня сегодня» повторяются каждый день.
+  const key = await fingerprint(text);
+  const known = await env.DB.prepare('SELECT intent FROM intent_cache WHERE phrase = ?').bind(key)
+    .first<{ intent: Intent }>().catch(() => null);
+  if (known) {
+    await env.DB.prepare('UPDATE intent_cache SET hits = hits + 1 WHERE phrase = ?').bind(key).run().catch(() => undefined);
+    return known.intent;
+  }
+
   try {
     const res = await fetch(`${GROQ}/chat/completions`, {
       method: 'POST',
@@ -241,7 +266,10 @@ export async function classifyIntent(env: Env, text: string, hasName: boolean): 
     if (!res.ok) return 'task';
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const parsed = JSON.parse(data.choices?.[0]?.message?.content ?? '{}') as { intent?: string };
-    return parsed.intent === 'ask' ? 'ask' : 'task';
+    const intent: Intent = parsed.intent === 'ask' ? 'ask' : 'task';
+    await env.DB.prepare('INSERT INTO intent_cache (phrase, intent, created_at) VALUES (?, ?, ?) ON CONFLICT(phrase) DO NOTHING')
+      .bind(key, intent, nowIso()).run().catch(() => undefined);
+    return intent;
   } catch {
     // Не разобрали -- считаем поручением: черновик человек отменит одним
     // нажатием, а потерянная задача не восстановится никак.

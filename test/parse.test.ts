@@ -6,7 +6,7 @@
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { botApp } from '../src/bot';
-import { matchDeadline, matchPeople, parseByPattern, parseTask } from '../src/parse';
+import { learnAlias, matchDeadline, matchPeople, parseByPattern, parseTask } from '../src/parse';
 import { extractMedia } from '../src/media';
 import { envWith, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
@@ -371,5 +371,54 @@ describe('срочность из слов', () => {
   it('«сроки» и «срочность» в сути задачи не считаются признаком', () => {
     // Ловушка того же рода, что «ср» внутри «срочно» у дней недели.
     expect(parse('Азизу уточнить сроки поставки').priority).toBe('medium');
+  });
+});
+
+
+// Обучение вместо второго запроса к модели: слово, которым назвали человека,
+// запоминается один раз и дальше ловится правилами.
+describe('псевдоним из поправки', () => {
+  const world = () =>
+    envWith({
+      users: [
+        { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
+        { id: 'u-aziz', phone: '+2', name: 'Азиз Каримов', role: 'admin' },
+        { id: 'u-bek', phone: '+3', name: 'Бекзод Юсупов', role: 'admin' },
+      ],
+      memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'u-aziz' }, { project_id: 'p1', user_id: 'u-bek' }],
+      projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+      tasks: [],
+    });
+  const people = [
+    { id: 'u-aziz', name: 'Азиз Каримов' },
+    { id: 'u-bek', name: 'Бекзод Юсупов' },
+  ];
+
+  it('одно непонятое слово -- запоминается, и следующая фраза разбирается без модели', async () => {
+    const env = await world();
+    // Правила «Беку» не знают: основа «бекзо» не совпадает.
+    expect(matchPeople('Беку купить бумагу', people).ids).toEqual([]);
+
+    expect(await learnAlias(env, 'не Азизу, а Беку', people, 'u-bek')).toBe('беку');
+    const saved = await testEnv.DB.prepare("SELECT aliases FROM users WHERE id='u-bek'").first<{ aliases: string }>();
+    expect(JSON.parse(saved!.aliases)).toEqual(['беку']);
+
+    // Теперь то же слово ловится правилами -- модель не нужна.
+    const learned = [{ id: 'u-aziz', name: 'Азиз Каримов' }, { id: 'u-bek', name: 'Бекзод Юсупов', aliases: ['беку'] }];
+    const draft = parseByPattern('Беку купить бумагу до пятницы', learned, 'boss', new Date('2026-09-11T09:00:00.000Z'), 'Asia/Tashkent');
+    expect(draft!.assigneeIds).toEqual(['u-bek']);
+    expect(draft!.title).toBe('Купить бумагу');
+  });
+
+  it('два непонятых слова -- не учим: это уже догадка', async () => {
+    const env = await world();
+    expect(await learnAlias(env, 'отдай это Беку Юсупу', people, 'u-bek')).toBe(null);
+    const saved = await testEnv.DB.prepare("SELECT aliases FROM users WHERE id='u-bek'").first<{ aliases: string | null }>();
+    expect(saved!.aliases).toBe(null);
+  });
+
+  it('человека узнали правилами -- учить нечего', async () => {
+    const env = await world();
+    expect(await learnAlias(env, 'не Азизу, а Бекзоду', people, 'u-bek')).toBe(null);
   });
 });

@@ -152,6 +152,27 @@ describe('помощник', () => {
     expect(seen).toHaveLength(1);
   });
 
+  it('память намерения: та же фраза второй раз до модели не доходит', async () => {
+    const env = { ...(await world()), GROQ_API_KEY: 'k' };
+    let calls = 0;
+    restore = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).includes('groq')) {
+        calls += 1;
+        return new Response(JSON.stringify({ choices: [{ message: { content: '{"intent":"ask"}' } }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+    });
+    expect(await classifyIntent(env as Env, 'там с бумагой непонятно вышло', false)).toBe('ask');
+    // Второй раз -- из памяти: регистр, пунктуация и «ё» на отпечаток не влияют.
+    expect(await classifyIntent(env as Env, 'Там с бумагой непонятно вышло!', false)).toBe('ask');
+    expect(calls).toBe(1);
+    const row = await testEnv.DB.prepare('SELECT intent, hits FROM intent_cache').first<{ intent: string; hits: number }>();
+    expect(row).toMatchObject({ intent: 'ask', hits: 1 });
+    // В памяти лежит отпечаток, а не фраза: таблица общая на всех арендаторов.
+    const { results } = await testEnv.DB.prepare('SELECT phrase FROM intent_cache').all<{ phrase: string }>();
+    expect(results[0].phrase).toMatch(/^[0-9a-f]{32}$/);
+  });
+
   it('«Это поручение» превращает ответ в черновик той же фразой', async () => {
     const env = await world();
     tg();

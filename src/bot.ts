@@ -31,7 +31,7 @@ import {
   askNameScreen, BTN, getState, isOnboarded, categoryScreen, industryScreen, mainScreen, myOrgs, orgsScreen, setDisplayName,
   setState, switchOrg, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner, START_TIPS } from './menu';
 import { download, extractMedia } from './media';
-import { formatWhen, parseTask, refineDraft, transcribe, localIso, localToday, matchPeople } from './parse';
+import { formatWhen, learnAlias, parseTask, refineDraft, transcribe, localIso, localToday, matchPeople } from './parse';
 import { dayEnd, hm, loadSchedule, localHm, type OrgSchedule } from './schedule';
 import { askAssistant, classifyIntent } from './assistant';
 import { assignableMembers } from './hierarchy';
@@ -1216,11 +1216,16 @@ botApp.post('/webhook', async (c) => {
     const patch: DraftPatch = {};
     // Голос поправки -- не вложение: вложение это фото и документ.
     if (media && !media.hasAudio) patch.media = [...mediaOf(target), media];
+    const before = assigneesOf(target);
     if (phrase) {
       Object.assign(patch, await refineDraft(c.env, {
-        title: target.title, assigneeIds: assigneesOf(target), deadline: target.deadline,
+        title: target.title, assigneeIds: before, deadline: target.deadline,
         priority: target.priority, priorityExplicit: target.priority_explicit === 1,
       }, phrase, roster, tz, org?.industry_pack, new Date(), dayEnd(sched)));
+      // Адресата сменили -- значит человека назвали словом, которого правила не
+      // знают. Запоминаем его: следующая такая фраза разберётся без модели.
+      const now = patch.assigneeIds;
+      if (now?.length === 1 && !before.includes(now[0])) await learnAlias(c.env, phrase, roster, now[0]);
     }
     const updated = await patchDraft(c.env, target.id, patch);
     if (st.await === 'fix') await setState(c.env, userId, { ...st, await: undefined, fix: undefined });
