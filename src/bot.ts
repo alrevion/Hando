@@ -16,7 +16,7 @@
 import { Hono } from 'hono';
 import type { Env, Role, Task } from './types';
 import { nowIso, uuid } from './db';
-import { myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
+import { confirmWork, myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
@@ -585,8 +585,10 @@ botApp.post('/webhook', async (c) => {
           await answerCallbackQuery(c.env, cq.id, 'Задача ещё не сдана');
           return c.json({ ok: true });
         }
-        await c.env.DB.prepare('UPDATE tasks SET confirmed_at = ? WHERE id = ? AND org_id = ?')
-          .bind(nowIso(), task.id, orgId).run();
+        // Тем же путём, что «Принять» в приложении: строки адресатов
+        // помечаются принятыми, событие ложится в журнал, исполнитель получает
+        // «✔️ Подтверждено». Прямой UPDATE всего этого не делал.
+        await confirmWork(c.env, task, who.userId);
         await answerCallbackQuery(c.env, cq.id, 'Принято');
       } else {
         await answerCallbackQuery(c.env, cq.id, 'Напомним исполнителям');

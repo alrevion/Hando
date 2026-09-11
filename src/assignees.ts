@@ -9,7 +9,7 @@
 // чтобы инвариант «единственный писатель tasks.status» остался верным.
 import type { Env, Task, TaskStatus } from './types';
 import { nowIso, uuid } from './db';
-import { applyTransition, assigneeButtons, buildNotification } from './transition';
+import { applyTransition, assigneeButtons, buildNotification, describeOverdue } from './transition';
 import type { InlineButton } from './telegram';
 import { assignableMembers } from './hierarchy';
 import { membershipRole } from './auth';
@@ -92,6 +92,29 @@ export function resetAssignees(env: Env, taskId: string, dueAt: string | null): 
  */
 export function confirmAssignees(env: Env, taskId: string): D1PreparedStatement {
   return env.DB.prepare("UPDATE task_assignees SET state = 'confirmed' WHERE task_id = ? AND state = 'done'").bind(taskId);
+}
+
+/**
+ * Приёмка работы -- ОДНА дорога для приложения и для кнопки «✔️ Принять» под
+ * поводом в боте. Кнопка раньше писала confirmed_at напрямую: строки адресатов
+ * оставались в 'done', события в журнале не было, а исполнитель не узнавал, что
+ * работу приняли, -- сообщение «✔️ Подтверждено» рождается здесь.
+ */
+export async function confirmWork(env: Env, task: Task, actorId: string): Promise<number | null> {
+  let overdueBy: number | null = null;
+  if (task.deadline && task.done_at) {
+    const late = Math.floor((Date.parse(task.done_at) - Date.parse(task.deadline)) / 1000);
+    overdueBy = late > 0 ? late : 0;
+  }
+  await env.DB.batch([confirmAssignees(env, task.id)]);
+  // Статус не меняется: подтверждение живёт в confirmed_at. Но это переход
+  // жизненного цикла, и идти он обязан тем же путём.
+  await applyTransition(env, {
+    task, to: task.status, actorId, action: 'confirmed', overdueBy,
+    set: { confirmed_at: nowIso() },
+    notify: { emoji: '✔️', label: 'Подтверждено', extraLine: overdueBy == null ? undefined : describeOverdue(overdueBy) },
+  });
+  return overdueBy;
 }
 
 /** Строки адресатов задачи. */

@@ -57,6 +57,15 @@ export type TransitionInput = {
   };
 };
 
+/** Просрочка словами -- для строки под «Подтверждено». */
+export function describeOverdue(seconds: number): string {
+  if (seconds <= 0) return 'Без просрочки';
+  const hours = Math.floor(seconds / 3600);
+  if (hours < 1) return 'Просрочка: меньше часа';
+  if (hours < 24) return `Просрочка: ${hours}ч`;
+  return `Просрочка: ${Math.floor(hours / 24)}д`;
+}
+
 export const APP_URL = 'https://hando.alrevion.com';
 
 /** «Открыть» -- прямо в задачу в мини-приложении. web_app работает в личке, а уведомления по ADR-4 идут только туда. */

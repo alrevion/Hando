@@ -8,7 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
-import { buildAssignees, canTransition, confirmAssignees, declineAssignee, lateAssignee, loadAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
+import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { setTaskDeadline } from './intake';
 import {
@@ -34,14 +34,6 @@ export const apiRoutes = new Hono<AppEnv>();
 // projectChatId и notifyTask удалены на шаге 1: адрес чата и текст сообщения
 // теперь собирает transition.ts, а отправляет outbox.ts. Держать здесь второй
 // путь рассылки значило бы, что «ровно один раз» доказано только для одного.
-
-function describeOverdue(seconds: number): string {
-  if (seconds <= 0) return 'Без просрочки';
-  const hours = Math.floor(seconds / 3600);
-  if (hours < 1) return 'Просрочка: меньше часа';
-  if (hours < 24) return `Просрочка: ${hours}ч`;
-  return `Просрочка: ${Math.floor(hours / 24)}д`;
-}
 
 // Shared by both archive views: attach each task's event trail with actor
 // names resolved (null actor = system, e.g. auto-archive). N+1 is fine here --
@@ -1540,23 +1532,7 @@ apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), async (c) => 
   if (!(await isReviewer(c, task))) return c.json({ error: 'only the author can confirm' }, 403);
   if (task.status !== 'done') return c.json({ error: 'task is not in done' }, 409);
   if (task.confirmed_at) return c.json({ error: 'task already confirmed' }, 409);
-  let overdueBy: number | null = null;
-  if (task.deadline && task.done_at) {
-    const late = Math.floor((Date.parse(task.done_at) - Date.parse(task.deadline)) / 1000);
-    overdueBy = late > 0 ? late : 0;
-  }
-  // Статус не меняется: подтверждение живёт в confirmed_at. Но это переход
-  // жизненного цикла, и идти он обязан тем же путём -- иначе «единая точка»
-  // становится «единой точкой, кроме одного случая».
-  // Строки исполнителей помечаются принятыми. Без этого состояние 'confirmed'
-  // недостижимо, строки навсегда остаются в 'done' -- и cron слал «пора
-  // проверить» по задачам, которые автор уже принял.
-  await c.env.DB.batch([confirmAssignees(c.env, task.id)]);
-  await applyTransition(c.env, {
-    task, to: task.status, actorId: c.get('userId'), action: 'confirmed', overdueBy,
-    set: { confirmed_at: nowIso() },
-    notify: { emoji: '✔️', label: 'Подтверждено', extraLine: overdueBy == null ? undefined : describeOverdue(overdueBy) },
-  });
+  const overdueBy = await confirmWork(c.env, task, c.get('userId'));
   await drainOutbox(c.env);
   return c.json({ success: true, overdue_by: overdueBy });
 });

@@ -109,6 +109,11 @@ describe('шаг 4c: поводы', () => {
 
     await hook(env, { callback_query: { id: 'c2', from: { id: 'tg-boss' }, data: 'nudge_confirm:stale1', message: { chat: { id: 1, type: 'private' }, message_id: 2 } } });
     expect((await testEnv.DB.prepare("SELECT confirmed_at FROM tasks WHERE id='stale1'").first<{ confirmed_at: string | null }>())!.confirmed_at).not.toBeNull();
+    // Та же дорога, что «Принять» в приложении: строки помечены принятыми,
+    // событие в журнале, исполнителю ушло «Подтверждено».
+    expect((await testEnv.DB.prepare("SELECT state FROM task_assignees WHERE task_id='stale1'").first<{ state: string }>())!.state).toBe('confirmed');
+    expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM events WHERE target_id='stale1' AND action='confirmed'").first<{ n: number }>())!.n).toBe(1);
+    expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM notifications WHERE task_id='stale1' AND payload LIKE '%Подтверждено%'").first<{ n: number }>())!.n).toBeGreaterThan(0);
   });
 
   it('/промах пишет events.action = miss -- знаменатель метрики', async () => {
