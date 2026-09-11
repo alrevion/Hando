@@ -63,6 +63,13 @@ export async function saveDraft(
     draft.priority, draft.priorityExplicit ? 1 : 0, draft.kind, heard.slice(0, 1000),
     JSON.stringify(media), draft.source, now, now,
   ).run();
+  // СЧЁТЧИК ПРОМАХОВ. Черновик исчезает после подтверждения, а вопрос «как
+  // часто правил не хватает» живёт месяцами: эта доля и решает, нужен ли
+  // векторный слой. Считаем, а не логируем: фраза никуда не пишется.
+  await env.DB.prepare(
+    `INSERT INTO parse_stats (org_id, day, source, n) VALUES (?, ?, ?, 1)
+     ON CONFLICT(org_id, day, source) DO UPDATE SET n = n + 1`,
+  ).bind(who.orgId, now.slice(0, 10), draft.source).run();
   return (await getDraft(env, id))!;
 }
 

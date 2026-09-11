@@ -256,3 +256,29 @@ describe('приложение: тот же черновик', () => {
     expect(await tasks()).toBe(0);
   });
 });
+
+// Замер, ради которого всё: доля фраз, которые правила не осилили.
+describe('счётчик промахов разбора', () => {
+  it('каждый черновик оставляет в журнале, чем он разобран', async () => {
+    const env = await envWith({
+      users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }, { id: 'u-aziz', phone: '+2', name: 'Азиз', role: 'admin' }],
+      memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'u-aziz' }],
+      projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+      tasks: [],
+    });
+    tg();
+    const say = (text: string) => botApp.request('/webhook', {
+      method: 'POST',
+      headers: { 'x-telegram-bot-api-secret-token': 'tg-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: { chat: { id: 'tg-boss', type: 'private' }, from: { id: 'tg-boss', first_name: 'Д' }, text } }),
+    }, env);
+
+    await say('Азизу подготовить отчёт до пятницы');
+    await say('там с бумагой непонятно вышло');
+    const { results } = await testEnv.DB.prepare('SELECT source, SUM(n) AS n FROM parse_stats GROUP BY source').all<{ source: string; n: number }>();
+    const by = Object.fromEntries(results.map((r) => [r.source, r.n]));
+    // Первая фраза -- правилами, бесплатно. Вторая -- без ключа модели запасным путём.
+    expect(by.pattern).toBe(1);
+    expect(by.fallback).toBe(1);
+  });
+});

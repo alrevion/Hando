@@ -17,6 +17,7 @@ describe('тестовая база — настоящая D1', () => {
       'nudges',
       'org_memberships',
       'orgs',
+      'parse_stats',
       'project_memberships',
       'projects',
       'reminders',
