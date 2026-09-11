@@ -379,3 +379,11 @@ export async function departmentsFor(env: Env, orgId: string, approverId: string
   const own = all.filter((d) => mine.has(d.id));
   return own.length ? own : all;
 }
+
+/** Ждёт ли человек подтверждения хоть куда-нибудь: заявка подана, её не приняли. */
+export async function hasPendingJoin(env: Env, userId: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    'SELECT 1 FROM org_memberships WHERE user_id = ? AND confirmed_at IS NULL AND left_at IS NULL LIMIT 1',
+  ).bind(userId).first();
+  return !!row;
+}

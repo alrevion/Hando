@@ -116,10 +116,15 @@ describe('шаг 4c: поводы', () => {
     expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM notifications WHERE task_id='stale1' AND payload LIKE '%Подтверждено%'").first<{ n: number }>())!.n).toBeGreaterThan(0);
   });
 
-  it('/промах пишет events.action = miss -- знаменатель метрики', async () => {
+  it('промах пишется САМ -- из поправки черновика, а не командой', async () => {
+    // Команду /промах не набирал никто, и знаменатель метрики оставался пустым.
+    // Поправка черновика -- честный сигнал: разобрали не так.
     const env = await world();
     tg();
-    await hook(env, { message: { chat: { id: 1, type: 'private' }, from: { id: 'tg-boss' }, text: '/промах' } });
+    await hook(env, { message: { chat: { id: 1, type: 'private' }, from: { id: 'tg-boss' }, text: 'Азизу подготовить отчёт' } });
+    const d = (await testEnv.DB.prepare('SELECT id, telegram_chat_id, telegram_message_id FROM drafts').first<{ id: string }>())!;
+    await hook(env, { callback_query: { id: 'c9', from: { id: 'tg-boss' }, data: `de:${d.id}`, message: { chat: { id: 1, type: 'private' }, message_id: 3 } } });
+    await hook(env, { message: { chat: { id: 1, type: 'private' }, from: { id: 'tg-boss' }, text: 'срок вторник' } });
     const { n } = (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM events WHERE action='miss'").first<{ n: number }>())!;
     expect(n).toBe(1);
   });
@@ -168,9 +173,10 @@ describe('шаг 4c: пять метрик пилота', () => {
   });
 
   it('№2 «промахов за 14 дней» считает только окно', async () => {
-    const env = await world();
-    tg();
-    await hook(env, { message: { chat: { id: 1, type: 'private' }, from: { id: 'tg-boss' }, text: '/промах' } });
+    await world();
+    await testEnv.DB.prepare(
+      "INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, created_at) VALUES ('fresh','boss',?, 'user','boss','miss', datetime('now'))",
+    ).bind(ORG_A).run();
     await testEnv.DB.prepare(
       "INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, created_at) VALUES ('old','boss',?, 'user','boss','miss', datetime('now','-20 day'))",
     ).bind(ORG_A).run();

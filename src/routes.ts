@@ -12,7 +12,7 @@ import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssign
 import { drainOutbox } from './outbox';
 import { setTaskDeadline } from './intake';
 import {
-  assigneesOf, confirmDraft, draftAssignable, getDraft, listDrafts, mediaOf, patchDraft, removeDraft, renderCreated, renderDraft,
+  assigneesOf, confirmDraft, draftAssignable, getDraft, listDrafts, logMiss, mediaOf, patchDraft, removeDraft, renderCreated, renderDraft,
   saveDraft, type DraftPatch, type DraftRow,
 } from './drafts';
 import { CATEGORIES, PACKS, pack } from './packs';
@@ -404,7 +404,7 @@ apiRoutes.post('/memberships/:userId/approve', requireRole('admin', 'super_admin
   if (!ok) return c.json({ error: 'no pending request' }, 404);
   const tg = await c.env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?')
     .bind(applicantId).first<{ telegram_user_id: string | null }>();
-  if (tg?.telegram_user_id) await sendMessage(c.env, tg.telegram_user_id, 'Вас приняли. /moe -- ваши задачи.');
+  if (tg?.telegram_user_id) await sendMessage(c.env, tg.telegram_user_id, 'Вас приняли. Ваши задачи -- кнопка «Мои задачи».');
   return c.json({ ok: true });
 });
 
@@ -686,6 +686,9 @@ apiRoutes.post('/drafts/:id/refine', async (c) => {
   const org = await c.env.DB.prepare('SELECT industry_pack FROM orgs WHERE id = ?').bind(c.get('orgId')).first<{ industry_pack: string }>();
   const sched = await loadSchedule(c.env, c.get('orgId'));
   const patch = await refineDraft(c.env, current, phrase, roster, sched.timezone, org?.industry_pack, new Date(), dayEnd(sched));
+
+  // Поправка = разобрали неверно; отмечаем промах так же, как бот.
+  if (Object.keys(patch).length > 0) await logMiss(c.env, c.get('userId'), c.get('orgId'));
 
   // Поправка научила систему новому прозвищу -- запоминаем, как и в боте.
   const to = patch.assigneeIds?.[0];
@@ -1285,6 +1288,15 @@ apiRoutes.delete('/orgs/:orgId/members/:userId', requireRole('admin', 'super_adm
   // История остаётся (иначе рассыпается аналитика); открытые поручения --
   // авторам с кнопками переназначения, ДО отзыва: очередь проверяет членство.
   await returnOpenTasks(c.env, orgId, userId, c.get('userId'), 'Удалён из организации');
+  // Человеку сообщаем САМИ, а не через очередь: очередь проверяет членство при
+  // отправке, а его больше нет -- письмо никогда бы не ушло. Молчание тут
+  // хуже всего: задачи просто исчезают, и человек думает, что сломалось.
+  const gone = await c.env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?').bind(userId).first<{ telegram_user_id: string | null }>();
+  const org = await c.env.DB.prepare('SELECT name FROM orgs WHERE id = ?').bind(orgId).first<{ name: string }>();
+  if (gone?.telegram_user_id) {
+    await sendMessage(c.env, gone.telegram_user_id,
+      `Вас исключили из «${org?.name ?? 'организации'}». Её задачи больше не видны, история сохранена. Если это ошибка -- напишите тому, кто вас приглашал.`);
+  }
   await drainOutbox(c.env);
   await c.env.DB.prepare('UPDATE org_memberships SET left_at = ? WHERE org_id = ? AND user_id = ? AND left_at IS NULL')
     .bind(nowIso(), orgId, userId)

@@ -254,3 +254,16 @@ export async function renderCreated(env: Env, row: DraftRow, chatId: string, tim
   }
   await sendMessage(env, chatId, text);
 }
+
+/**
+ * Промах разбора -- знаменатель метрики пилота «сколько раз система поняла не
+ * так». Раньше его отмечал человек командой /промах, и это не работало: команду
+ * никто не набирал. Теперь сигнал берётся из самого действия -- ПОПРАВКИ
+ * черновика: если человек что-то исправил, значит разобрали неверно.
+ */
+export async function logMiss(env: Env, userId: string, orgId: string): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
+     VALUES (?, ?, ?, 'user', ?, 'miss', NULL, NULL, ?)`,
+  ).bind(uuid(), userId, orgId, userId, nowIso()).run();
+}

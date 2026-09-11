@@ -25,6 +25,7 @@ export const BTN = {
   createShort: '➕ Создать',
   joinShort: '🔑 Вступить',
   requests: '📨 Заявки',
+  home: '🏠 На главную',
   back: '‹ Назад',
   drafts: '📝 Черновики',
   settings: '⚙️ Настройки',
@@ -38,6 +39,15 @@ export const BTN = {
   digestTime: '🕘 Час сводки',
   invite: '🔗 Ссылка-приглашение',
 } as const;
+
+/**
+ * Нижний ряд любого НЕ главного экрана: слева «На главную», справа «Назад».
+ *
+ * Место выхода одно и то же везде, и человек не ищет его глазами. Раньше
+ * «Назад» был не на всех экранах: из выбора отрасли выйти было нечем, кроме
+ * как начать всё заново.
+ */
+export const exitRow = [{ text: BTN.home }, { text: BTN.back }];
 
 /** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
 export type BotState = {
@@ -132,10 +142,14 @@ export function askNameScreen(): Screen {
  * кнопка меню слева от строки ввода. Дублировать её в клавиатуре -- значит
  * занимать место под то, что и так на экране.
  */
-export function mainScreen(name: string, orgs: OrgRow[]): Screen {
+export function mainScreen(name: string, orgs: OrgRow[], pending = false): Screen {
   if (orgs.length === 0) {
     return {
-      text: `${name}, чтобы начать — создайте организацию или вступите в существующую по коду.`,
+      // Заявка уже подана -- звать создавать организацию незачем: человек
+      // сделал ровно то, что от него требовалось, и ждёт чужого действия.
+      text: pending
+        ? `${name}, заявка отправлена. Как только её подтвердят, задачи появятся здесь.`
+        : `${name}, чтобы начать — создайте организацию или вступите в существующую по коду.`,
       keyboard: kb([[{ text: BTN.create }], [{ text: BTN.join }]]),
       state: { screen: 'main' },
     };
@@ -169,7 +183,7 @@ export function orgsScreen(orgs: OrgRow[], pending = 0, canInvite = false): Scre
   if (pending > 0) rows.push([{ text: BTN.requests }]);
   if (canInvite) rows.push([{ text: BTN.invite }]);
   if (orgs.length > 0) rows.push([{ text: BTN.settings }]);
-  rows.push([{ text: BTN.createShort }, { text: BTN.joinShort }], [{ text: BTN.back }]);
+  rows.push([{ text: BTN.createShort }, { text: BTN.joinShort }], exitRow);
   const lines = [orgs.length ? 'Ваши организации. Текущая отмечена ● — нажмите на другую, чтобы переключиться.' : 'У Вас пока нет организаций.'];
   if (pending > 0) lines.push(`Заявок на вступление: ${pending}`);
   return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'orgs' } };
@@ -196,7 +210,7 @@ export function categoryScreen(orgName: string): Screen {
       '',
       'От этого зависят отделы и то, какие слова я буду понимать как срочные.',
     ].join('\n'),
-    keyboard: kb(rows),
+    keyboard: kb([...rows, exitRow]),
     state: { await: 'pack', draft: orgName },
   };
 }
@@ -211,7 +225,7 @@ export function industryScreen(orgName: string, categoryId: string): Screen {
   rows.push([{ text: BTN.back }]);
   return {
     text: 'Уточните -- от этого зависят отделы:',
-    keyboard: kb(rows),
+    keyboard: kb([...rows, exitRow]),
     state: { await: 'pack', draft: orgName, cat: categoryId },
   };
 }
@@ -256,7 +270,7 @@ export function settingsScreen(prefs: NotifyPrefs, org: OrgSchedule & { name: st
     [{ text: BTN.remind15 }, { text: BTN.remind30 }, { text: BTN.remind60 }],
   ];
   if (isOwner) rows.push([{ text: org.digest_enabled ? BTN.digestOff : BTN.digestOn }, { text: BTN.digestTime }]);
-  rows.push([{ text: BTN.back }]);
+  rows.push(exitRow);
   return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'settings' } };
 }
 

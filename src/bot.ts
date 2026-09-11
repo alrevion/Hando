@@ -15,16 +15,16 @@
 // последнее -- оракул существования, ровно то, что запрещено для проектов.
 import { Hono } from 'hono';
 import type { Env, Role, Task } from './types';
-import { nowIso, uuid } from './db';
+import { nowIso } from './db';
 import { confirmWork, myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, sendTyping, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
-import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, hasPendingJoin, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
 import { setTaskDeadline } from './intake';
 import {
   assigneesOf, confirmDraft, draftAssignable, draftByMessage, getDraft, latestDraft, listDrafts, mediaOf,
-  patchDraft, removeDraft, renderCreated, renderDraft, saveDraft, type DraftPatch,
+  logMiss, patchDraft, removeDraft, renderCreated, renderDraft, saveDraft, type DraftPatch,
 } from './drafts';
 import { categoryByButton, packByButton } from './packs';
 import {
@@ -425,7 +425,7 @@ botApp.post('/webhook', async (c) => {
             `✅ ${applicant?.name ?? 'Сотрудник'} принят -- ${ROLE_TITLE[ROLE_CODE[roleCode] ?? 'member']}.`);
         }
         if (ok && applicant?.telegram_user_id) {
-          await sendMessage(c.env, applicant.telegram_user_id, 'Вас приняли. /moe -- ваши задачи.');
+          await sendMessage(c.env, applicant.telegram_user_id, 'Вас приняли. Ваши задачи -- кнопка «Мои задачи».');
         }
         return c.json({ ok: true });
       }
@@ -441,7 +441,7 @@ botApp.post('/webhook', async (c) => {
           `✅ ${applicant?.name ?? 'Сотрудник'} принят -- ${ROLE_TITLE[role]}, отдел «${dept?.name ?? '-'}».`);
       }
       if (ok && applicant?.telegram_user_id) {
-        await sendMessage(c.env, applicant.telegram_user_id, `Вас приняли в отдел «${dept?.name ?? '-'}». /moe -- ваши задачи.`);
+        await sendMessage(c.env, applicant.telegram_user_id, `Вас приняли в отдел «${dept?.name ?? '-'}». Ваши задачи -- кнопка «Мои задачи».`);
       }
       return c.json({ ok: true });
     }
@@ -900,7 +900,7 @@ botApp.post('/webhook', async (c) => {
       // клавиатуре приложение и так открывается кнопкой меню Telegram.
       await sendMessage(c.env, chatId, START_TIPS, { inline_keyboard: [[{ text: '📱 Открыть приложение', web_app: { url: `${APP_URL}/` } }]] });
     }
-    await show(c.env, chatId, userId, onboarded ? mainScreen(myName, orgs) : askNameScreen());
+    await show(c.env, chatId, userId, onboarded ? mainScreen(myName, orgs, orgs.length === 0 && await hasPendingJoin(c.env, userId)) : askNameScreen());
     return c.json({ ok: true });
   }
   if (!(await isOnboarded(c.env, userId))) {
@@ -910,14 +910,17 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     await sendMessage(c.env, chatId, `Приятно познакомиться, ${text.trim()}.`);
-    // Тезисы -- сразу после знакомства: до этого /start показывал только
-    // вопрос об имени, и новичок не видел, что бот умеет.
-    await sendMessage(c.env, chatId, START_TIPS, { inline_keyboard: [[{ text: '📱 Открыть приложение', web_app: { url: `${APP_URL}/` } }]] });
+    // Заявка -- СРАЗУ после знакомства, до тезисов: человек пришёл по ссылке
+    // ради неё, и ответ на своё действие он должен увидеть первым, а не
+    // выкапывать из-под рассказа о продукте.
     if (st.join) {
       await setState(c.env, userId, {});
       await applyInvite(c.env, userId, chatId, st.join);
     }
-    await show(c.env, chatId, userId, mainScreen(text.trim(), await myOrgs(c.env, userId)));
+    // Тезисы -- следом: до этого /start показывал только вопрос об имени, и
+    // новичок не видел, что бот умеет.
+    await sendMessage(c.env, chatId, START_TIPS, { inline_keyboard: [[{ text: '📱 Открыть приложение', web_app: { url: `${APP_URL}/` } }]] });
+    await show(c.env, chatId, userId, mainScreen(text.trim(), await myOrgs(c.env, userId), await hasPendingJoin(c.env, userId)));
     return c.json({ ok: true });
   }
 
@@ -1039,7 +1042,12 @@ botApp.post('/webhook', async (c) => {
     case BTN.back:
       // «Назад» зависит от экрана: из настроек -- в организации, иначе на главный.
       if (st.screen === 'settings') await orgsView();
-      else await show(c.env, chatId, userId, mainScreen(myName, orgs));
+      else await show(c.env, chatId, userId, mainScreen(myName, orgs, orgs.length === 0 && await hasPendingJoin(c.env, userId)));
+      return c.json({ ok: true });
+    case BTN.home:
+      // «На главную» -- всегда домой, из любого места и с любого шага.
+      await setState(c.env, userId, {});
+      await show(c.env, chatId, userId, mainScreen(myName, orgs, orgs.length === 0 && await hasPendingJoin(c.env, userId)));
       return c.json({ ok: true });
     case BTN.requests: {
       if (!current) return c.json({ ok: true });
@@ -1127,22 +1135,8 @@ botApp.post('/webhook', async (c) => {
     return c.json({ ok: true });
   }
 
-  if (msg.text === '/moe' || msg.text === '/мое' || msg.text === '/моё') {
-    const page = await taskPage(c.env, who.userId, who.orgId, 'm', 0);
-    await sendMessage(c.env, String(msg.chat.id), page.text, page.kb);
-    return c.json({ ok: true });
-  }
-
-  if (msg.text === '/promah' || msg.text === '/промах') {
-    // Счётчик промахов личного слоя: по нему считается метрика «≤2 за 14 дней»
-    // и требование «по убыванию».
-    await c.env.DB.prepare(
-      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
-       VALUES (?, ?, ?, 'user', ?, 'miss', NULL, NULL, ?)`,
-    ).bind(uuid(), who.userId, who.orgId, who.userId, nowIso()).run();
-    await sendMessage(c.env, String(msg.chat.id), 'Отмечено. Спасибо, что сказали.');
-    return c.json({ ok: true });
-  }
+  // Команд со слешем больше нет: ими никто не пользовался, а кнопки делают то
+  // же самое. Осталась /start -- её требует сам Telegram при первом входе.
 
   // ------------------------------------------------------- поручение из фразы
   //
@@ -1234,6 +1228,9 @@ botApp.post('/webhook', async (c) => {
       if (now?.length === 1 && !before.includes(now[0])) await learnAlias(c.env, phrase, roster, now[0]);
     }
     const updated = await patchDraft(c.env, target.id, patch);
+    // Поправка = разобрали неверно. Отмечаем сами: командой /промах этого никто
+    // не делал, а без знаменателя метрика точности не считается.
+    if (Object.keys(patch).length > 0) await logMiss(c.env, who.userId, who.orgId);
     if (st.await === 'fix') await setState(c.env, userId, { ...st, await: undefined, fix: undefined });
     if (updated) await renderDraft(c.env, updated, chat, tz);
     return c.json({ ok: true });
