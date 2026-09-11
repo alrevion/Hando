@@ -1293,6 +1293,25 @@ botApp.post('/webhook', async (c) => {
   // ------------------------------------------------ новый черновик
   const draft = await parseTask(c.env, phrase, roster, who.userId, tz, new Date(), org?.industry_pack, dayEnd(sched));
 
+  // Черновик БЕЗ ТЕМЫ ждёт ответа на свой же вопрос «чего это касается?».
+  //
+  // Такой рождается из файла без подписи. Без этой ветки следующая фраза
+  // заводила ВТОРОЙ черновик, а первый оставался висеть с файлом и пустой
+  // темой -- то есть вопрос карточки было некуда ответить.
+  const waiting = await latestDraft(c.env, who.userId, who.orgId);
+  if (waiting && !waiting.title.trim() && draft.ambiguous.length === 0) {
+    const updated = await patchDraft(c.env, waiting.id, {
+      title: draft.title,
+      assigneeIds: draft.assigneeIds,
+      deadline: draft.deadline,
+      priority: draft.priority,
+      priorityExplicit: draft.priorityExplicit,
+      kind: draft.kind,
+    });
+    if (updated) await renderDraft(c.env, updated, chat, tz);
+    return c.json({ ok: true });
+  }
+
   // Неоднозначное имя -- ПЕРЕСПРОС, а не догадка. Поручение, ушедшее не тому,
   // дороже одного вопроса.
   if (draft.ambiguous.length > 0) {

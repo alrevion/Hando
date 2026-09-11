@@ -297,6 +297,14 @@ describe('бот: поручение из фразы, из фото и из кр
     expect(row!.title).toBe('');
     expect(JSON.parse(row!.media)).toHaveLength(1);
     expect(sent(spy).at(-1)).toContain('чего это касается');
+
+    // Ответ на этот вопрос дополняет ТОТ ЖЕ черновик, а не заводит второй:
+    // иначе файл остался бы висеть в черновике без темы.
+    await hook(env, { message: { chat: { id: 'tg-boss', type: 'private' }, from: { id: 'tg-boss', first_name: 'Д' }, text: 'это накладные, Азизу проверить до вторника' } });
+    const { results } = await testEnv.DB.prepare('SELECT title, media FROM drafts').all<{ title: string; media: string }>();
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toContain('акладные');
+    expect(JSON.parse(results[0].media)).toHaveLength(1);
   });
 
   it('кружочек больше 20 МБ: говорим прямо, а не молчим', async () => {
