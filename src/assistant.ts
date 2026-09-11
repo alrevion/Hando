@@ -54,7 +54,7 @@ async function deleteTasks(env: Env, who: AskWho, tasks: TaskLine[], ids: string
   const boss = who.role === 'creator' || who.role === 'super_admin';
   const allowed = new Set(tasks.filter((t) => t.authorMe || boss).map((t) => t.id));
   const titles: string[] = [];
-  for (const id of [...new Set(ids)]) {
+  for (const id of new Set(ids)) {
     if (!allowed.has(id)) continue;
     const task = await env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ? AND status <> ?').bind(id, who.orgId, 'archived').first<Task>();
     if (!task) continue;
