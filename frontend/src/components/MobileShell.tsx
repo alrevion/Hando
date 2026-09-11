@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CalendarDays, ChevronLeft, ClipboardList, MoreHorizontal, Plus, Send } from 'lucide-react';
 import type { Task, User } from '../types';
 import { BottomNav, type NavTab } from './BottomNav';
+import { pushBack } from '../lib/telegram';
 import { ProfileSheet } from './ProfileSheet';
 import { CreateSheet } from './CreateSheet';
 import { MyTasksView } from './MyTasksView';
@@ -42,12 +43,30 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
   ];
   const [active, setActive] = useState(tabs[0].id);
   const [sub, setSub] = useState<MoreSub | null>(null);
+  // Откуда пришли на текущую вкладку: системная «назад» возвращает туда, а не
+  // закрывает приложение. Одна ступень, не вся история: глубже человек уходит
+  // подэкранами и шторками, а они свои «назад» кладут сами.
+  const cameFrom = useRef<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [linked, setLinked] = useState<Task | null>(null);
 
   // Пришли по ссылке из уведомления -- открываем саму задачу.
   useEffect(() => { if (deepLinkTask) setLinked(deepLinkTask); }, [deepLinkTask]);
+
+  // «Назад» внутри «Ещё» -- к списку. На Android это ещё и системная кнопка:
+  // без неё нажатие закрывало бы приложение целиком.
+  useEffect(() => (sub ? pushBack(() => setSub(null)) : undefined), [sub]);
+
+  // На корне вкладки «назад» возвращает на прежнюю вкладку, если она была.
+  useEffect(() => {
+    if (sub || !cameFrom.current) return undefined;
+    return pushBack(() => {
+      const back = cameFrom.current;
+      cameFrom.current = null;
+      if (back) setActive(back);
+    });
+  }, [active, sub]);
 
   const TITLE: Record<string, string> = { tasks: 'Мои задачи', assigned: 'Мои поручения', calendar: 'Календарь', more: 'Ещё' };
   const title = active === 'more' && sub ? SUB_TITLE[sub] : TITLE[active];
@@ -95,7 +114,11 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
       {/* Повторное нажатие активной вкладки возвращает к её корню -- так ведут
           себя все вкладочные приложения, и человек, застрявший в «Людях»,
           жмёт «Ещё» именно за этим. Раньше нажатие не делало ничего. */}
-      <BottomNav tabs={tabs} active={active} onSelect={(id) => { setActive(id); setSub(null); }} />
+      <BottomNav tabs={tabs} active={active} onSelect={(id) => {
+        if (id !== active) cameFrom.current = active;
+        setActive(id);
+        setSub(null);
+      }} />
 
       {creating ? <CreateSheet mode={active === 'tasks' ? 'mine' : 'assigned'} me={user} onClose={() => setCreating(false)} /> : null}
       {profileOpen ? <ProfileSheet user={user} onClose={() => setProfileOpen(false)} /> : null}

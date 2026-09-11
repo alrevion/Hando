@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { pushBack } from '../lib/telegram';
 
 /**
  * Шторка снизу. Рисуется ПОРТАЛОМ в body, а не там, где написана.
@@ -21,9 +22,12 @@ export function Sheet({
     document.body.style.overflow = 'hidden';
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey);
+    // Системная «назад» на Android закрывает шторку, а не всё приложение.
+    const unback = pushBack(onClose);
     return () => {
       document.body.style.overflow = prev;
       document.removeEventListener('keydown', onKey);
+      unback();
     };
   }, [onClose]);
 

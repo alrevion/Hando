@@ -12,6 +12,12 @@ type WebApp = {
   setHeaderColor?(color: string): void;
   setBackgroundColor?(color: string): void;
   onEvent?(event: string, handler: () => void): void;
+  BackButton?: {
+    show(): void;
+    hide(): void;
+    onClick(handler: () => void): void;
+    offClick(handler: () => void): void;
+  };
 };
 
 function webApp(): WebApp | null {
@@ -84,4 +90,48 @@ export function announceReady(): void {
   } catch {
     // Старые клиенты могут не знать expand(); это не повод падать.
   }
+}
+
+
+// ------------------------------------------------------------ кнопка «назад»
+//
+// На Android системная кнопка «назад» ЗАКРЫВАЕТ мини-приложение -- если только
+// не показана BackButton Telegram: тогда нажатие уходит в неё, а приложение
+// остаётся открытым. Поэтому «назад» -- не украшение, а единственный способ не
+// терять человека на первом же шаге вглубь.
+//
+// Стопка, а не флаг: шторка поверх подэкрана поверх вкладки -- три уровня, и
+// «назад» обязан снимать ровно верхний. Каждый экран, который умеет
+// закрываться, кладёт сюда свой обработчик и снимает его, когда уходит.
+
+const stack: (() => void)[] = [];
+let bound = false;
+
+function pop(): void {
+  const top = stack[stack.length - 1];
+  if (top) top();
+}
+
+function sync(): void {
+  const w = (window as unknown as { Telegram?: { WebApp?: WebApp } }).Telegram?.WebApp;
+  const b = w?.BackButton;
+  if (!b) return;
+  if (!bound) { b.onClick(pop); bound = true; }
+  if (stack.length > 0) b.show();
+  else b.hide();
+}
+
+/**
+ * Кладёт обработчик «назад» и возвращает функцию снятия -- ровно то, что
+ * возвращает useEffect. Порядок гарантирован стопкой: снимается последний
+ * положенный, а не первый попавшийся.
+ */
+export function pushBack(handler: () => void): () => void {
+  stack.push(handler);
+  sync();
+  return () => {
+    const i = stack.lastIndexOf(handler);
+    if (i >= 0) stack.splice(i, 1);
+    sync();
+  };
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent, type TouchEvent, type WheelEvent } from 'react';
+import { pushBack } from '../lib/telegram';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 
 interface LightboxImage {
@@ -51,7 +52,9 @@ export function Lightbox({ images, startIndex, onClose }: LightboxProps) {
       else if (e.key === 'ArrowRight') go(1);
     }
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Просмотр фото -- верхний слой: системная «назад» закрывает его первым.
+    const unback = pushBack(onClose);
+    return () => { window.removeEventListener('keydown', onKey); unback(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [images.length]);
 
