@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import type { Env, Role, Task } from './types';
 import { nowIso, uuid } from './db';
 import { confirmWork, myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
-import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
+import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, sendTyping, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
 import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
@@ -1254,6 +1254,9 @@ botApp.post('/webhook', async (c) => {
   // СМЫСЛ фразы. Вопрос -- отвечаем; просьба к боту («удали», «напомни») --
   // выполняем; остальное -- поручение, то есть черновик. Ошибка стоит одного
   // нажатия: под ответом висит «Это поручение», под черновиком -- «Отменить».
+  // Дальше может быть сеть: разбор намерения, ответ помощника, разбор фразы.
+  // Человеку в чате видно, что бот занят, -- иначе тишина читается как «не дошло».
+  await sendTyping(c.env, chat);
   const named = matchPeople(phrase, roster).ids.length > 0;
   if (await classifyIntent(c.env, phrase, named) === 'ask') {
     const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();

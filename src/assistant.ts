@@ -162,7 +162,15 @@ export async function askAssistant(env: Env, who: AskWho, question: string, hist
     const res = await fetch(`${GROQ}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b', messages, temperature: 0.3, max_tokens: 700, response_format: { type: 'json_object' } }),
+      // Размышление по объёму просьбы: короткое «за что взяться» ответа не
+      // требует долгого, а разбор из десяти задач -- требует. Выше среднего не
+      // поднимаем: ответ в чате ждут, а не читают через минуту.
+      body: JSON.stringify({
+        model: env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b',
+        messages, temperature: 0.3, max_tokens: 700,
+        reasoning_effort: question.length > 120 || tasks.length > 8 ? 'medium' : 'low',
+        response_format: { type: 'json_object' },
+      }),
     });
     if (!res.ok) return fallback(env, who, question, tasks);
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };

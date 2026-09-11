@@ -49,7 +49,7 @@
     "MCP_ORG_ID": "org-pilot",
     // Модели Groq -- vars, а не секреты: имена не конфиденциальны, а менять их
     // без выкладки кода полезно. Ключ GROQ_API_KEY -- секрет.
-    "GROQ_STT_MODEL": "whisper-large-v3-turbo",
+    "GROQ_STT_MODEL": "whisper-large-v3",
     "GROQ_LLM_MODEL": "openai/gpt-oss-120b"
   }
 }

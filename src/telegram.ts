@@ -57,6 +57,21 @@ export async function sendMessage(env: Env, chatId: string, text: string, replyM
 
 // Гасит или меняет клавиатуру у уже отправленного сообщения -- чтобы нажатую
 // кнопку нельзя было нажать второй раз; без replyMarkup кнопки снимаются.
+/**
+ * «Бот думает» в чате. Круглого загрузчика у Telegram нет, индикатор набора --
+ * единственная его форма; живёт ~5 секунд или до следующего сообщения.
+ * Ошибку глушим: индикатор не стоит того, чтобы из-за него падал ответ.
+ */
+export async function sendTyping(env: Env, chatId: string): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+    });
+  } catch { /* молча */ }
+}
+
 export async function editMessageReplyMarkup(env: Env, chatId: string, messageId: string, replyMarkup?: InlineKeyboard): Promise<void> {
   try {
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {

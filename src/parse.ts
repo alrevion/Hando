@@ -605,7 +605,10 @@ export async function transcribe(env: Env, audio: Blob, filename: string): Promi
   if (!env.GROQ_API_KEY) return null;
   const form = new FormData();
   form.append('file', audio, filename);
-  form.append('model', env.GROQ_STT_MODEL || 'whisper-large-v3-turbo');
+  // Полная large-v3, а не turbo: turbo -- урезанный декодер, и на языках вне
+  // первой десятки (узбекский) он ошибается заметно чаще. Секунда задержки
+  // дешевле, чем поручение с перевранным именем.
+  form.append('model', env.GROQ_STT_MODEL || 'whisper-large-v3');
   form.append('language', 'ru');
   form.append('response_format', 'json');
   try {
