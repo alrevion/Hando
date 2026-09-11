@@ -68,6 +68,30 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
     });
   }, [active, sub]);
 
+  // Открытая клавиатура ужимает visualViewport, а плавающий .bottom-nav
+  // «position: absolute» -- нет, он привязан к 100dvh, которая на неё не
+  // реагирует: панель повисает поверх формы посередине экрана. Прячем её на
+  // время печати классом на body, а не завязываем на конкретный инпут --
+  // полей ввода в приложении много, а признак один и тот же для всех.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return undefined; // старый WebView без visualViewport -- ничего не трогаем
+    const onResize = () => {
+      // Порог 120px: меньшие колебания даёт пересчёт safe-area и адресной
+      // строки браузера, а не клавиатура.
+      const keyboardOpen = window.innerHeight - vv.height > 120;
+      document.body.classList.toggle('kb-open', keyboardOpen);
+    };
+    vv.addEventListener('resize', onResize);
+    vv.addEventListener('scroll', onResize);
+    onResize();
+    return () => {
+      vv.removeEventListener('resize', onResize);
+      vv.removeEventListener('scroll', onResize);
+      document.body.classList.remove('kb-open');
+    };
+  }, []);
+
   const TITLE: Record<string, string> = { tasks: 'Мои задачи', assigned: 'Мои поручения', calendar: 'Календарь', more: 'Ещё' };
   const title = active === 'more' && sub ? SUB_TITLE[sub] : TITLE[active];
 

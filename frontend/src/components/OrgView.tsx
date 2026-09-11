@@ -41,7 +41,16 @@ export function OrgView({ user }: { user: User }) {
   if (!org) return <div className="lg:p-6"><h1 className="h1">Организация</h1><p className="muted">Загрузка…</p></div>;
   const days = new Set(org.work_days.split(',').map(Number));
   const pack = packs.find((p) => p.id === org.industry_pack);
-  const shareUrl = invite ? `https://t.me/share/url?url=${encodeURIComponent(invite.link)}&text=${encodeURIComponent(`Присоединяйтесь к «${org.name}» в Hando`)}` : '';
+  // Отделы владелец видел «сверху вниз наоборот»: список приходит с сервера
+  // как есть, а там порядок не гарантирован как «по возрастанию даты». Сортируем
+  // сами -- так новый отдел всегда оказывается в конце, под формой добавления.
+  const depts = [...projects].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  // И url, и text в t.me/share/url телеграм добавляет в готовое сообщение сам,
+  // порядок частей мы не контролируем -- иногда ссылка оказывается впереди.
+  // Поэтому кладём всё одной строкой в text: порядок «текст, потом ссылка»
+  // получаем гарантированно, а голый URL в тексте Telegram всё равно подсветит
+  // как кликабельную ссылку.
+  const shareUrl = invite ? `https://t.me/share/url?text=${encodeURIComponent(`Присоединяйтесь к «${org.name}» в Hando AI: ${invite.link}`)}` : '';
 
   return (
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
@@ -73,7 +82,10 @@ export function OrgView({ user }: { user: User }) {
           <p className="hint" style={{ marginTop: 0 }}>Кто перейдёт по вашей ссылке, подаст заявку вам — вы подтверждаете и выбираете роль и отдел.</p>
           {invite ? (
             <>
-              <p className="muted" style={{ wordBreak: 'break-all', fontSize: 13 }}>{invite.link}</p>
+              {/* overflow-wrap: anywhere ломает длинную ссылку по словам, где
+                  можно, и только потом посреди слова -- в отличие от
+                  break-all она не режет как попало короткие строки. */}
+              <p className="muted" style={{ overflowWrap: 'anywhere', fontSize: 13 }}>{invite.link}</p>
               <div className="btn-row">
                 <button type="button" className="btn" onClick={() => { void navigator.clipboard?.writeText(invite.link); toast('Ссылка скопирована'); }}>
                   <Copy aria-hidden="true" style={{ width: 16, height: 16 }} />Копировать
@@ -92,7 +104,7 @@ export function OrgView({ user }: { user: User }) {
         <div className="card">
           <div className="sec-title" style={{ marginTop: 0 }}>Отделы</div>
           <div className="pills" style={{ marginBottom: 8 }}>
-            {projects.map((p) => <span key={p.id} className="pill"><span>{p.name}</span></span>)}
+            {depts.map((p) => <span key={p.id} className="pill"><span>{p.name}</span></span>)}
           </div>
           <form className="t-row" style={{ gap: 8 }} onSubmit={async (e) => { e.preventDefault(); if (!dept.trim()) return; setBusy(true); try { await createProject(dept.trim()); toast('Отдел добавлен'); setDept(''); await refresh(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(false); } }}>
             <input className="inp" style={{ flex: '1 1 auto', minWidth: 0 }} value={dept} placeholder="Новый отдел" onChange={(e) => setDept(e.target.value)} />
@@ -106,34 +118,60 @@ export function OrgView({ user }: { user: User }) {
         <>
           <div className="card">
             <div className="sec-title" style={{ marginTop: 0 }}>График работы</div>
-            <label className="card card-tap" style={{ display: 'flex', gap: 10, alignItems: 'center', boxShadow: 'none', background: 'var(--fill2)', marginBottom: 10 }}>
-              <input type="checkbox" checked={org.always_on === 1} disabled={busy} onChange={(e) => save({ always_on: e.target.checked ? 1 : 0 })} />
-              <span className="grow"><span className="t-title">24/7</span><span className="t-meta"><span>Семья и личные дела: графика нет, «до завтра» — до 23:59.</span></span></span>
+
+            {/* 24/7 -- своя строка-переключатель. Текст обрезался потому, что
+                ни .t-meta, ни .grow вне родителя .t-row не сжимаются сами по
+                себе -- задаём flex и min-width явно, а перенос строк берём от
+                .hint (он не запрещает white-space, в отличие от .t-meta). */}
+            <label className="card card-tap" style={{ display: 'flex', gap: 10, alignItems: 'center', boxShadow: 'none', background: 'var(--fill2)', marginBottom: 12 }}>
+              <input type="checkbox" checked={org.always_on === 1} disabled={busy} onChange={(e) => save({ always_on: e.target.checked ? 1 : 0 })} style={{ flex: '0 0 auto' }} />
+              <span style={{ flex: '1 1 auto', minWidth: 0 }}>
+                <span className="t-title" style={{ whiteSpace: 'normal' }}>24/7</span>
+                <span className="hint" style={{ margin: '2px 0 0' }}>Без графика — «до завтра» значит до 23:59.</span>
+              </span>
             </label>
+
+            {/* Дни и часы 24/7-организации не нужны -- прячем блок целиком,
+                а не показываем его серым и нерабочим. */}
             {org.always_on ? null : (
               <>
-                <div className="chips" style={{ paddingBottom: 8, flexWrap: 'wrap', overflowX: 'visible' }}>
+                <span className="lbl">Дни недели</span>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
                   {DAYS.map((d, i) => (
-                    <button key={d} type="button" className={days.has(i + 1) ? 'chip on' : 'chip'} disabled={busy} onClick={() => {
-                      const next = new Set(days); if (next.has(i + 1)) next.delete(i + 1); else next.add(i + 1);
-                      if (next.size === 0) return;
-                      void save({ work_days: [...next].sort().join(',') });
-                    }}>{d}</button>
+                    <button
+                      key={d}
+                      type="button"
+                      className={days.has(i + 1) ? 'chip on' : 'chip'}
+                      disabled={busy}
+                      // flex: 1 делит строку на 7 равных кнопок, min-height 44 --
+                      // минимальная зона нажатия по гайдлайну (было 34px).
+                      style={{ flex: '1 1 0', minWidth: 0, minHeight: 44, justifyContent: 'center', padding: 0 }}
+                      onClick={() => {
+                        const next = new Set(days); if (next.has(i + 1)) next.delete(i + 1); else next.add(i + 1);
+                        if (next.size === 0) return;
+                        void save({ work_days: [...next].sort().join(',') });
+                      }}
+                    >{d}</button>
                   ))}
                 </div>
-                <div className="t-row" style={{ gap: 8 }}>
-                  <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">Начало</span>
+
+                <span className="lbl">Рабочий день</span>
+                <div className="t-row" style={{ gap: 8, marginBottom: 12 }}>
+                  <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">С</span>
                     <input key={org.work_start} type="time" className="inp" defaultValue={org.work_start} disabled={busy} onBlur={(e) => { if (e.target.value && e.target.value !== org.work_start) void save({ work_start: e.target.value }); }} /></label>
-                  <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">Конец</span>
+                  <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">До</span>
                     <input key={org.work_end} type="time" className="inp" defaultValue={org.work_end} disabled={busy} onBlur={(e) => { if (e.target.value && e.target.value !== org.work_end) void save({ work_end: e.target.value }); }} /></label>
                 </div>
-                <div className="t-row" style={{ gap: 8, marginTop: 8 }}>
-                  <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">Обед с</span>
+
+                <span className="lbl">Обед</span>
+                <div className="t-row" style={{ gap: 8 }}>
+                  <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">С</span>
                     <input key={org.lunch_start ?? ''} type="time" className="inp" defaultValue={org.lunch_start ?? ''} disabled={busy} onBlur={(e) => { if (e.target.value !== (org.lunch_start ?? '')) void save({ lunch_start: e.target.value || null }); }} /></label>
-                  <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">до</span>
+                  <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">До</span>
                     <input key={org.lunch_end ?? ''} type="time" className="inp" defaultValue={org.lunch_end ?? ''} disabled={busy} onBlur={(e) => { if (e.target.value !== (org.lunch_end ?? '')) void save({ lunch_end: e.target.value || null }); }} /></label>
                 </div>
-                <p className="hint">«До завтра» — до {org.work_end}. Рабочие напоминания приходят только в это время; срок и просрочка — всегда.</p>
+
+                <p className="hint">«До завтра» — до {org.work_end}. Вне графика — только срок и просрочка.</p>
               </>
             )}
           </div>

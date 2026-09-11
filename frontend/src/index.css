@@ -272,6 +272,13 @@ body {
   contain: layout paint;
   transform: translateZ(0);
 }
+/* Клавиатура: .app-frame сидит на 100dvh, которая на открытую клавиатуру не
+   реагирует, а visualViewport -- реагирует. Раз высоты разъехались, панель,
+   привязанная к «низу» старой высоты, всплывает поверх формы. Класс ставит
+   MobileShell по разнице этих высот -- см. его useEffect. */
+body.kb-open .bottom-nav {
+  display: none;
+}
 .nav-indicator {
   position: absolute;
   top: 5px;
@@ -436,6 +443,7 @@ body {
 }
 .t-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   margin-top: 4px;
@@ -443,11 +451,15 @@ body {
   color: var(--label3);
   min-width: 0;
 }
+/* Перенос лучше обрезания (Apple HIG): подписи в организации («Задачи со
+   сроком сегодня... каждому в организации») были длиннее карточки и
+   обрезались многоточием посреди слова. min-width: 0 остаётся -- без него
+   flex-строка не даёт тексту сжаться настолько, чтобы вообще начать
+   переноситься. overflow-wrap ловит только неразрывные строки вроде
+   @username, которым больше некуда деться. */
 .t-meta > * {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .t-row {
   display: flex;
@@ -550,7 +562,9 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 34px;
+  /* 36px -- та же высота, что у .btn-sm и .select-sm: единая шкала малых
+     элементов управления, глаз не спотыкается о разнобой в ряд. */
+  height: 36px;
   padding: 0 14px;
   border-radius: 999px;
   border: none;
@@ -630,13 +644,17 @@ body {
   width: auto;
   height: 36px;
   padding: 0 14px;
-  border-radius: 999px;
+  /* Пилюля 999px -- только у чипов (.chip): у малой кнопки те же радиусы,
+     что у основной (.r/.r-sm), иначе кнопка и чип в одном ряду читались как
+     один и тот же элемент управления. */
+  border-radius: var(--r-sm);
   font-size: 13px;
 }
 .btn-icon {
   /* flex-shrink: 0 обязателен: кнопка живёт в flex-строке рядом с длинным
      заголовком, и без него её сплющивало в овал -- «крестик приплюснутый». */
   flex: 0 0 auto;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -648,6 +666,14 @@ body {
   color: var(--label2);
   cursor: pointer;
   font-family: inherit;
+}
+/* Зона нажатия 44x44 при видимых 36x36 (Apple HIG): псевдоэлемент расширяет
+   кликабельную область на 4px в каждую сторону, не трогая сам кружок. */
+.btn-icon::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
 }
 .btn-icon:active {
   background: var(--fill);
@@ -695,7 +721,9 @@ body {
   width: 100%;
   height: 48px;
   padding: 0 14px;
-  border-radius: 12px;
+  /* var(--r) -- та же высота 48px, что у .btn, тот же радиус: поле и кнопка
+     под ним (форма создания) выглядят одной парой, а не двумя системами. */
+  border-radius: var(--r);
   border: 1px solid transparent;
   background: var(--fill2);
   color: var(--label);
@@ -1092,6 +1120,10 @@ select.inp {
 /* ---- подсказки первых шагов */
 .tips {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg2));
+  /* MobileShell рисует TipsCard прямо перед списком экрана, между ними нет
+     своей обёртки, а у .card отступа снизу нет -- карточка липла к первому
+     элементу списка. 16px -- шаг той же шкалы, что и остальные отступы. */
+  margin-bottom: 16px;
 }
 .tips-list {
   margin: 6px 0 0;
@@ -1131,14 +1163,16 @@ select.inp {
   z-index: 1;
   flex: 1 1 0;
   min-width: 0;
-  height: 40px;
+  /* 36px и 13px -- та же шкала малых элементов управления, что у .chip и
+     .btn-sm; было 40/14 -- лишний, ничем не оправданный размер по соседству. */
+  height: 36px;
   padding: 0 10px;
   border: none;
   background: none;
   border-radius: calc(var(--r-sm) - 3px);
   color: var(--label2);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: color 0.22s cubic-bezier(0.32, 0.72, 0, 1);
@@ -1221,6 +1255,6 @@ select.inp {
 /* ---- select рядом с .btn-sm: та же высота и скругление, ряд выглядит ровно ---- */
 .select-sm {
   height: 36px;
-  border-radius: 999px;
+  border-radius: var(--r-sm);
   font-size: 13px;
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Search, Snowflake, Trash2, X } from 'lucide-react';
+import { BarChart3, Check, ChevronDown, Search, Snowflake, Trash2, X } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
 import { isTaskOverdue } from '../lib/overdue';
@@ -9,6 +9,7 @@ import { useData } from '../context/DataContext';
 import { toast } from '../lib/toast';
 import type { Role } from '../types';
 import { Confirm } from './Confirm';
+import { PersonStatsSheet } from './PersonStats';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
 import { isMine } from '../lib/tasks';
@@ -63,9 +64,18 @@ export function PeopleView() {
   // Рискованное действие спрашивает подтверждение через Confirm, а не
   // window.confirm; kind определяет заголовок, текст и вызов API.
   const [confirmAction, setConfirmAction] = useState<{ user: User; kind: 'delete' | 'freeze' | 'unfreeze' } | null>(null);
-  // Аналитика по человеку грузится при раскрытии карточки, а не на весь список.
-  // null -- посчитать не удалось: иначе «Считаю…» крутилось бы вечно.
+  // Аналитика по человеку грузится по кнопке «Статистика», а не на весь
+  // список и не при каждом раскрытии карточки. null -- посчитать не удалось:
+  // иначе «Считаю…» в шторке крутилось бы вечно. Кэш по id -- повторное
+  // открытие той же шторки не бьёт по сети снова.
   const [stats, setStats] = useState<Record<string, { all: PersonStats; last30: PersonStats } | null>>({});
+  const [statsUser, setStatsUser] = useState<User | null>(null);
+  function openStats(user: User) {
+    setStatsUser(user);
+    if (stats[user.id] === undefined) {
+      getUserStats(user.id).then((st) => setStats((p) => ({ ...p, [user.id]: st }))).catch(() => setStats((p) => ({ ...p, [user.id]: null })));
+    }
+  }
   const canManage = !!me && me.role !== 'member';
   // Руководитель отдела управляет только своим поддеревом: дерево строится по
   // invited_by среди видимых, иначе кнопки вели бы в 403 у коллег по доске.
@@ -257,10 +267,7 @@ export function PeopleView() {
               <li key={row.user.id} className="card" style={{ padding: 0 }}>
                 <button
                   type="button"
-                  onClick={() => {
-                    setExpandedId(expanded ? null : row.user.id);
-                    if (!expanded && stats[row.user.id] === undefined) getUserStats(row.user.id).then((st) => setStats((p) => ({ ...p, [row.user.id]: st }))).catch(() => setStats((p) => ({ ...p, [row.user.id]: null })));
-                  }}
+                  onClick={() => setExpandedId(expanded ? null : row.user.id)}
                   aria-expanded={expanded}
                   className="card card-tap"
                   style={{ boxShadow: 'none' }}
@@ -301,28 +308,20 @@ export function PeopleView() {
 
                 {expanded ? (
                   <div style={{ borderTop: '0.5px solid var(--sep)', padding: '10px 12px 4px' }}>
-                    {(() => {
-                      const st = stats[row.user.id];
-                      if (st === undefined) return <p className="muted" style={{ fontSize: 13 }}>Считаю…</p>;
-                      if (st === null) return <p className="muted" style={{ fontSize: 13 }}>Не удалось посчитать.</p>;
-                      const line = (label: string, s: PersonStats) => (
-                        <div key={label} className="t-meta" style={{ display: 'block', marginBottom: 4 }}>
-                          <b>{label}:</b> сдано {s.done}{s.on_time_pct !== null ? ` · в срок ${s.on_time_pct}%` : ''}{s.avg_late_days > 0 ? ` · просрочка ${s.avg_late_days} дн.` : ''} · принял {s.accepted} · отказался {s.declined} · в работе {s.in_progress}
-                        </div>
-                      );
-                      return <>{line('30 дней', st.last30)}{line('Всё время', st.all)}</>;
-                    })()}
                     {canManage && me && row.user.id !== me.id && row.user.role !== 'creator' && managed.has(row.user.id) ? (
-                      <div style={{ marginTop: 8 }}>
+                      <>
                         {/* select-sm подгоняет высоту и скругление под .btn-sm рядом,
                             иначе строка выглядит рваной. */}
                         <select className="inp select-sm" style={{ width: 'auto' }} aria-label="Роль" value={row.user.role === 'super_admin' ? 'admin' : row.user.role} disabled={busyId === row.user.id}
                           onChange={(e) => manage(row.user.id, () => updateUser(row.user.id, { role: e.target.value as 'admin' | 'member' }), 'Роль изменена')}>
                           {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                         </select>
-                        {/* Заморозить и удалить -- один ряд: select живёт строкой выше,
-                            чтобы длинное название роли не отталкивало «Удалить» вниз. */}
+                        {/* Статистика, заморозка и удаление -- один ряд: та же высота
+                            кнопок, что и раньше, select живёт строкой выше. */}
                         <div className="btn-row" style={{ marginTop: 8 }}>
+                          <button type="button" className="btn btn-sm" onClick={() => openStats(row.user)}>
+                            <BarChart3 aria-hidden="true" style={{ width: 14, height: 14 }} />Статистика
+                          </button>
                           <button type="button" className="btn btn-sm" disabled={busyId === row.user.id}
                             onClick={() => setConfirmAction({ user: row.user, kind: row.user.frozen_at ? 'unfreeze' : 'freeze' })}>
                             <Snowflake aria-hidden="true" style={{ width: 14, height: 14 }} />{row.user.frozen_at ? 'Разморозить' : 'Заморозить'}
@@ -332,8 +331,14 @@ export function PeopleView() {
                             <Trash2 aria-hidden="true" style={{ width: 14, height: 14 }} />Удалить
                           </button>
                         </div>
+                      </>
+                    ) : (
+                      <div className="btn-row" style={{ marginTop: 0 }}>
+                        <button type="button" className="btn btn-sm" onClick={() => openStats(row.user)}>
+                          <BarChart3 aria-hidden="true" style={{ width: 14, height: 14 }} />Статистика
+                        </button>
                       </div>
-                    ) : null}
+                    )}
                   </div>
                 ) : null}
                 {expanded ? (
@@ -375,6 +380,10 @@ export function PeopleView() {
 
       {viewing ? (
         <TaskDetailModal task={viewing.task} responsible={viewing.responsible} onClose={() => setViewing(null)} />
+      ) : null}
+
+      {statsUser ? (
+        <PersonStatsSheet user={statsUser} data={stats[statsUser.id]} onClose={() => setStatsUser(null)} />
       ) : null}
 
       {confirmAction ? (
