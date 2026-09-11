@@ -75,7 +75,9 @@ export function AssignedView({ user }: { user: User }) {
           {/* Этапы -- обычными кнопками, теми же, что фильтры срока и важности:
               сегментный переключатель обещает «одно из», а тут это просто
               фильтр списка, и живёт он в том же языке, что остальной экран. */}
-          <div className="chips" style={{ paddingBottom: 4 }} aria-label="Этап">
+          {/* Отступ до списка -- как у заголовка раздела: кнопки этапа не должны
+              липнуть к первой карточке. */}
+          <div className="chips" style={{ paddingBottom: 16 }} aria-label="Этап">
             {sections.map((sec, i) => (
               <button key={sec.key} type="button" aria-pressed={i === stage}
                 className={i === stage ? 'chip on' : 'chip'}
