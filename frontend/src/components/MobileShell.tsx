@@ -92,7 +92,10 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
         </button>
       ) : null}
 
-      <BottomNav tabs={tabs} active={active} onSelect={(id) => { setActive(id); if (id !== 'more') setSub(null); }} />
+      {/* Повторное нажатие активной вкладки возвращает к её корню -- так ведут
+          себя все вкладочные приложения, и человек, застрявший в «Людях»,
+          жмёт «Ещё» именно за этим. Раньше нажатие не делало ничего. */}
+      <BottomNav tabs={tabs} active={active} onSelect={(id) => { setActive(id); setSub(null); }} />
 
       {creating ? <CreateSheet mode={active === 'tasks' ? 'mine' : 'assigned'} me={user} onClose={() => setCreating(false)} /> : null}
       {profileOpen ? <ProfileSheet user={user} onClose={() => setProfileOpen(false)} /> : null}
