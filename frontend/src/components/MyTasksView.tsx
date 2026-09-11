@@ -86,11 +86,12 @@ export function MyTasksView({ user }: { user: User }) {
         </div>
       ) : (
         <>
-          <div className="segmented" role="tablist" aria-label="Этап">
-            <div className="segmented-indicator" style={{ transform: `translateX(${stage * 100}%)` }} aria-hidden="true" />
+          {/* Кнопки, а не сегментный переключатель: это фильтр списка, и он
+              должен выглядеть как остальные фильтры на экранах. */}
+          <div className="chips" style={{ paddingBottom: 4 }} aria-label="Этап">
             {sections.map((sec, i) => (
-              <button key={sec.key} type="button" role="tab" aria-selected={i === stage}
-                className={i === stage ? 'segmented-btn on' : 'segmented-btn'}
+              <button key={sec.key} type="button" aria-pressed={i === stage}
+                className={i === stage ? 'chip on' : 'chip'}
                 onClick={() => { setStage(i); setShown(PAGE); }}>
                 {sec.key === 'review' ? 'Сдано' : sec.title}{sec.rows.length > 0 ? ` · ${sec.rows.length}` : ''}
               </button>
