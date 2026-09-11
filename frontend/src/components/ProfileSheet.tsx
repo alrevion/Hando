@@ -207,12 +207,16 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
             onCancel={() => setEdit(null)}
             onDone={async (kind, name) => {
               if (kind === 'requested') { setInfo(`Заявка в «${name}» отправлена. Ждём подтверждения.`); setEdit(null); load(); return; }
-              await run(async () => {}, 'reload');
+              // Сменилась организация -- меняется всё: и кто я в ней, и её данные.
+              setEdit(null);
+              setUser((await getMe()).user);
+              await refresh();
+              load();
             }}
           />
         ) : (
           <div className="btn-row">
-            <button type="button" className="btn" onClick={() => { setEdit({ kind: 'create' }); setDraft(''); }}>
+            <button type="button" className="btn" onClick={() => setEdit({ kind: 'create' })}>
               <Plus aria-hidden="true" style={{ width: 16, height: 16 }} />
               Создать или вступить
             </button>

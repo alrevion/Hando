@@ -15,6 +15,7 @@ import { ArchivedProjectsView } from './components/ArchivedProjectsView';
 import { AccessTab } from './components/AccessTab';
 import { getTask } from './lib/api';
 import { NoOrgScreen } from './components/NoOrgScreen';
+import { Toaster } from './components/Toaster';
 import type { Task } from './types';
 
 function AuthenticatedApp() {
@@ -65,13 +66,7 @@ function AuthenticatedApp() {
   // Ниже 1024px -- колонка с нижней навигацией, выше -- боковая панель.
   if (isMobile) {
     return (
-      <MobileShell
-        user={user}
-        projects={projects}
-        selectedProject={projects.find((p) => p.id === selectedProjectId) ?? null}
-        deepLinkTask={deepLinkTask}
-        onReloadProjects={() => loadProjects()}
-      />
+      <MobileShell user={user} deepLinkTask={deepLinkTask} />
     );
   }
 
@@ -199,6 +194,8 @@ function AppShell() {
   return (
     <DataProvider>
       <AuthenticatedApp />
+      {/* Тосты -- на оба макета: экраны сообщают об ошибках только через них. */}
+      <Toaster />
     </DataProvider>
   );
 }

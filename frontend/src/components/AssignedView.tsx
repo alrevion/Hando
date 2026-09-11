@@ -22,7 +22,8 @@ export function AssignedView({ user }: { user: User }) {
   const [viewing, setViewing] = useState<Task | null>(null);
   const [rejecting, setRejecting] = useState<Task | null>(null);
   const [reassigning, setReassigning] = useState<Task | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  // Занятые задачи -- множество: действие по одной не должно разблокировать другую.
+  const [busy, setBusy] = useState<Set<string>>(new Set());
 
   const mine = useMemo(
     () => tasks
@@ -40,9 +41,10 @@ export function AssignedView({ user }: { user: User }) {
     { key: 'done', title: 'Сдано', rows: mine.filter(({ task }) => task.status === 'done') },
   ];
 
-  async function act(task: Task, fn: () => Promise<unknown>, done: string) {
-    setBusy(task.id);
-    try { await fn(); toast(done); await refresh(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(null); }
+  /** true -- получилось; ошибку показывает тостом, а шторка решает сама, закрываться ли. */
+  async function act(task: Task, fn: () => Promise<unknown>, done: string): Promise<boolean> {
+    setBusy((b) => new Set(b).add(task.id));
+    try { await fn(); toast(done); await refresh(); return true; } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); return false; } finally { setBusy((b) => { const n = new Set(b); n.delete(task.id); return n; }); }
   }
 
   return (
@@ -62,7 +64,7 @@ export function AssignedView({ user }: { user: User }) {
           <h2 className="sec-title">{sec.title} · {sec.rows.length}</h2>
           <ul className="stack">
             {sec.rows.map(({ task, projectName }) => {
-              const isBusy = busy === task.id;
+              const isBusy = busy.has(task.id);
               return (
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
                   <button type="button" style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }} onClick={() => setViewing(task)}>
@@ -104,7 +106,7 @@ export function AssignedView({ user }: { user: User }) {
 
       {rejecting ? (
         <RejectTaskModal task={rejecting} onClose={() => setRejecting(null)}
-          onReject={(comment, extraDays) => act(rejecting, () => rejectTask(rejecting.id, comment, extraDays), 'Возвращено в работу')} />
+          onReject={async (comment, extraDays) => { if (!(await act(rejecting, () => rejectTask(rejecting.id, comment, extraDays), 'Возвращено в работу'))) throw new Error('Не получилось.'); }} />
       ) : null}
       {reassigning ? (
         <Sheet labelledBy="reassign-title" onClose={() => setReassigning(null)}>

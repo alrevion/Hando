@@ -12,7 +12,7 @@ import { buildAssignees, confirmAssignees, declineAssignee, lateAssignee, myAssi
 import { drainOutbox } from './outbox';
 import { setTaskDeadline } from './intake';
 import {
-  assigneesOf, confirmDraft, getDraft, listDrafts, mediaOf, patchDraft, removeDraft, renderCreated, renderDraft,
+  assigneesOf, confirmDraft, draftAssignable, getDraft, listDrafts, mediaOf, patchDraft, removeDraft, renderCreated, renderDraft,
   saveDraft, type DraftPatch, type DraftRow,
 } from './drafts';
 import { CATEGORIES, PACKS, pack } from './packs';
@@ -592,6 +592,9 @@ apiRoutes.patch('/drafts/:id', async (c) => {
 apiRoutes.post('/drafts/:id/confirm', async (c) => {
   const row = await ownDraft(c);
   if (!row) return c.json({ error: 'not found' }, 404);
+  // Адресаты перепроверяются при подтверждении: с момента разбора кого-то
+  // могли заморозить или отозвать.
+  if (!(await draftAssignable(c.env, row))) return c.json({ error: 'Кому-то из адресатов сейчас поручать нельзя', code: 'NOT_ASSIGNABLE' }, 409);
   const taskId = await confirmDraft(c.env, row);
   if (!taskId) return c.json({ error: 'Вас не добавили ни на одну доску', code: 'NO_BOARD' }, 409);
   if (row.telegram_chat_id) await renderCreated(c.env, row, row.telegram_chat_id, await orgTz(c.env, c.get('orgId')));
@@ -1356,7 +1359,7 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
   // задача падала в Todo -- и он не мог взять её снова, получая «вы уже
   // принимали». Карточка застревала навсегда.
   const updated = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').bind(task.id, c.get('orgId')).first<Task>();
-  await c.env.DB.batch([resetAssignees(c.env, task.id, (updated ?? task).deadline ?? null)]);
+  await c.env.DB.batch(resetAssignees(c.env, task.id, (updated ?? task).deadline ?? null));
 
   // Переход делается ПОСЛЕ правки содержимого и сброса строк, чтобы уведомление
   // ушло с новым заголовком и сроком, а статус сошёлся со строками.
@@ -1486,7 +1489,7 @@ apiRoutes.post('/tasks/:id/restore', requireProjectAccess('task'), requireRole('
   if (task.status !== 'archived') return c.json({ error: 'only archived tasks can be restored' }, 409);
   // Восстановление -- тот же чистый лист, что и правка: задача возвращается к
   // людям заново, а не с чужими отметками полугодовой давности.
-  await c.env.DB.batch([resetAssignees(c.env, task.id, task.deadline ?? null)]);
+  await c.env.DB.batch(resetAssignees(c.env, task.id, task.deadline ?? null));
   await applyTransition(c.env, {
     task, to: 'todo', actorId: c.get('userId'), action: 'restored', comment,
     set: { done_at: null },

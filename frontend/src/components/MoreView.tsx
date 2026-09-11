@@ -1,4 +1,4 @@
-import { ChevronRight, ClipboardList, Building2, FileText, HelpCircle, Layers, UserRound, Users, Bell } from 'lucide-react';
+import { ChevronRight, Building2, FileText, HelpCircle, Layers, UserRound, Users, Bell } from 'lucide-react';
 import type { User } from '../types';
 
 export type MoreSub = 'people' | 'org' | 'drafts' | 'all' | 'notify' | 'ask';
@@ -15,7 +15,6 @@ export function MoreView({ user, onOpen, onProfile }: { user: User; onOpen: (sub
     { key: 'notify', title: 'Уведомления', hint: 'Режим и «за сколько минут»', icon: Bell },
     { key: 'ask', title: 'Вопрос', hint: 'Как пользоваться и за что взяться', icon: HelpCircle },
   ];
-  void ClipboardList;
   return (
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
       <h1 className="h1">Ещё</h1>

@@ -76,11 +76,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
   // Курсор последнего ответа и защита от наложения запросов: на медленной сети
   // ответ приходит позже следующего тика, и без флага они начинают гонку.
   const cursor = useRef<string | null>(null);
-  const inFlight = useRef(false);
+  // Текущий запрос -- промисом: полный снимок после СВОЕГО изменения обязан
+  // дождаться его и пойти следом, а не молча отпасть из-за идущего опроса.
+  const inFlight = useRef<Promise<void> | null>(null);
 
-  const pull = useCallback(async (full: boolean) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
+  const pull = useCallback(async (full: boolean): Promise<void> => {
+    if (inFlight.current) {
+      if (!full) return;
+      await inFlight.current.catch(() => {});
+    }
+    const run = (async () => {
     try {
       const snap = await getOrgSnapshot(full ? undefined : cursor.current ?? undefined);
       cursor.current = snap.at;
@@ -93,9 +98,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось загрузить данные.');
     } finally {
-      inFlight.current = false;
       setReady(true);
     }
+    })();
+    inFlight.current = run;
+    try { await run; } finally { if (inFlight.current === run) inFlight.current = null; }
   }, []);
 
   const refresh = useCallback(() => pull(true), [pull]);

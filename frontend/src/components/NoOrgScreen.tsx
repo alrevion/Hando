@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { User } from '../types';
 import { getMe } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
@@ -13,6 +13,12 @@ export function NoOrgScreen({ user }: { user: User }) {
   const { setUser } = useAuth();
   const [info, setInfo] = useState<string | null>(null);
   const pending = user.pending ?? [];
+  // Заявку подтверждают в чужом Telegram: опрашиваем, чтобы экран открылся сам.
+  useEffect(() => {
+    if (pending.length === 0) return;
+    const id = setInterval(() => { getMe().then((r) => { if (r.user.org_id) setUser(r.user); }).catch(() => {}); }, 10000);
+    return () => clearInterval(id);
+  }, [pending.length, setUser]);
   return (
     <div className="app-frame" style={{ overflowY: 'auto' }}>
       <div style={{ padding: '32px 16px 40px', maxWidth: 520, margin: '0 auto', width: '100%' }}>

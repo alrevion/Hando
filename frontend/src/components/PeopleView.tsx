@@ -52,8 +52,21 @@ export function PeopleView() {
   const { refresh } = useData();
   const [query, setQuery] = useState('');
   // Аналитика по человеку грузится при раскрытии карточки, а не на весь список.
-  const [stats, setStats] = useState<Record<string, { all: PersonStats; last30: PersonStats }>>({});
+  // null -- посчитать не удалось: иначе «Считаю…» крутилось бы вечно.
+  const [stats, setStats] = useState<Record<string, { all: PersonStats; last30: PersonStats } | null>>({});
   const canManage = !!me && me.role !== 'member';
+  // Руководитель отдела управляет только своим поддеревом: дерево строится по
+  // invited_by среди видимых, иначе кнопки вели бы в 403 у коллег по доске.
+  const managed = useMemo(() => {
+    if (!me || me.role === 'member') return new Set<string>();
+    if (me.role === 'creator' || me.role === 'super_admin') return new Set(users.map((u) => u.id));
+    const kids = new Map<string, string[]>();
+    for (const u of users) if (u.invited_by) kids.set(u.invited_by, [...(kids.get(u.invited_by) ?? []), u.id]);
+    const out = new Set<string>();
+    const queue = [me.id];
+    while (queue.length) { const cur = queue.shift()!; for (const k of kids.get(cur) ?? []) if (!out.has(k)) { out.add(k); queue.push(k); } }
+    return out;
+  }, [users, me]);
   async function manage(userId: string, fn: () => Promise<unknown>, done: string) {
     setBusyId(userId);
     try { await fn(); toast(done); await refresh(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusyId(null); }
@@ -75,13 +88,16 @@ export function PeopleView() {
       await (ok
         ? approveMember(userId, { role: c.role, project_id: c.project ?? projects[0]?.id, position: c.position })
         : rejectMember(userId));
+      toast(ok ? 'Принят' : 'Отклонено');
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Не получилось.');
     } finally {
       setBusyId(null);
       loadPending();
     }
   }
 
-  // Ролей три (решение 10.09): владельца с кнопки не выдают.
+  // Назначаемых ролей две: владелец у организации один, его с кнопки не выдают.
   const ROLES: { value: Role; label: string }[] = [
     { value: 'member', label: 'Участник' },
     { value: 'admin', label: 'Руководитель отдела' },
@@ -132,7 +148,7 @@ export function PeopleView() {
             {pending.map((p) => {
               const c = choice[p.user_id] ?? { role: 'member' as Role };
               const set = (patch: Partial<typeof c>) =>
-                setChoice((prev) => ({ ...prev, [p.user_id]: { ...c, ...patch } }));
+                setChoice((prev) => ({ ...prev, [p.user_id]: { ...(prev[p.user_id] ?? { role: 'member' as Role }), ...patch } }));
               return (
               <li key={p.user_id} className="card">
                 <div className="t-row" style={{ alignItems: 'center' }}>
@@ -228,7 +244,7 @@ export function PeopleView() {
                   type="button"
                   onClick={() => {
                     setExpandedId(expanded ? null : row.user.id);
-                    if (!expanded && !stats[row.user.id]) getUserStats(row.user.id).then((st) => setStats((p) => ({ ...p, [row.user.id]: st }))).catch(() => {});
+                    if (!expanded && stats[row.user.id] === undefined) getUserStats(row.user.id).then((st) => setStats((p) => ({ ...p, [row.user.id]: st }))).catch(() => setStats((p) => ({ ...p, [row.user.id]: null })));
                   }}
                   aria-expanded={expanded}
                   className="card card-tap"
@@ -272,7 +288,8 @@ export function PeopleView() {
                   <div style={{ borderTop: '0.5px solid var(--sep)', padding: '10px 12px 4px' }}>
                     {(() => {
                       const st = stats[row.user.id];
-                      if (!st) return <p className="muted" style={{ fontSize: 13 }}>Считаю…</p>;
+                      if (st === undefined) return <p className="muted" style={{ fontSize: 13 }}>Считаю…</p>;
+                      if (st === null) return <p className="muted" style={{ fontSize: 13 }}>Не удалось посчитать.</p>;
                       const line = (label: string, s: PersonStats) => (
                         <div key={label} className="t-meta" style={{ display: 'block', marginBottom: 4 }}>
                           <b>{label}:</b> сдано {s.done}{s.on_time_pct !== null ? ` · в срок ${s.on_time_pct}%` : ''}{s.avg_late_days > 0 ? ` · просрочка ${s.avg_late_days} дн.` : ''} · принял {s.accepted} · отказался {s.declined} · в работе {s.in_progress}
@@ -280,7 +297,7 @@ export function PeopleView() {
                       );
                       return <>{line('30 дней', st.last30)}{line('Всё время', st.all)}</>;
                     })()}
-                    {canManage && me && row.user.id !== me.id && row.user.role !== 'creator' ? (
+                    {canManage && me && row.user.id !== me.id && row.user.role !== 'creator' && managed.has(row.user.id) ? (
                       <div className="btn-row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
                         <select className="inp" style={{ width: 'auto', padding: '6px 10px' }} aria-label="Роль" value={row.user.role === 'super_admin' ? 'admin' : row.user.role} disabled={busyId === row.user.id}
                           onChange={(e) => manage(row.user.id, () => updateUser(row.user.id, { role: e.target.value as 'admin' | 'member' }), 'Роль изменена')}>

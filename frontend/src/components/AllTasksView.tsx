@@ -12,14 +12,16 @@ const STAGE: Record<string, string> = { todo: 'К выполнению', in_prog
 export function AllTasksView() {
   const { projects } = useData();
   const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<Task | null>(null);
-  useEffect(() => { getSubtreeTasks().then(setTasks).catch(() => setTasks([])); }, []);
+  useEffect(() => { getSubtreeTasks().then(setTasks).catch(() => { setError('Не удалось загрузить.'); setTasks([]); }); }, []);
   const nameById = new Map(projects.map((p) => [p.id, p.name]));
   return (
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
       <h1 className="h1">Все задания</h1>
       <p className="hint" style={{ marginTop: -6 }}>Поручения людей вашего поддерева и их авторов — по всем доскам.</p>
-      {tasks === null ? <p className="muted">Загрузка…</p> : tasks.length === 0 ? (
+      {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
+      {tasks === null ? <p className="muted">Загрузка…</p> : error ? null : tasks.length === 0 ? (
         <div className="empty"><b>Пока пусто</b>Здесь появятся задачи тех, кого вы пригласили.</div>
       ) : (['todo', 'in_progress', 'done'] as const).map((st) => {
         const rows = tasks.filter((t) => t.status === st);

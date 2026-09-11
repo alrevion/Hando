@@ -62,13 +62,16 @@ function formatDeadline(deadline: string) {
 
 // Шторка с полным содержимым задачи: текст целиком, все фото (сразу, а не по
 // клику), файлы. По фото открывается Lightbox с листанием по всем фото задачи.
-export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDetailModalProps) {
+export function TaskDetailModal({ task: opened, responsible, onClose, actions }: TaskDetailModalProps) {
+  // Живая строка из склада: после правки или перехода шторка обязана показать
+  // новое, а не снимок, с которым её открыли.
+  const { refresh, tasks: live } = useData();
+  const task = live.find((t) => t.id === opened.id) ?? opened;
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // Срок и срочность правит автор или руководитель -- те же правила, что на
   // сервере (routes.ts, PATCH /tasks/:id/quick). Кнопок, ведущих в 403, быть
   // не должно.
   const { user: me } = useAuth();
-  const { refresh } = useData();
   const canQuickEdit = !!me && (task.author_id === me.id || me.role === 'creator' || me.role === 'super_admin');
   // Вложения -- в том числе присланные боту: они лежат в attachments, а не в
   // content_blocks, и раньше приложение их не показывало вовсе.
@@ -76,8 +79,13 @@ export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDet
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
   const [busy, setBusy] = useState(false);
-  const loadFiles = () => { getAttachments(task.id).then(setFiles).catch(() => setFiles([])); };
-  useEffect(loadFiles, [task.id]);
+  const [filesTick, setFilesTick] = useState(0);
+  const loadFiles = () => setFilesTick((n) => n + 1);
+  useEffect(() => {
+    let cancelled = false;
+    getAttachments(task.id).then((rows) => { if (!cancelled) setFiles(rows); }).catch(() => { if (!cancelled) setFiles([]); });
+    return () => { cancelled = true; };
+  }, [task.id, filesTick]);
   const inBlocks = new Set(parseContentBlocks(task).flatMap((b) => (b.type === 'image' || b.type === 'file' ? [b.attachment_id] : [])));
   const extra = files.filter((f) => !inBlocks.has(f.id));
   async function run(fn: () => Promise<unknown>, done: string) {
@@ -102,7 +110,8 @@ export function TaskDetailModal({ task, responsible, onClose, actions }: TaskDet
               <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>Ок</button>
             </form>
           ) : <h2 id="task-detail-title" className="sheet-title">{task.title}</h2>}
-          {canQuickEdit && !editing && task.status !== 'done' ? (
+          {/* Тема правится в todo; в работе -- только владельцем, и это возврат в todo (routes PATCH /tasks/:id). */}
+          {canQuickEdit && !editing && (task.status === 'todo' || (task.status === 'in_progress' && me?.role !== 'member' && me?.role !== 'admin')) ? (
             <button type="button" onClick={() => setEditing(true)} aria-label="Изменить тему" className="btn-icon"><Pencil aria-hidden="true" /></button>
           ) : null}
           <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">

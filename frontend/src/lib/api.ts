@@ -77,9 +77,8 @@ export const restoreProject = (id: string) => post<void>(`/projects/${id}/restor
 export const getUsers = () => get<User[]>('/users');
 export const createUser = (input: { phone: string; name: string; role: 'super_admin' | 'admin'; telegram_username?: string }) =>
   post<User>('/users', input);
-// Any subset of these -- e.g. { telegram_username } alone, or all four at once
-// from the edit-person modal. telegram_username: '' clears it. Promoting role
-// to super_admin is creator-only; the backend re-enforces it.
+// Любое подмножество полей. telegram_username: '' стирает. Ролей две назначаемых
+// (руководитель отдела, участник); сервер проверяет право и поддерево.
 export const updateUser = (
   userId: string,
   input: Partial<{ name: string; phone: string; telegram_username: string; role: 'admin' | 'member' }>,

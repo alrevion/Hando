@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CalendarDays, ChevronLeft, ClipboardList, MoreHorizontal, Plus, Send } from 'lucide-react';
-import type { Project, Task, User } from '../types';
+import type { Task, User } from '../types';
 import { BottomNav, type NavTab } from './BottomNav';
 import { ProfileSheet } from './ProfileSheet';
 import { CreateSheet } from './CreateSheet';
@@ -14,7 +14,6 @@ import { DraftsView } from './DraftsView';
 import { AllTasksView } from './AllTasksView';
 import { NotifyView } from './NotifyView';
 import { AskView } from './AskView';
-import { Toaster } from './Toaster';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TipsCard } from './TipsCard';
 
@@ -31,15 +30,7 @@ const SUB_TITLE: Record<MoreSub, string> = { people: 'Люди', org: 'Орга�
  * (порядок по роли) · Календарь · Ещё. «Доска» ушла: этапы живут прямо в
  * списках. Внутри «Ещё» -- подэкраны с кнопкой «назад» в шапке.
  */
-export function MobileShell({
-  user, projects, selectedProject, deepLinkTask, onReloadProjects,
-}: {
-  user: User;
-  projects: Project[];
-  selectedProject: Project | null;
-  deepLinkTask: Task | null;
-  onReloadProjects: () => void;
-}) {
+export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: Task | null }) {
   const boss = user.role !== 'member';
   const tabs: NavTab[] = [
     ...(boss
@@ -53,7 +44,6 @@ export function MobileShell({
   const [profileOpen, setProfileOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [linked, setLinked] = useState<Task | null>(null);
-  void projects; void selectedProject; void onReloadProjects;
 
   // Пришли по ссылке из уведомления -- открываем саму задачу.
   useEffect(() => { if (deepLinkTask) setLinked(deepLinkTask); }, [deepLinkTask]);
@@ -101,7 +91,6 @@ export function MobileShell({
       ) : null}
 
       <BottomNav tabs={tabs} active={active} onSelect={(id) => { setActive(id); if (id !== 'more') setSub(null); }} />
-      <Toaster />
 
       {creating ? <CreateSheet mode={active === 'tasks' ? 'mine' : 'assigned'} me={user} onClose={() => setCreating(false)} /> : null}
       {profileOpen ? <ProfileSheet user={user} onClose={() => setProfileOpen(false)} /> : null}

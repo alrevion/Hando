@@ -28,7 +28,8 @@ export function MyTasksView({ user }: { user: User }) {
   const { refresh } = useData();
   const [viewing, setViewing] = useState<Task | null>(null);
   const [asking, setAsking] = useState<{ task: Task; kind: 'late' | 'decline' } | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  // Занятые задачи -- множество: действие по одной не должно разблокировать другую.
+  const [busy, setBusy] = useState<Set<string>>(new Set());
 
   const byId = useMemo(() => new Map(tasks.map(({ task }) => [task.id, task])), [tasks]);
   const sort = (rows: typeof tasks) => [...rows].sort((a, b) => {
@@ -47,16 +48,19 @@ export function MyTasksView({ user }: { user: User }) {
   ];
   const total = sections.reduce((n, s) => n + s.rows.length, 0);
 
-  async function act(task: Task, fn: () => Promise<unknown>, done: string) {
-    setBusy(task.id);
+  /** true -- получилось; ошибку показывает тостом, а шторка решает сама, закрываться ли. */
+  async function act(task: Task, fn: () => Promise<unknown>, done: string): Promise<boolean> {
+    setBusy((b) => new Set(b).add(task.id));
     try {
       await fn();
       toast(done);
       await refresh();
+      return true;
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Не получилось.');
+      return false;
     } finally {
-      setBusy(null);
+      setBusy((b) => { const n = new Set(b); n.delete(task.id); return n; });
     }
   }
 
@@ -80,7 +84,7 @@ export function MyTasksView({ user }: { user: User }) {
               const dep = task.depends_on_task_id ? byId.get(task.depends_on_task_id) : undefined;
               const blockedBy = dep && dep.status !== 'done' && dep.status !== 'archived' ? dep.title : undefined;
               const state = myRow(task, user.id)?.state;
-              const isBusy = busy === task.id;
+              const isBusy = busy.has(task.id);
               return (
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
                   <button type="button" className="card-tap" style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }} onClick={() => setViewing(task)}>
@@ -120,7 +124,7 @@ export function MyTasksView({ user }: { user: User }) {
           placeholder={asking.kind === 'late' ? 'Одной фразой — передам автору' : 'Причина — передам автору'}
           submitLabel={asking.kind === 'late' ? 'Передать' : 'Отказаться'}
           danger={asking.kind === 'decline'}
-          onSubmit={(text) => act(asking.task, () => asking.kind === 'late' ? lateTask(asking.task.id, text) : declineTask(asking.task.id, text), 'Передано автору')}
+          onSubmit={async (text) => { if (!(await act(asking.task, () => asking.kind === 'late' ? lateTask(asking.task.id, text) : declineTask(asking.task.id, text), 'Передано автору'))) throw new Error('Не получилось.'); }}
           onClose={() => setAsking(null)}
         />
       ) : null}

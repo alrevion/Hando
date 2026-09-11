@@ -7,6 +7,8 @@ export function toast(text: string): void {
   listener?.(text);
 }
 
-export function onToast(fn: Listener | null): void {
+/** Возвращает отписку, которая снимает только СВОЙ слушатель. */
+export function onToast(fn: Listener): () => void {
   listener = fn;
+  return () => { if (listener === fn) listener = null; };
 }

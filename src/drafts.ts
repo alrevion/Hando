@@ -14,6 +14,8 @@ import { nowIso, uuid } from './db';
 import { formatWhen, type Draft } from './parse';
 import type { Media } from './media';
 import { createFromDraft } from './intake';
+import { canAssign } from './hierarchy';
+import { membershipRole } from './auth';
 import { editMessageText, sendMessage, type InlineKeyboard } from './telegram';
 
 export type DraftRow = {
@@ -127,6 +129,19 @@ export async function removeDraft(env: Env, id: string): Promise<void> {
  * (createFromDraft), и исчезает. Возвращает id задачи или null, если класть
  * её некуда (человек ни на одной доске).
  */
+/**
+ * Можно ли автору поручить всем адресатам черновика -- по дереву (раздел 19)
+ * и без замороженных. Проверяется ПРИ ПОДТВЕРЖДЕНИИ, а не только при разборе:
+ * между черновиком и «Создать» человека могли заморозить или отозвать.
+ */
+export async function draftAssignable(env: Env, row: DraftRow): Promise<boolean> {
+  const others = assigneesOf(row).filter((id) => id !== row.author_id);
+  if (others.length === 0) return true;
+  const role = await membershipRole(env.DB, row.org_id, row.author_id);
+  if (!role) return false;
+  return canAssign(env, row.org_id, row.author_id, role, others);
+}
+
 export async function confirmDraft(env: Env, row: DraftRow): Promise<string | null> {
   const draft: Draft = {
     title: row.title,

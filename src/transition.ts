@@ -223,9 +223,8 @@ export async function buildNotification(
     // зависел от того, чем закончился запрос.
     delete_message_id: notify.deletePrevious ? (task.telegram_message_id ?? null) : null,
     track: notify.track === true,
-    // Кнопки прикрепляются ТОЛЬКО с шага 4a: до появления входящего канала
-    // нажатие крутило бы спиннер до таймаута. Предлагаем следующий шаг автомата,
-    // а не все сразу -- «Принял» на уже принятой задаче ничего не значит.
+    // Кнопки перехода даёт вызывающий (следующий шаг автомата, а не все
+    // сразу); «Открыть» -- всегда, вместо голого URL в тексте.
     keyboard: [...(notify.buttons ?? []), [openButton(task.id)]],
   };
   return env.DB.prepare(

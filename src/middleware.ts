@@ -83,12 +83,11 @@ export const requireRole = (...roles: Role[]): MiddlewareHandler<AppEnv> => asyn
 // продукта. Это РЕШЕНИЕ владельца (2026-09-04), а не побочный эффект:
 // платформенного флага нет, поддержка работает прямым доступом к D1.
 //
-// super_admin/admin pass only if they
-// are an explicit project_memberships row OR (super_admin only) the project's
-// creator -- each board has its own people; a super_admin isn't automatically
-// in every project just by holding the role. Returns the SAME 403 whether the
-// project/task/attachment is missing or the user isn't a member (no existence
-// leak). For 'task'/'attachment' routes it also stashes the loaded row in context.
+// Остальные роли проходят только по явной строке project_memberships (или, у
+// super_admin, как создатель доски): у каждой доски свои люди, роль сама по
+// себе членства не даёт. Отказ одинаковый -- 403 -- и когда доски/задачи нет,
+// и когда человек не участник (без оракула существования). Для 'task' и
+// 'attachment' загруженная строка кладётся в контекст.
 //
 // Три источника projectId, один предикат. Раньше вложения имели собственную
 // копию предиката в routes.ts (attachmentForAccess) -- ручное зеркало этой

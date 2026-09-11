@@ -71,13 +71,18 @@ export function canTransition(from: AssigneeState, to: AssigneeState): boolean {
  * отказавшийся от «покрасить забор», не увидел бы «покрасить забор до пятницы,
  * краска оплачена».
  */
-export function resetAssignees(env: Env, taskId: string, dueAt: string | null): D1PreparedStatement {
-  return env.DB.prepare(
-    `UPDATE task_assignees SET state = 'pending', accepted_at = NULL, acknowledged_at = NULL,
-       done_at = NULL, declined_reason = NULL, due_at = ?,
-       last_escalated_at = NULL, reminder_sent_at = NULL, review_reminded_at = NULL
-     WHERE task_id = ?`,
-  ).bind(dueAt, taskId);
+export function resetAssignees(env: Env, taskId: string, dueAt: string | null): D1PreparedStatement[] {
+  return [
+    env.DB.prepare(
+      `UPDATE task_assignees SET state = 'pending', accepted_at = NULL, acknowledged_at = NULL,
+         done_at = NULL, declined_reason = NULL, due_at = ?,
+         last_escalated_at = NULL, reminder_sent_at = NULL, review_reminded_at = NULL
+       WHERE task_id = ?`,
+    ).bind(dueAt, taskId),
+    // Журнал напоминаний -- тоже с нуля: разовые «за час», «в срок» иначе
+    // считались бы уже отправленными, и новый срок прошёл бы без предупреждения.
+    clearReminders(env, taskId),
+  ];
 }
 
 /**
@@ -111,6 +116,11 @@ export function buildAssignees(env: Env, task: { id: string; org_id: string }, u
       'INSERT INTO task_assignees (id, task_id, user_id, org_id, state, due_at) VALUES (?, ?, ?, ?, ?, ?)',
     ).bind(uuid(), task.id, userId, task.org_id, 'pending', dueAt),
   );
+}
+
+/** Стирает журнал напоминаний задачи: у нового срока свои напоминания. */
+export function clearReminders(env: Env, taskId: string): D1PreparedStatement {
+  return env.DB.prepare('DELETE FROM reminders WHERE assignee_row_id IN (SELECT id FROM task_assignees WHERE task_id = ?)').bind(taskId);
 }
 
 /**
@@ -192,6 +202,8 @@ export async function transitionAssignee(
   // tasks.status отстаёт до следующего действия по этой задаче.
   await env.DB.batch([
     env.DB.prepare(`UPDATE task_assignees SET ${sets.join(', ')} WHERE id = ?`).bind(...vals, assignee.id),
+    // Возврат в работу даёт новый срок -- и новый цикл напоминаний.
+    ...(to === 'rejected' ? [env.DB.prepare('DELETE FROM reminders WHERE assignee_row_id = ?').bind(assignee.id)] : []),
     // Событие по САМОЙ строке адресата: журнал обязан различать «Пётр отказался»
     // и «задача отклонена». target_type='assignee' добавлен пересборкой 2b.
     env.DB.prepare(
@@ -340,6 +352,7 @@ export async function reassignTask(env: Env, task: Task, toUserId: string, actor
        ON CONFLICT(task_id, user_id) DO UPDATE SET state = 'pending', accepted_at = NULL, acknowledged_at = NULL, done_at = NULL,
          declined_reason = NULL, due_at = excluded.due_at, last_escalated_at = NULL, reminder_sent_at = NULL, review_reminded_at = NULL`,
     ).bind(uuid(), task.id, toUserId, task.org_id, task.deadline ?? null),
+    clearReminders(env, task.id),
     env.DB.prepare(
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, 'task', ?, 'reassigned', ?, NULL, ?)`,

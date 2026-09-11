@@ -14,7 +14,7 @@ import type { Env, Role } from './types';
 import { nowIso } from './db';
 import type { ReplyKeyboard } from './telegram';
 import { CATEGORIES, categoryButton, packButton, packsOf } from './packs';
-import { digestAt, scheduleCols, type OrgSchedule } from './schedule';
+import { digestAt, loadSchedule, scheduleCols, type OrgSchedule } from './schedule';
 
 export const BTN = {
   tasks: '📋 Мои задачи',
@@ -406,6 +406,13 @@ export async function updateOrgSettings(env: Env, userId: string, orgId: string,
   if (patch.always_on !== undefined) put('always_on', patch.always_on ? 1 : 0);
   if (patch.digest_enabled !== undefined) put('digest_enabled', patch.digest_enabled ? 1 : 0);
   if (!sets.length) return true;
+  // Начало раньше конца, обед внутри дня: иначе «рабочее время» не наступало
+  // бы никогда, и все напоминания по графику молчали бы.
+  const cur = await loadSchedule(env, orgId);
+  const next = { ...cur, ...patch } as OrgSchedule;
+  const min = (v: string) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
+  if (min(next.work_start) >= min(next.work_end)) return false;
+  if (next.lunch_start && next.lunch_end && !(min(next.work_start) <= min(next.lunch_start) && min(next.lunch_start) < min(next.lunch_end) && min(next.lunch_end) <= min(next.work_end))) return false;
   await env.DB.prepare(`UPDATE orgs SET ${sets.join(', ')} WHERE id = ?`).bind(...vals, orgId).run();
   return true;
 }

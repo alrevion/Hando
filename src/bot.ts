@@ -23,7 +23,7 @@ import { applyTransition, openButton } from './transition';
 import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
 import { setTaskDeadline } from './intake';
 import {
-  assigneesOf, confirmDraft, draftByMessage, getDraft, latestDraft, listDrafts, mediaOf,
+  assigneesOf, confirmDraft, draftAssignable, draftByMessage, getDraft, latestDraft, listDrafts, mediaOf,
   patchDraft, removeDraft, renderCreated, renderDraft, saveDraft, type DraftPatch,
 } from './drafts';
 import { categoryByButton, packByButton } from './packs';
@@ -35,6 +35,7 @@ import { download, extractMedia } from './media';
 import { formatWhen, parseTask, refineDraft, transcribe, localIso, localToday } from './parse';
 import { dayEnd, hm, loadSchedule, type OrgSchedule } from './schedule';
 import { askAssistant } from './assistant';
+import { assignableMembers } from './hierarchy';
 import { APP_URL } from './transition';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
@@ -432,6 +433,13 @@ botApp.post('/webhook', async (c) => {
 
       if (action === 'dc') {
         // Самая главная кнопка: только она превращает черновик в поручение.
+        // Адресаты перепроверяются здесь: с момента разбора кого-то могли
+        // заморозить или отозвать.
+        if (!(await draftAssignable(c.env, row))) {
+          await answerCallbackQuery(c.env, cq.id, 'Этому человеку поручать нельзя');
+          if (chat) await sendMessage(c.env, chat, 'Кому-то из адресатов сейчас поручать нельзя (заморожен или вне вашего отдела). Поправьте черновик.');
+          return c.json({ ok: true });
+        }
         const taskId = await confirmDraft(c.env, row);
         await answerCallbackQuery(c.env, cq.id, taskId ? 'Создано' : 'Некуда положить');
         if (chat) {
@@ -777,7 +785,8 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     await applyInvite(c.env, uid, String(msg.chat.id), code);
-    await show(c.env, String(msg.chat.id), uid, mainScreen(tgName0, await myOrgs(c.env, uid)));
+    const known = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(uid).first<{ name: string }>();
+    await show(c.env, String(msg.chat.id), uid, mainScreen(known?.name ?? tgName0, await myOrgs(c.env, uid)));
     return c.json({ ok: true });
   }
   if (start) {
@@ -832,6 +841,9 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     await sendMessage(c.env, chatId, `Приятно познакомиться, ${text.trim()}.`);
+    // Тезисы -- сразу после знакомства: до этого /start показывал только
+    // вопрос об имени, и новичок не видел, что бот умеет.
+    await sendMessage(c.env, chatId, START_TIPS, { inline_keyboard: [[{ text: '📱 Открыть приложение', web_app: { url: `${APP_URL}/` } }]] });
     if (st.join) {
       await setState(c.env, userId, {});
       await applyInvite(c.env, userId, chatId, st.join);
@@ -1144,12 +1156,9 @@ botApp.post('/webhook', async (c) => {
   const sched = await loadSchedule(c.env, who.orgId);
   const tz = sched.timezone;
 
-  // Справочник людей ТЕКУЩЕЙ организации: разбор не должен видеть чужих.
-  const { results: people } = await c.env.DB.prepare(
-    `SELECT u.id, u.name, u.aliases FROM users u
-     JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
-     ORDER BY u.name`,
-  ).bind(who.orgId).all<{ id: string; name: string; aliases: string | null }>();
+  // Справочник -- те, КОМУ ЭТОТ ЧЕЛОВЕК ВПРАВЕ ПОРУЧАТЬ (дерево, раздел 19),
+  // а не вся организация: имя из чужого отдела не должно узнаваться вовсе.
+  const people = await assignableMembers(c.env, who.orgId, who.userId, who.role);
   const roster = people.map((p) => ({
     id: p.id, name: p.name,
     aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined,

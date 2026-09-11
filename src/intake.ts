@@ -7,7 +7,7 @@
 import type { Env, Task } from './types';
 import { nowIso, uuid } from './db';
 import type { Draft } from './parse';
-import { buildAssignees } from './assignees';
+import { buildAssignees, clearReminders } from './assignees';
 import { assigneeButtons, buildNotification } from './transition';
 import { storeByFileId, type Media } from './media';
 import { ensureDefaultProject } from './signup';
@@ -94,14 +94,15 @@ export async function createFromDraft(
  * Срок живёт в ДВУХ местах: tasks.deadline -- то, что видно на доске, и
  * task_assignees.due_at -- то, по чему считает напоминание (см. scheduled.ts).
  * Писать только в одно значило бы «срок вижу, а напоминания нет».
- * reminder_sent_at гасится: у нового срока своё напоминание.
+ * Журнал напоминаний стирается: у нового срока свои «за час» и «в срок».
  */
 export async function setTaskDeadline(env: Env, taskId: string, orgId: string, iso: string | null): Promise<void> {
   await env.DB.batch([
     env.DB.prepare('UPDATE tasks SET deadline = ?, updated_at = ? WHERE id = ? AND org_id = ?')
       .bind(iso, nowIso(), taskId, orgId),
-    env.DB.prepare('UPDATE task_assignees SET due_at = ?, reminder_sent_at = NULL WHERE task_id = ? AND org_id = ?')
+    env.DB.prepare('UPDATE task_assignees SET due_at = ? WHERE task_id = ? AND org_id = ?')
       .bind(iso, taskId, orgId),
+    clearReminders(env, taskId),
   ]);
 }
 

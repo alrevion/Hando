@@ -48,7 +48,7 @@ export function OrgView({ user }: { user: User }) {
 
       <div className="card">
         {owner ? (
-          <form className="field" style={{ marginBottom: 0 }} onSubmit={async (e) => { e.preventDefault(); if (!name.trim() || name.trim() === org.name) return; setBusy(true); try { await renameOrg(org.id, name.trim()); toast('Переименовано'); setUser((await getMe()).user); load(); } finally { setBusy(false); } }}>
+          <form className="field" style={{ marginBottom: 0 }} onSubmit={async (e) => { e.preventDefault(); if (!name.trim() || name.trim() === org.name) return; setBusy(true); try { await renameOrg(org.id, name.trim()); toast('Переименовано'); setUser((await getMe()).user); load(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(false); } }}>
             <label className="lbl" htmlFor="org-title">Название</label>
             <div className="t-row" style={{ gap: 8 }}>
               <input id="org-title" className="inp" style={{ flex: '1 1 auto', minWidth: 0 }} value={name} onChange={(e) => setName(e.target.value)} />
@@ -101,15 +101,15 @@ export function OrgView({ user }: { user: User }) {
                 </div>
                 <div className="t-row" style={{ gap: 8 }}>
                   <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">Начало</span>
-                    <input type="time" className="inp" defaultValue={org.work_start} disabled={busy} onBlur={(e) => { if (e.target.value && e.target.value !== org.work_start) void save({ work_start: e.target.value }); }} /></label>
+                    <input key={org.work_start} type="time" className="inp" defaultValue={org.work_start} disabled={busy} onBlur={(e) => { if (e.target.value && e.target.value !== org.work_start) void save({ work_start: e.target.value }); }} /></label>
                   <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">Конец</span>
-                    <input type="time" className="inp" defaultValue={org.work_end} disabled={busy} onBlur={(e) => { if (e.target.value && e.target.value !== org.work_end) void save({ work_end: e.target.value }); }} /></label>
+                    <input key={org.work_end} type="time" className="inp" defaultValue={org.work_end} disabled={busy} onBlur={(e) => { if (e.target.value && e.target.value !== org.work_end) void save({ work_end: e.target.value }); }} /></label>
                 </div>
                 <div className="t-row" style={{ gap: 8, marginTop: 8 }}>
                   <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">Обед с</span>
-                    <input type="time" className="inp" defaultValue={org.lunch_start ?? ''} disabled={busy} onBlur={(e) => { if (e.target.value !== (org.lunch_start ?? '')) void save({ lunch_start: e.target.value || null }); }} /></label>
+                    <input key={org.lunch_start ?? ''} type="time" className="inp" defaultValue={org.lunch_start ?? ''} disabled={busy} onBlur={(e) => { if (e.target.value !== (org.lunch_start ?? '')) void save({ lunch_start: e.target.value || null }); }} /></label>
                   <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">до</span>
-                    <input type="time" className="inp" defaultValue={org.lunch_end ?? ''} disabled={busy} onBlur={(e) => { if (e.target.value !== (org.lunch_end ?? '')) void save({ lunch_end: e.target.value || null }); }} /></label>
+                    <input key={org.lunch_end ?? ''} type="time" className="inp" defaultValue={org.lunch_end ?? ''} disabled={busy} onBlur={(e) => { if (e.target.value !== (org.lunch_end ?? '')) void save({ lunch_end: e.target.value || null }); }} /></label>
                 </div>
                 <p className="hint">«До завтра» — до {org.work_end}. Рабочие напоминания приходят только в это время; срок и просрочка — всегда.</p>
               </>
@@ -124,7 +124,7 @@ export function OrgView({ user }: { user: User }) {
             </label>
             {org.digest_enabled ? (
               <label className="field" style={{ marginTop: 10, marginBottom: 0 }}><span className="lbl">Час сводки (пусто — начало рабочего дня)</span>
-                <input type="time" className="inp" defaultValue={org.digest_time ?? ''} disabled={busy} onBlur={(e) => { if (e.target.value !== (org.digest_time ?? '')) void save({ digest_time: e.target.value || null }); }} /></label>
+                <input key={org.digest_time ?? ''} type="time" className="inp" defaultValue={org.digest_time ?? ''} disabled={busy} onBlur={(e) => { if (e.target.value !== (org.digest_time ?? '')) void save({ digest_time: e.target.value || null }); }} /></label>
             ) : null}
           </div>
 

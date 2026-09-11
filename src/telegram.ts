@@ -31,12 +31,9 @@ export type Keyboard = InlineKeyboard | ReplyKeyboard;
 
 // chatId is per-project (each project posts to its own group), never global.
 //
-// replyMarkup -- ПОДПИСЬ БЕЗ ЕДИНОГО ВЫЗОВА В ПРОДЕ, и это осознанно (шаг 1 плана).
-// Кнопку нельзя показывать раньше шага 4a по двум причинам: до 4a нет входящего
-// канала (index.ts регистрирует только /api, /mcp и статику, обработчика
-// callback_query нет), поэтому нажатие крутило бы спиннер до таймаута; и
-// сообщения уходят в ГРУППОВОЙ чат, где нажать может любой участник, а
-// сопоставления telegram_user_id -> user_id до 4a не существует.
+// replyMarkup -- инлайновые кнопки под сообщением или постоянная клавиатура
+// (см. Keyboard). Кнопки уходят только в ЛИЧКУ (ADR-4): в группе нажать мог бы
+// любой участник, а не адресат.
 export async function sendMessage(env: Env, chatId: string, text: string, replyMarkup?: Keyboard): Promise<string | null> {
   try {
     const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -58,10 +55,8 @@ export async function sendMessage(env: Env, chatId: string, text: string, replyM
   }
 }
 
-// Гасит клавиатуру у уже отправленного сообщения -- чтобы нажатую кнопку нельзя
-// было нажать второй раз. Тоже МЁРТВЫЙ КОД до шага 4a: гасить пока нечего,
-// кнопок никто не отправляет. Существует здесь, чтобы на 4a добавлялся
-// обработчик, а не заодно и транспорт.
+// Гасит или меняет клавиатуру у уже отправленного сообщения -- чтобы нажатую
+// кнопку нельзя было нажать второй раз; без replyMarkup кнопки снимаются.
 export async function editMessageReplyMarkup(env: Env, chatId: string, messageId: string, replyMarkup?: InlineKeyboard): Promise<void> {
   try {
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {

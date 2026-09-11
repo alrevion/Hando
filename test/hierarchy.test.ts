@@ -86,6 +86,22 @@ describe('видимость по дереву', () => {
     expect((await api(env, `/drafts/${d.id}`, 'PATCH', { assignee_ids: ['w2'] }, 'a2', 'admin')).status).toBe(200);
   });
 
+  it('бот: имя из чужого отдела не узнаётся, а замороженному не подтвердить', async () => {
+    const env = await world();
+    tg();
+    // a2 диктует «Азизу» -- Азиз в чужом отделе: адресат не узнан, черновик на себя.
+    await say(env, 'tg-a2', 'Азизу подготовить отчёт');
+    const d = (await testEnv.DB.prepare("SELECT id, assignee_ids FROM drafts WHERE author_id='a2'").first<{ id: string; assignee_ids: string }>())!;
+    expect(JSON.parse(d.assignee_ids)).toEqual(['a2']);
+    // a1 диктует Азизу (свой), но до «Создать» Азиза заморозили.
+    await say(env, 'tg-a1', 'Азизу подготовить отчёт');
+    const d1 = (await testEnv.DB.prepare("SELECT id FROM drafts WHERE author_id='a1'").first<{ id: string }>())!;
+    await testEnv.DB.prepare('UPDATE org_memberships SET frozen_at = ? WHERE org_id = ? AND user_id = ?').bind('2026-01-01', ORG_A, 'w1').run();
+    await press(env, 'tg-a1', `dc:${d1.id}`);
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM tasks WHERE title = ?').bind('Подготовить отчёт').first<{ n: number }>())!.n).toBe(0);
+    expect((await api(env, `/drafts/${d1.id}/confirm`, 'POST', {}, 'a1', 'admin')).status).toBe(409);
+  });
+
   it('«Все задания» -- поддерево, не вся организация', async () => {
     const env = await world();
     const titles = async (who: string, role: string) => {

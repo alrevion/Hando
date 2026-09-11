@@ -5,7 +5,6 @@ import { ApiError, updateUser } from '../lib/api';
 
 interface PersonEditModalProps {
   person: User;
-  canPromoteToSuperAdmin: boolean; // only creator
   isSelf: boolean; // nobody edits their own role, super_admin included
   onClose: () => void;
   onSaved: () => void;
@@ -14,7 +13,7 @@ interface PersonEditModalProps {
 // One place to fix a name typo, a phone number, a Telegram handle, or a role --
 // previously scattered across an inline role <select> and a separate inline
 // username editor, with no way to touch name/phone at all.
-export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClose, onSaved }: PersonEditModalProps) {
+export function PersonEditModal({ person, isSelf, onClose, onSaved }: PersonEditModalProps) {
   const [name, setName] = useState(person.name);
   const [phone, setPhone] = useState(person.phone);
   const [telegramUsername, setTelegramUsername] = useState(person.telegram_username ?? '');
@@ -23,7 +22,6 @@ export function PersonEditModal({ person, canPromoteToSuperAdmin, isSelf, onClos
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  void canPromoteToSuperAdmin; // ролей три: super_admin больше не выдаётся
   const isCreator = person.role === 'creator';
   const roleLocked = isCreator || isSelf;
 

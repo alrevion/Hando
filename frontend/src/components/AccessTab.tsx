@@ -14,7 +14,6 @@ interface AccessTabProps {
 // and assigning/removing them from this project. Only super_admin/creator ever
 // see this tab (gated by the caller), matching the backend's role checks.
 export function AccessTab({ project, currentUser }: AccessTabProps) {
-  const canCreateSuperAdmin = currentUser.role === 'creator'; // only creator may promote -- mirrors backend
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -180,7 +179,6 @@ export function AccessTab({ project, currentUser }: AccessTabProps) {
       {editingPerson ? (
         <PersonEditModal
           person={editingPerson}
-          canPromoteToSuperAdmin={canCreateSuperAdmin}
           isSelf={editingPerson.id === currentUser.id}
           onClose={() => setEditingPerson(null)}
           onSaved={load}
@@ -322,8 +320,7 @@ function CreatePersonForm({
               onChange={(e) => setRole(e.target.value as Role)}
               className="rounded-md border border-[var(--hair)] bg-[var(--bg2)] px-2 py-1.5 text-sm focus-visible:outline-blue-600"
             >
-              <option value="admin">Admin</option>
-              <option value="super_admin">Super-admin</option>
+              <option value="admin">Руководитель отдела</option>
             </select>
           </div>
         ) : null}

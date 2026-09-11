@@ -7,7 +7,7 @@ import { applyTransition, assigneeButtons, openButton } from './transition';
 import { drainOutbox } from './outbox';
 import { enqueueNudges } from './nudges';
 import { formatWhen } from './parse';
-import { digestAt, hm, isWorkDay, localHm, sameLocalDay, scheduleCols, type OrgSchedule } from './schedule';
+import { digestAt, hm, inWorkHours, isWorkDay, localHm, sameLocalDay, scheduleCols, type OrgSchedule } from './schedule';
 import { listDrafts, renderDraft } from './drafts';
 
 // Тот же домен, что в transition.ts: адрес воркера один.
@@ -24,21 +24,26 @@ const ONCE = Number.POSITIVE_INFINITY;
 
 export async function scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
   const now = new Date();
-  await autoArchive(env);
-  await remindNotAccepted(env, now);
-  await remindDueSoon(env, now);
-  await remindOverdue(env, now);
-  await remindStaleReview(env);
-  await sendDigests(env, now);
+  // Каждый проход -- сам по себе: упавший проход не должен отменять слив
+  // очереди (страховку доставки) и самопочинку вебхука в этом же тике.
+  const guard = async (name: string, fn: () => Promise<unknown>) => {
+    try { await fn(); } catch (err) { console.error(`cron ${name} failed`, err); }
+  };
+  await guard('autoArchive', () => autoArchive(env));
+  await guard('notAccepted', () => remindNotAccepted(env, now));
+  await guard('dueSoon', () => remindDueSoon(env, now));
+  await guard('overdue', () => remindOverdue(env, now));
+  await guard('staleReview', () => remindStaleReview(env));
+  await guard('digests', () => sendDigests(env, now));
   // Страховка за отправку: роуты сливают outbox сразу после ответа, но если тот
   // вызов не дошёл, строка так и лежит с sent_at IS NULL -- здесь она уедет.
   // Поводы ставятся ДО слива очереди: иначе выданный сейчас повод ждал бы
   // следующего тика.
-  await enqueueNudges(env);
-  await drainOutbox(env, now);
+  await guard('nudges', () => enqueueNudges(env));
+  await guard('outbox', () => drainOutbox(env, now));
   // Самопочинка вебхука: без неё регистрация была бы ручным шагом с токеном
   // бота, а сбившийся вебхук пришлось бы замечать по молчанию бота.
-  await reconcileWebhook(env, APP_URL);
+  await guard('webhook', () => reconcileWebhook(env, APP_URL));
 }
 
 // (a) status='done' + done_at older than 7 days -> archived (system-generated event).
@@ -124,6 +129,10 @@ function mark(env: Env, rowId: string, kind: string, now: Date): D1PreparedState
     .bind(rowId, kind, now.toISOString());
 }
 
+/** Рабочее ли сейчас время у организации строки. Повторы по графику ставятся
+ *  только в него: иначе они копились бы у головы очереди до утра. */
+const working = (r: Row, now: Date) => inWorkHours({ ...r, id: r.org_id }, now);
+
 /** Кнопка автору под напоминанием: переназначить, если это не рассылка. */
 function authorButtons(r: Row): InlineButton[][] {
   return r.kind === 'each' ? [] : [[{ text: '👤 Переназначить', callback_data: `ra:${r.task_id}:` }]];
@@ -148,13 +157,13 @@ export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
     const age = now.getTime() - Date.parse(r.created_at.includes('T') ? r.created_at : `${r.created_at.replace(' ', 'T')}Z`);
     if (age < HOUR_MS) continue;
     const dueToday = r.due_at !== null && sameLocalDay(r.due_at, now, r.timezone);
-    if (dueNow(log, r.id, 'not_accepted', dueToday ? HOURLY_MS : ONCE, now)) {
+    if (working(r, now) && dueNow(log, r.id, 'not_accepted', dueToday ? HOURLY_MS : ONCE, now)) {
       writes.push(queueReminder(env, r,
         `⏳ Не принято: «${r.title}»${r.due_at ? `\nСрок: ${formatWhen(r.due_at, r.timezone)}` : ''}\nПримите или откажитесь — автор ждёт.`,
         'not_accepted', { gated: true, buttons: assigneeButtons({ id: r.task_id, kind: r.kind }) }));
       writes.push(mark(env, r.id, 'not_accepted', now));
     }
-    if (age >= 3 * HOUR_MS && r.author_id && r.author_id !== r.user_id && dueNow(log, r.id, 'author_not_accepted', ONCE, now)) {
+    if (working(r, now) && age >= 3 * HOUR_MS && r.author_id && r.author_id !== r.user_id && dueNow(log, r.id, 'author_not_accepted', ONCE, now)) {
       writes.push(queueReminder(env, { task_id: r.task_id, org_id: r.org_id, user_id: r.author_id },
         `⏳ ${r.responsible_name} не принял «${r.title}» (уже ${Math.floor(age / HOUR_MS)} ч).`,
         'author_not_accepted', { gated: true, buttons: authorButtons(r) }));
@@ -191,7 +200,7 @@ export async function remindDueSoon(env: Env, now: Date): Promise<void> {
     }
     const n = r.remind_before_min;
     if (n > 0 && n !== 60 && left > 0 && left <= n * 60 * 1000 && dueNow(log, r.id, 'before_n', ONCE, now)) {
-      shoot('before_n', `⏰ Через ${n} мин срок: «${r.title}»`);
+      shoot('before_n', `⏰ ${n % 60 === 0 ? `Через ${n / 60} ч` : `Через ${n} мин`} срок: «${r.title}»`);
     }
     if (left <= 0 && -left < HOUR_MS && dueNow(log, r.id, 'at_due', ONCE, now)) {
       shoot('at_due', `🔔 Срок наступил: «${r.title}»`);
@@ -223,12 +232,13 @@ export async function remindOverdue(env: Env, now: Date): Promise<void> {
       // ПЕРВОЕ предупреждение пробивает и тишину, и график: после провала оно
       // бесполезно. Повторы -- каждый час, но только в рабочее время.
       const first = !log.has(`${r.id}:overdue`);
+      if (!first && !working(r, now)) continue;
       writes.push(queueReminder(env, r,
         `⚠️ Просрочено на ${formatOverdue(overdueMs)}: «${r.title}»`,
         'overdue', first ? { urgent: true } : { gated: true }));
       writes.push(mark(env, r.id, 'overdue', now));
     }
-    if (r.author_id && r.author_id !== r.user_id && dueNow(log, r.id, 'author_overdue', DAILY_MS, now)) {
+    if (working(r, now) && r.author_id && r.author_id !== r.user_id && dueNow(log, r.id, 'author_overdue', DAILY_MS, now)) {
       writes.push(queueReminder(env, { task_id: r.task_id, org_id: r.org_id, user_id: r.author_id },
         `⚠️ ${r.responsible_name} просрочил «${r.title}» на ${formatOverdue(overdueMs)}.`,
         'author_overdue', { gated: true, buttons: authorButtons(r) }));

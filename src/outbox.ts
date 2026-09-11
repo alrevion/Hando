@@ -103,8 +103,10 @@ export async function drainOutbox(env: Env, now: Date = new Date()): Promise<num
     // Срочное (срок, просрочка) пробивает оба: предупреждение после провала
     // бесполезно.
     const s: OrgSchedule = { ...row, id: row.org_id ?? '' };
-    if (p.urgent !== true && s.quiet_hours === 1) {
-      if (isQuiet(now, s.timezone)) continue;
+    if (p.urgent !== true) {
+      // Ночной пол -- у организаций с графиком (24/7 живёт вечером); quiet_hours=0 -- выключатель для тестов.
+      if (!s.always_on && s.quiet_hours === 1 && isQuiet(now, s.timezone)) continue;
+      // График -- независимо от пола: для напоминаний и для режима «по расписанию».
       if ((p.gated === true || to.notify_mode === 'schedule') && !inWorkHours(s, now)) continue;
     }
 
