@@ -17,7 +17,8 @@ import {
 } from './drafts';
 import { CATEGORIES, PACKS, pack } from './packs';
 import { localIso, parseTask, transcribe } from './parse';
-import { approveJoin, createOrg, joinByCode, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, createOrg, inviteCodeFor, inviteLink, joinByCode, notifyApprover, pendingRequests, rejectJoin } from './signup';
+import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers } from './hierarchy';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
 import { dayEnd, hm, loadSchedule } from './schedule';
 
@@ -113,10 +114,28 @@ apiRoutes.post('/auth/telegram', async (c) => {
     .first<{ id: string; name: string }>();
   if (!user) return c.json({ error: 'not connected', code: 'CONNECT_BOT_FIRST' }, 403);
 
-  const orgId = await resolveOrgId(c.env.DB, user.id);
-  if (!orgId) return c.json({ error: 'no active organisation', code: 'NO_ORG' }, 403);
-  const role = await membershipRole(c.env.DB, orgId, user.id);
-  if (!role) return c.json({ error: 'no active organisation', code: 'NO_ORG' }, 403);
+  let orgId = await resolveOrgId(c.env.DB, user.id);
+  if (!orgId) {
+    // Несколько членств и ни одно не выбрано -- берём первое по времени: это
+    // лучше, чем показывать человеку с двумя организациями «создайте первую».
+    const first = await c.env.DB.prepare(
+      `SELECT m.org_id FROM org_memberships m JOIN orgs o ON o.id = m.org_id
+       WHERE m.user_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL AND o.archived_at IS NULL
+       ORDER BY m.created_at LIMIT 1`,
+    ).bind(user.id).first<{ org_id: string }>();
+    if (first) {
+      await c.env.DB.prepare('UPDATE users SET current_org_id = ? WHERE id = ?').bind(first.org_id, user.id).run();
+      orgId = first.org_id;
+    }
+  }
+  const role = orgId ? await membershipRole(c.env.DB, orgId, user.id) : null;
+  if (!orgId || !role) {
+    // Первая организация создаётся В ПРИЛОЖЕНИИ (раздел 18): сессия без
+    // организации законна и открывает экран «создайте или вступите».
+    const token = await mintSession(c.env.SESSION_SECRET, { sub: user.id, role: 'member', org_id: null });
+    setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
+    return c.json({ user: { id: user.id, name: user.name, role: 'member', org_id: null } });
+  }
 
   const token = await mintSession(c.env.SESSION_SECRET, { sub: user.id, role, org_id: orgId });
   setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
@@ -133,6 +152,17 @@ apiRoutes.post('/auth/logout', (c) => {
 apiRoutes.use('*', requireAuth);
 
 apiRoutes.get('/me', async (c) => {
+  if (!c.get('orgId')) {
+    // Без организации: имя, настройки и список заявок, которые ждут решения.
+    const u = await c.env.DB.prepare("SELECT id, name, COALESCE(notify_mode,'all') AS notify_mode, COALESCE(remind_before_min,30) AS remind_before_min FROM users WHERE id = ?")
+      .bind(c.get('userId')).first<{ id: string; name: string }>();
+    if (!u) return c.json({ error: 'not found' }, 404);
+    const { results: pending } = await c.env.DB.prepare(
+      `SELECT o.name FROM org_memberships m JOIN orgs o ON o.id = m.org_id
+       WHERE m.user_id = ? AND m.confirmed_at IS NULL AND m.left_at IS NULL AND o.archived_at IS NULL`,
+    ).bind(c.get('userId')).all<{ name: string }>();
+    return c.json({ user: { ...u, role: 'member', org_id: null, org_name: null, pending: pending.map((p) => p.name) } });
+  }
   // Роль -- из членства в ТЕКУЩЕЙ организации, не из мёртвой users.role. Иначе
   // между 2a и 2b человек видел бы у себя роль, по которой ему уже ничего не
   // разрешено. org отдаётся клиенту: фронту нужно знать, где он находится.
@@ -231,7 +261,7 @@ apiRoutes.post('/users', requireRole('super_admin', 'creator'), async (c) => {
 // Edit any subset of name/phone/telegram_username/role -- all optional and
 // independent (send only what changed). Was telegram_username-only; broadened
 // because there was previously no way to fix a name/phone typo at all.
-apiRoutes.patch('/users/:id', requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.patch('/users/:id', requireRole('admin', 'super_admin', 'creator'), async (c) => {
   const body = await c.req.json<{ name?: string; phone?: string; telegram_username?: string; role?: Role }>().catch(() => ({}) as Record<string, undefined>);
   const targetId = c.req.param('id');
   const orgId = c.get('orgId');
@@ -246,8 +276,14 @@ apiRoutes.patch('/users/:id', requireRole('super_admin', 'creator'), async (c) =
     // super_admin could just demote-proof or promote themselves.
     if (targetId === c.get('userId')) return c.json({ error: 'cannot change your own role' }, 403);
     if (targetRole === 'creator') return c.json({ error: "cannot change the creator's role" }, 403);
-    if (body.role === 'creator') return c.json({ error: 'cannot reassign creator via API' }, 400);
-    if (body.role === 'super_admin' && c.get('role') !== 'creator') return c.json({ error: 'only creator can promote to super_admin' }, 403);
+    // Ролей три (решение 10.09): владелец, руководитель отдела, участник.
+    if (body.role !== 'admin' && body.role !== 'member') return c.json({ error: 'role must be admin or member' }, 400);
+    // Руководитель отдела меняет роли только в своём поддереве.
+    if (!(await canManageMember(c.env, orgId, c.get('userId'), c.get('role'), targetId))) return c.json({ error: 'forbidden' }, 403);
+  }
+  // Идентичность (имя, телефон, username) -- только владельцу.
+  if ((body.name !== undefined || body.phone !== undefined || 'telegram_username' in body) && c.get('role') === 'admin') {
+    return c.json({ error: 'forbidden' }, 403);
   }
   if (body.name !== undefined && !body.name.trim()) return c.json({ error: 'name cannot be empty' }, 400);
   if (body.phone !== undefined && !body.phone.trim()) return c.json({ error: 'phone cannot be empty' }, 400);
@@ -305,31 +341,14 @@ apiRoutes.patch('/users/:id', requireRole('super_admin', 'creator'), async (c) =
   return c.json({ success: true });
 });
 
-// Assignment dropdowns: id/name/role/telegram_username (no phone exposure).
-//
-// member сюда НЕ допускается -- это и есть смысл четвёртой роли (ADR-5).
-// Справочник ВСЕЙ организации рядовому сотруднику не нужен: людей своих досок он
-// видит через /projects/:id/members, который и так ограничен доской и не отдаёт
-// телефонов никому кроме super_admin/creator. Поручать он по-прежнему может
-// (R1-1), просто в пределах досок, где состоит.
-apiRoutes.get('/users', requireRole('admin', 'super_admin', 'creator'), async (c) => {
-  // phone was deliberately withheld here (any project member can hit this to
-  // populate a responsible-person picker) -- but super_admin/creator need it
-  // back for the Edit person modal, so send it only to them.
+// Справочник людей -- ПО ДЕРЕВУ (раздел 19): владелец видит всех, руководитель
+// отдела -- своё поддерево и людей своих досок, участник -- людей своих досок.
+// Телефон -- только владельцу (модалка правки человека).
+apiRoutes.get('/users', async (c) => {
   const role = c.get('role');
-  const extra = role === 'super_admin' || role === 'creator' ? ', u.phone' : '';
-  // Ограничение идёт JOIN'ом через org_memberships, а не колонкой users.org_id,
-  // которой не будет: организация человека живёт в членстве. Роль -- оттуда же,
-  // иначе между 2a и 2b справочник показывал бы мёртвую users.role и
-  // разжалованный виден как super_admin.
-  const { results } = await c.env.DB.prepare(
-    `SELECT u.id, u.name, m.role AS role, m.position AS position, u.telegram_username${extra}
-     FROM users u JOIN org_memberships m ON m.user_id = u.id
-     WHERE m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL ORDER BY u.name`,
-  )
-    .bind(c.get('orgId'))
-    .all();
-  return c.json(results);
+  const withPhone = role === 'super_admin' || role === 'creator';
+  const rows = await visibleMembers(c.env, c.get('orgId'), c.get('userId'), role, withPhone);
+  return c.json(rows.map(({ aliases: _a, ...u }) => { void _a; return u; }));
 });
 
 // ---------------------------------------------------------------------- projects
@@ -341,17 +360,17 @@ apiRoutes.get('/users', requireRole('admin', 'super_admin', 'creator'), async (c
 // сотрудник -- ему нельзя поручать и его нельзя показывать среди коллег, пока
 // владелец не решил. Экран нужен потому, что сообщение с кнопкой в Telegram
 // теряется среди уведомлений, а заявка обязана дождаться ответа.
-apiRoutes.get('/memberships/pending', requireRole('super_admin', 'creator'), async (c) =>
-  c.json(await pendingRequests(c.env, c.get('orgId'))));
+apiRoutes.get('/memberships/pending', requireRole('admin', 'super_admin', 'creator'), async (c) =>
+  c.json(await pendingRequests(c.env, c.get('orgId'), c.get('userId'))));
 
-apiRoutes.post('/memberships/:userId/approve', requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.post('/memberships/:userId/approve', requireRole('admin', 'super_admin', 'creator'), async (c) => {
   const applicantId = c.req.param('userId');
   const b = await c.req.json<{ role?: string; project_id?: string; position?: string }>()
     .catch(() => ({}) as Record<string, undefined>);
   // Роль и отдел выбирают ПРИ подтверждении -- иначе каждый вступивший молча
   // становился рядовым, и поменять это можно было только с компьютера.
   // Владельца отсюда не выдают: это делает approveJoin.
-  const role = (['member', 'admin', 'super_admin'] as const).find((r) => r === b.role) ?? 'member';
+  const role = (['member', 'admin'] as const).find((r) => r === b.role) ?? 'member';
   // Право проверяется ВНУТРИ approveJoin по членству, а не только по роли из
   // сессии: организация в адресе не участвует, она берётся из сессии.
   const ok = await approveJoin(c.env, c.get('userId'), c.get('orgId'), applicantId, role, b.project_id, b.position);
@@ -362,7 +381,7 @@ apiRoutes.post('/memberships/:userId/approve', requireRole('super_admin', 'creat
   return c.json({ ok: true });
 });
 
-apiRoutes.post('/memberships/:userId/reject', requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.post('/memberships/:userId/reject', requireRole('admin', 'super_admin', 'creator'), async (c) => {
   const ok = await rejectJoin(c.env, c.get('userId'), c.get('orgId'), c.req.param('userId'));
   return ok ? c.json({ ok: true }) : c.json({ error: 'no pending request' }, 404);
 });
@@ -410,11 +429,8 @@ apiRoutes.post('/tasks/dictate', async (c) => {
 
   // Справочник -- только ПОДТВЕРЖДЁННЫЕ участники: разбор не должен находить
   // заявителя, которого ещё не приняли.
-  const { results: people } = await c.env.DB.prepare(
-    `SELECT u.id, u.name, u.aliases FROM users u
-     JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
-     ORDER BY u.name`,
-  ).bind(orgId).all<{ id: string; name: string; aliases: string | null }>();
+  // Справочник -- те, КОМУ МОЖНО ПОРУЧАТЬ (дерево, раздел 19), а не вся организация.
+  const people = await assignableMembers(c.env, orgId, userId, c.get('role'));
   const roster = people.map((p) => ({ id: p.id, name: p.name, aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined }));
 
   const org = await c.env.DB.prepare('SELECT timezone, industry_pack FROM orgs WHERE id = ?').bind(orgId)
@@ -512,12 +528,10 @@ apiRoutes.patch('/drafts/:id', async (c) => {
   }
   if (b.assignee_ids !== undefined) {
     if (!Array.isArray(b.assignee_ids)) return c.json({ error: 'bad assignees' }, 400);
-    // Только подтверждённые участники СВОЕЙ организации: чужой id -- отказ.
-    const { results } = await c.env.DB.prepare(
-      'SELECT user_id FROM org_memberships WHERE org_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL',
-    ).bind(c.get('orgId')).all<{ user_id: string }>();
-    const known = new Set(results.map((r) => r.user_id));
-    if (b.assignee_ids.some((id) => !known.has(id))) return c.json({ error: 'Такого человека нет в организации' }, 400);
+    // Только те, кому этот человек вправе поручать (дерево): чужой id -- отказ.
+    if (!(await canAssign(c.env, c.get('orgId'), c.get('userId'), c.get('role'), b.assignee_ids))) {
+      return c.json({ error: 'Такого человека нет в организации' }, 400);
+    }
     patch.assigneeIds = [...new Set(b.assignee_ids)];
   }
   const sched = await loadSchedule(c.env, c.get('orgId'));
@@ -648,16 +662,9 @@ apiRoutes.post('/orgs/join', async (c) => {
   if (!code?.trim()) return c.json({ error: 'code required' }, 400);
   const res = await joinByCode(c.env, c.get('userId'), code.trim());
   if (!res.ok) return c.json({ error: res.reason, code: res.reason }, 409);
-  // Уведомление владельцу -- та же кнопка, что шлёт бот: заявка обязана дойти
+  // Карточка решающему -- та же, что шлёт бот: заявка обязана дойти
   // независимо от того, откуда её подали.
-  if (res.ownerTgId) {
-    await sendMessage(c.env, res.ownerTgId, `К Вам просится: ${res.applicantName}`, {
-      inline_keyboard: [[
-        { text: '✅ Принять', callback_data: `join_ok:${c.get('userId')}` },
-        { text: '✖️ Отклонить', callback_data: `join_no:${c.get('userId')}` },
-      ]],
-    });
-  }
+  await notifyApprover(c.env, res, c.get('userId'));
   return c.json({ ok: true, org_name: res.orgName });
 });
 
@@ -695,6 +702,65 @@ apiRoutes.post('/orgs/:orgId/leave', async (c) => {
 });
 
 /** Своё имя -- то, которое видят коллеги в поручениях. В боте это «Профиль». */
+// Личная ссылка-приглашение: заявка по ней приходит её хозяину, не владельцу.
+apiRoutes.get('/orgs/:orgId/invite', requireRole('admin', 'super_admin', 'creator'), async (c) => {
+  if (c.req.param('orgId') !== c.get('orgId')) return c.json({ error: 'forbidden' }, 403);
+  const code = await inviteCodeFor(c.env, c.get('orgId'), c.get('userId'));
+  if (!code) return c.json({ error: 'forbidden' }, 403);
+  return c.json({ code, link: inviteLink(code) });
+});
+
+// «Все задания»: обзор ПОДДЕРЕВА, не всей организации -- маркетинг не видит
+// бухгалтерию. Владелец видит всё.
+apiRoutes.get('/org/subtree-tasks', requireRole('admin', 'super_admin', 'creator'), async (c) => {
+  const orgId = c.get('orgId');
+  const role = c.get('role');
+  let rows: Record<string, unknown>[];
+  if (role === 'creator' || role === 'super_admin') {
+    rows = (await c.env.DB.prepare("SELECT * FROM tasks WHERE org_id = ? AND status IN ('todo','in_progress','done') ORDER BY created_at").bind(orgId).all<Record<string, unknown>>()).results;
+  } else {
+    const ids = [...(await subtreeOf(c.env, orgId, c.get('userId'))), c.get('userId')];
+    const holes = ids.map(() => '?').join(',');
+    rows = (await c.env.DB.prepare(
+      `SELECT * FROM tasks t WHERE t.org_id = ? AND t.status IN ('todo','in_progress','done')
+         AND (t.author_id IN (${holes}) OR EXISTS (SELECT 1 FROM task_assignees a WHERE a.task_id = t.id AND a.user_id IN (${holes})))
+       ORDER BY t.created_at`,
+    ).bind(orgId, ...ids, ...ids).all<Record<string, unknown>>()).results;
+  }
+  return c.json({ tasks: await attachAssignees(c.env, orgId, rows) });
+});
+
+// Заморозка (отпуск, болезнь): новых задач и уведомлений нет, открытые
+// возвращаются авторам вопросом «кому переназначить?». Удаление -- то же плюс left_at.
+async function manageTarget(c: Context<AppEnv>, targetId: string): Promise<Role | Response> {
+  const orgId = c.get('orgId');
+  const target = await membershipRole(c.env.DB, orgId, targetId);
+  if (!target) return c.json({ error: 'not found' }, 404);
+  if (target === 'creator') return c.json({ error: 'cannot touch the creator' }, 403);
+  if (!(await canManageMember(c.env, orgId, c.get('userId'), c.get('role'), targetId))) return c.json({ error: 'forbidden' }, 403);
+  return target;
+}
+
+apiRoutes.post('/users/:id/freeze', requireRole('admin', 'super_admin', 'creator'), async (c) => {
+  const targetId = c.req.param('id');
+  const gate = await manageTarget(c, targetId);
+  if (gate instanceof Response) return gate;
+  await setFrozen(c.env, c.get('orgId'), targetId, true);
+  const returned = await returnOpenTasks(c.env, c.get('orgId'), targetId, c.get('userId'), 'Заморожен');
+  await logEvent(c.env.DB, { actorId: c.get('userId'), orgId: c.get('orgId'), targetType: 'membership', targetId: c.get('orgId'), action: 'frozen', comment: targetId });
+  await drainOutbox(c.env);
+  return c.json({ ok: true, returned });
+});
+
+apiRoutes.post('/users/:id/unfreeze', requireRole('admin', 'super_admin', 'creator'), async (c) => {
+  const targetId = c.req.param('id');
+  const gate = await manageTarget(c, targetId);
+  if (gate instanceof Response) return gate;
+  await setFrozen(c.env, c.get('orgId'), targetId, false);
+  await logEvent(c.env.DB, { actorId: c.get('userId'), orgId: c.get('orgId'), targetType: 'membership', targetId: c.get('orgId'), action: 'unfrozen', comment: targetId });
+  return c.json({ ok: true });
+});
+
 apiRoutes.patch('/me', async (c) => {
   const b = await c.req.json<{ name?: string; notify_mode?: string; remind_before_min?: number }>().catch(() => ({}) as Record<string, undefined>);
   if (b.name !== undefined) {
@@ -762,17 +828,32 @@ apiRoutes.get('/org/snapshot', async (c) => {
            AND status IN ('todo','in_progress','done') ORDER BY created_at`,
   ).bind(orgId, ...projectIds, ...(since ? [since] : [])).all<Record<string, unknown>>()).results;
 
-  // Адресаты -- одним запросом на весь снимок, а не по запросу на карточку.
-  const taskIds = (tasks as { id: string }[]).map((t) => t.id);
-  const aHoles = taskIds.map(() => '?').join(',');
-  const { results: rows } = taskIds.length === 0
-    ? { results: [] as { task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }[] }
-    : await c.env.DB.prepare(
-        `SELECT a.task_id, a.user_id, a.state, a.due_at, u.name AS user_name
-         FROM task_assignees a JOIN users u ON u.id = a.user_id
-         WHERE a.org_id = ? AND a.task_id IN (${aHoles}) ORDER BY a.created_at`,
-      ).bind(orgId, ...taskIds).all<{ task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }>();
+  // Справочник людей едет только с ПОЛНЫМ снимком: он меняется на порядки реже
+  // задач, а опрос идёт каждые несколько секунд. Видимость -- по дереву
+  // (раздел 19), поэтому список есть у всех ролей, но у каждой свой.
+  const users = since ? null
+    : (await visibleMembers(c.env, orgId, userId, role, role === 'creator' || role === 'super_admin'))
+        .map(({ aliases: _a, ...u }) => { void _a; return u; });
 
+  return c.json({
+    at,
+    projects,
+    tasks: await attachAssignees(c.env, orgId, tasks as Record<string, unknown>[]),
+    users,
+    can_see_users: true,
+  });
+});
+
+/** Адресаты -- одним запросом на весь список, а не по запросу на карточку. */
+async function attachAssignees(env: Env, orgId: string, tasks: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  const taskIds = (tasks as { id: string }[]).map((t) => t.id);
+  if (taskIds.length === 0) return [];
+  const aHoles = taskIds.map(() => '?').join(',');
+  const { results: rows } = await env.DB.prepare(
+    `SELECT a.task_id, a.user_id, a.state, a.due_at, u.name AS user_name
+     FROM task_assignees a JOIN users u ON u.id = a.user_id
+     WHERE a.org_id = ? AND a.task_id IN (${aHoles}) ORDER BY a.created_at`,
+  ).bind(orgId, ...taskIds).all<{ task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }>();
   const byTask = new Map<string, unknown[]>();
   for (const r of rows) {
     const list = byTask.get(r.task_id);
@@ -780,25 +861,8 @@ apiRoutes.get('/org/snapshot', async (c) => {
     if (list) list.push(one);
     else byTask.set(r.task_id, [one]);
   }
-
-  // Справочник людей едет только с ПОЛНЫМ снимком: он меняется на порядки реже
-  // задач, а опрос идёт каждые несколько секунд. После своих изменений клиент
-  // просит полный снимок и получает справочник заново.
-  const canSeeUsers = role === 'admin' || role === 'super_admin' || role === 'creator';
-  const users = since || !canSeeUsers ? null : (await c.env.DB.prepare(
-    `SELECT u.id, u.name, m.role AS role, m.position AS position, u.telegram_username, u.phone
-     FROM users u JOIN org_memberships m ON m.user_id = u.id
-     WHERE m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL ORDER BY u.name`,
-  ).bind(orgId).all()).results;
-
-  return c.json({
-    at,
-    projects,
-    tasks: (tasks as Record<string, unknown>[]).map((t) => ({ ...t, assignees: byTask.get(t.id as string) ?? [] })),
-    users,
-    can_see_users: canSeeUsers,
-  });
-});
+  return tasks.map((t) => ({ ...t, assignees: byTask.get(t.id as string) ?? [] }));
+}
 
 apiRoutes.get('/projects', async (c) => {
   const role = c.get('role');
@@ -992,7 +1056,7 @@ apiRoutes.delete('/projects/:projectId/members/:userId', requireProjectAccess('p
 // оставило бы задачи и события со ссылкой на человека, которого «никогда не
 // было», и инвариант «у каждой строки есть автор» покраснел бы навсегда после
 // первого увольнения.
-apiRoutes.delete('/orgs/:orgId/members/:userId', requireRole('super_admin', 'creator'), async (c) => {
+apiRoutes.delete('/orgs/:orgId/members/:userId', requireRole('admin', 'super_admin', 'creator'), async (c) => {
   const orgId = c.get('orgId');
   // :orgId в пути обязан совпадать с организацией сессии. Иначе роут стал бы
   // единственным местом, где арендатор задаётся клиентом, а не токеном.
@@ -1000,10 +1064,13 @@ apiRoutes.delete('/orgs/:orgId/members/:userId', requireRole('super_admin', 'cre
   const userId = c.req.param('userId');
   if (userId === c.get('userId')) return c.json({ error: 'cannot revoke your own membership' }, 403);
 
-  const target = await membershipRole(c.env.DB, orgId, userId);
-  if (!target) return c.json({ error: 'not found' }, 404);
-  if (target === 'creator') return c.json({ error: 'cannot revoke the creator' }, 403);
+  const gate = await manageTarget(c, userId);
+  if (gate instanceof Response) return gate;
 
+  // История остаётся (иначе рассыпается аналитика); открытые поручения --
+  // авторам с кнопками переназначения, ДО отзыва: очередь проверяет членство.
+  await returnOpenTasks(c.env, orgId, userId, c.get('userId'), 'Удалён из организации');
+  await drainOutbox(c.env);
   await c.env.DB.prepare('UPDATE org_memberships SET left_at = ? WHERE org_id = ? AND user_id = ? AND left_at IS NULL')
     .bind(nowIso(), orgId, userId)
     .run();
@@ -1110,10 +1177,10 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
   // (поручать может кто угодно кому угодно), а R1-2 сделал users глобальными.
   // Значит произвольный id из тела мог бы стать адресатом -- и уведомление с
   // заголовком задачи ушло бы человеку чужой организации. Проверяется КАЖДЫЙ.
-  for (const uid of assignees) {
-    if (!(await membershipRole(c.env.DB, orgId, uid))) {
-      return c.json({ error: 'assignee is not a member of this organisation' }, 400);
-    }
+  // Плюс дерево (раздел 19): владелец -- кому угодно, руководитель отдела --
+  // поддереву и людям своих досок, участник -- людям своих досок. Замороженным -- никому.
+  if (!(await canAssign(c.env, orgId, c.get('userId'), c.get('role'), assignees))) {
+    return c.json({ error: 'assignee is not a member of this organisation' }, 400);
   }
   const priority = b.priority && PRIORITIES.includes(b.priority) ? b.priority : 'medium';
   const dependency = await resolveDependency(c.env.DB, c.get('orgId'), projectId, null, b.depends_on_task_id);
@@ -1186,7 +1253,7 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
   if (!dependency.ok) return c.json({ error: 'depends_on_task_id must be another task in the same project' }, 400);
   // Тот же предикат, что и при создании: сменить адресата на человека чужой
   // организации нельзя.
-  if (b.responsible_user_id !== undefined && !(await membershipRole(c.env.DB, c.get('orgId'), b.responsible_user_id))) {
+  if (b.responsible_user_id !== undefined && !(await canAssign(c.env, c.get('orgId'), c.get('userId'), c.get('role'), [b.responsible_user_id]))) {
     return c.json({ error: 'responsible_user_id is not a member of this organisation' }, 400);
   }
   // Смена адресата у задачи с ОДНИМ адресатом. У рассылки «сменить

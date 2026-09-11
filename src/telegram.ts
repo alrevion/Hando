@@ -3,7 +3,7 @@ import type { Env } from './types';
 
 // Инлайновая клавиатура Telegram. Тип объявлен здесь, потому что подпись
 // sendMessage его принимает уже сейчас, а прикрепление кнопок -- шаг 4a.
-export type InlineButton = { text: string; callback_data?: string; web_app?: { url: string } };
+export type InlineButton = { text: string; callback_data?: string; web_app?: { url: string }; url?: string };
 export type InlineKeyboard = { inline_keyboard: InlineButton[][] };
 
 /**

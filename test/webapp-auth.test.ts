@@ -107,13 +107,15 @@ describe('POST /auth/telegram', () => {
     expect(await res.json()).toMatchObject({ code: 'CONNECT_BOT_FIRST' });
   });
 
-  it('подключён, но без организации -- 403, а не пустая доска', async () => {
+  it('подключён, но без организации -- сессия без организации, а не отказ', async () => {
     const env = withToken(await world());
     await testEnv.DB.prepare("UPDATE users SET telegram_user_id = '42' WHERE id = 'boss'").run();
     await testEnv.DB.prepare("UPDATE org_memberships SET left_at = '2026-01-01' WHERE user_id = 'boss'").run();
     const data = await signInitData(TOKEN, { auth_date: String(nowSec()), user: JSON.stringify({ id: 42 }) });
     const res = await post(env, data);
-    expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ code: 'NO_ORG' });
+    // Первая организация создаётся в приложении (раздел 18): сессия без
+    // организации законна, и приложение показывает «создайте или вступите».
+    expect(res.status).toBe(200);
+    expect((await res.json<{ user: { org_id: string | null } }>()).user.org_id).toBeNull();
   });
 });

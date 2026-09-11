@@ -192,7 +192,7 @@ export async function verifyInitData(
   }
 }
 
-export async function mintSession(secret: string, claims: { sub: string; role: Role; org_id: string }): Promise<string> {
+export async function mintSession(secret: string, claims: { sub: string; role: Role; org_id: string | null }): Promise<string> {
   const payload: SessionPayload = { ...claims, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS };
   const body = b64url(enc.encode(JSON.stringify(payload)));
   const sig = b64url(await hmac(secret, body));

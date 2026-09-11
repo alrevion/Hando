@@ -52,11 +52,15 @@ describe('шаг 2b: пересборка не потеряла целостно
 });
 
 describe('шаг 2b: роль member', () => {
-  it('member не видит справочник организации, admin видит', async () => {
+  it('member видит людей своих досок, admin -- своё поддерево', async () => {
     const env = await envWith({ ...team, tasks: [] });
     const asMember = await apiRoutes.request('/users', { headers: { Cookie: await cookie('m1', 'member', ORG_A) } }, env);
-    // Это и есть смысл четвёртой роли: без неё учитель обязан был бы стать admin.
-    expect(asMember.status).toBe(403);
+    // Раздел 19: участник видит людей СВОИХ досок, а не всю организацию и не
+    // ничего. Телефонов -- по-прежнему нет.
+    expect(asMember.status).toBe(200);
+    const list = await asMember.json<{ id: string; phone?: string }[]>();
+    expect(list.every((u) => u.phone === undefined)).toBe(true);
+    expect(list.some((u) => u.id === 'm1')).toBe(true);
 
     const asAdmin = await apiRoutes.request('/users', { headers: { Cookie: await cookie('a1', 'admin', ORG_A) } }, env);
     expect(asAdmin.status).toBe(200);
@@ -108,8 +112,9 @@ describe('шаг 2b: роль member', () => {
     expect(res.status).toBe(200);
     const m = await testEnv.DB.prepare('SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ?').bind(ORG_A, 'a1').first<{ role: string }>();
     expect(m!.role).toBe('member');
-    // И понижение действует немедленно -- requireAuth перечитывает членство.
-    const after = await apiRoutes.request('/users', { headers: { Cookie: await cookie('a1', 'admin', ORG_A) } }, env);
-    expect(after.status).toBe(403);
+    // И понижение действует немедленно -- requireAuth перечитывает членство:
+    // участник видит только людей своих досок, а не всю организацию.
+    const after = await apiRoutes.request('/me', { headers: { Cookie: await cookie('a1', 'admin', ORG_A) } }, env);
+    expect((await after.json<{ user: { role: string } }>()).user.role).toBe('member');
   });
 });

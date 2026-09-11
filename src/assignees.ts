@@ -11,6 +11,8 @@ import type { Env, Task, TaskStatus } from './types';
 import { nowIso, uuid } from './db';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
 import type { InlineButton } from './telegram';
+import { assignableMembers } from './hierarchy';
+import { membershipRole } from './auth';
 
 export type AssigneeState = 'pending' | 'accepted' | 'done' | 'confirmed' | 'rejected' | 'declined';
 
@@ -250,12 +252,12 @@ export async function recomputeTaskStatus(
  * callback_data не помещаются в 64 байта.
  */
 export async function reassignCandidates(env: Env, orgId: string, authorId: string | null): Promise<{ id: string; name: string }[]> {
-  const { results } = await env.DB.prepare(
-    `SELECT u.id, u.name FROM users u
-     JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
-     WHERE u.id <> ? ORDER BY u.name, u.id`,
-  ).bind(orgId, authorId ?? '').all<{ id: string; name: string }>();
-  return results;
+  if (!authorId) return [];
+  const role = await membershipRole(env.DB, orgId, authorId);
+  if (!role) return [];
+  // Кому автор ВПРАВЕ поручать (дерево, раздел 19), без себя. Порядок
+  // фиксирован (имя, id): кнопка хранит индекс и хвост id.
+  return (await assignableMembers(env, orgId, authorId, role)).filter((m) => m.id !== authorId).map((m) => ({ id: m.id, name: m.name }));
 }
 
 /** Кнопки автору под ответом адресата. Переназначить рассылку нельзя: у неё нет «того самого» адресата. */

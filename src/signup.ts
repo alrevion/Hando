@@ -13,6 +13,7 @@
 import type { Env, Role } from './types';
 import { nowIso, uuid } from './db';
 import { pack } from './packs';
+import { sendMessage, type InlineButton } from './telegram';
 
 /**
  * Код вступления: шесть символов из алфавита без похожих начертаний.
@@ -111,47 +112,117 @@ export async function ensureDefaultProject(env: Env, orgId: string, createdBy: s
 }
 
 export type JoinResult =
-  | { ok: true; orgId: string; orgName: string; ownerTgId: string | null; applicantName: string }
+  | { ok: true; orgId: string; orgName: string; approverId: string | null; approverTgId: string | null; applicantName: string }
   | { ok: false; reason: 'unknown_code' | 'already_member' | 'already_pending' };
 
-/**
- * Заявка на вступление по коду. Доступа НЕ даёт -- создаёт членство с
- * confirmed_at = NULL, которое обязан подтвердить владелец.
- */
-export async function joinByCode(env: Env, userId: string, code: string): Promise<JoinResult> {
-  const org = await env.DB.prepare('SELECT id, name, owner_user_id FROM orgs WHERE join_code = ?')
-    .bind(code.trim().toUpperCase())
-    .first<{ id: string; name: string; owner_user_id: string | null }>();
-  // Неизвестный код -- отказ без подробностей: перебор кодов не должен
-  // подсказывать, какие организации существуют.
-  if (!org) return { ok: false, reason: 'unknown_code' };
+const BOSS_ROLES: Role[] = ['creator', 'super_admin'];
 
+/**
+ * Заявка на вступление: членство с confirmed_at = NULL и отметкой, кто позвал.
+ * По общему коду зовёт владелец, по личной ссылке -- её хозяин: так дерево
+ * приглашений строится само.
+ */
+async function requestMembership(
+  env: Env, userId: string, org: { id: string; name: string }, approverId: string | null,
+): Promise<JoinResult> {
   const existing = await env.DB.prepare('SELECT confirmed_at, left_at FROM org_memberships WHERE org_id = ? AND user_id = ?')
     .bind(org.id, userId)
     .first<{ confirmed_at: string | null; left_at: string | null }>();
   if (existing && existing.left_at === null) {
     return { ok: false, reason: existing.confirmed_at ? 'already_member' : 'already_pending' };
   }
-
   const applicant = await env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
   if (existing) {
     // Возвращается тот, кого когда-то отозвали: заявка заводится заново, а не
     // воскрешает прежний доступ молча.
-    await env.DB.prepare('UPDATE org_memberships SET left_at = NULL, confirmed_at = NULL, role = ? WHERE org_id = ? AND user_id = ?')
-      .bind('member', org.id, userId)
+    await env.DB.prepare('UPDATE org_memberships SET left_at = NULL, confirmed_at = NULL, role = ?, invited_by = ?, frozen_at = NULL WHERE org_id = ? AND user_id = ?')
+      .bind('member', approverId, org.id, userId)
       .run();
   } else {
-    // Роль по умолчанию -- member: рядовой сотрудник. Повысить может владелец
-    // при подтверждении. Обратное (дать admin и потом отбирать) опаснее.
-    await env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?, ?, ?, ?, NULL)')
-      .bind(uuid(), org.id, userId, 'member')
+    // Роль по умолчанию -- member: рядовой участник. Повысить может тот, кто
+    // подтверждает. Обратное (дать admin и потом отбирать) опаснее.
+    await env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at, invited_by) VALUES (?, ?, ?, ?, NULL, ?)')
+      .bind(uuid(), org.id, userId, 'member', approverId)
       .run();
   }
-
-  const owner = org.owner_user_id
-    ? await env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?').bind(org.owner_user_id).first<{ telegram_user_id: string | null }>()
+  const approver = approverId
+    ? await env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?').bind(approverId).first<{ telegram_user_id: string | null }>()
     : null;
-  return { ok: true, orgId: org.id, orgName: org.name, ownerTgId: owner?.telegram_user_id ?? null, applicantName: applicant?.name ?? 'Сотрудник' };
+  return { ok: true, orgId: org.id, orgName: org.name, approverId, approverTgId: approver?.telegram_user_id ?? null, applicantName: applicant?.name ?? 'Сотрудник' };
+}
+
+/**
+ * Личная ссылка-приглашение: своя у каждого, кто вправе приглашать (владелец,
+ * руководитель отдела). Код многоразовый и даёт только заявку -- ЕМУ.
+ */
+export async function inviteCodeFor(env: Env, orgId: string, userId: string): Promise<string | null> {
+  const m = await env.DB.prepare(
+    'SELECT role, invite_code FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL',
+  ).bind(orgId, userId).first<{ role: Role; invite_code: string | null }>();
+  if (!m || m.role === 'member') return null;
+  if (m.invite_code) return m.invite_code;
+  const code = generateJoinCode() + generateJoinCode().slice(0, 2);
+  await env.DB.prepare('UPDATE org_memberships SET invite_code = ? WHERE org_id = ? AND user_id = ?').bind(code, orgId, userId).run();
+  return code;
+}
+
+export const BOT_USERNAME = 'hando_ai_bot';
+export const inviteLink = (code: string) => `https://t.me/${BOT_USERNAME}?start=j_${code}`;
+
+/** Заявка по личной ссылке: приглашающий -- хозяин кода, заявка уходит ему. */
+export async function joinByInvite(env: Env, userId: string, code: string): Promise<JoinResult> {
+  const row = await env.DB.prepare(
+    `SELECT m.user_id AS inviter, o.id, o.name FROM org_memberships m JOIN orgs o ON o.id = m.org_id
+     WHERE m.invite_code = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL AND o.archived_at IS NULL`,
+  ).bind(code.trim()).first<{ inviter: string; id: string; name: string }>();
+  if (!row) return { ok: false, reason: 'unknown_code' };
+  if (row.inviter === userId) return { ok: false, reason: 'already_member' };
+  return requestMembership(env, userId, { id: row.id, name: row.name }, row.inviter);
+}
+
+/**
+ * Карточка заявки тому, кто решает: ФИО и контакт в Telegram -- самозванец с
+ * чужим именем выдаёт себя пустой перепиской. Одна и та же из бота и из API.
+ */
+export async function notifyApprover(env: Env, res: Extract<JoinResult, { ok: true }>, applicantId: string): Promise<void> {
+  if (!res.approverTgId) return;
+  const u = await env.DB.prepare('SELECT telegram_username FROM users WHERE id = ?').bind(applicantId).first<{ telegram_username: string | null }>();
+  const rows: InlineButton[][] = [[
+    { text: '✅ Принять', callback_data: `join_ok:${applicantId}` },
+    { text: '✖️ Отклонить', callback_data: `join_no:${applicantId}` },
+  ]];
+  if (u?.telegram_username) rows.push([{ text: '💬 Написать', url: `https://t.me/${u.telegram_username}` }]);
+  await sendMessage(env, res.approverTgId,
+    `К Вам просится в «${res.orgName}»: ${res.applicantName}${u?.telegram_username ? ` (@${u.telegram_username})` : ''}`,
+    { inline_keyboard: rows });
+}
+
+/**
+ * Заявка на вступление по коду. Доступа НЕ даёт -- создаёт членство с
+ * confirmed_at = NULL, которое обязан подтвердить владелец.
+ */
+export async function joinByCode(env: Env, userId: string, code: string): Promise<JoinResult> {
+  const org = await env.DB.prepare('SELECT id, name, owner_user_id FROM orgs WHERE join_code = ? AND archived_at IS NULL')
+    .bind(code.trim().toUpperCase())
+    .first<{ id: string; name: string; owner_user_id: string | null }>();
+  // Неизвестный код -- отказ без подробностей: перебор кодов не должен
+  // подсказывать, какие организации существуют.
+  if (!org) return { ok: false, reason: 'unknown_code' };
+  return requestMembership(env, userId, org, org.owner_user_id);
+}
+
+/** Кто вправе решить заявку: владелец -- любую, руководитель отдела -- по своей ссылке. */
+async function canDecide(env: Env, approverId: string, orgId: string, applicantId: string): Promise<boolean> {
+  const approver = await env.DB
+    .prepare('SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
+    .bind(orgId, approverId)
+    .first<{ role: Role }>();
+  if (!approver) return false;
+  if (BOSS_ROLES.includes(approver.role)) return true;
+  if (approver.role !== 'admin') return false;
+  const req = await env.DB.prepare('SELECT invited_by FROM org_memberships WHERE org_id = ? AND user_id = ? AND confirmed_at IS NULL AND left_at IS NULL')
+    .bind(orgId, applicantId).first<{ invited_by: string | null }>();
+  return req?.invited_by === approverId;
 }
 
 /**
@@ -172,15 +243,12 @@ export async function approveJoin(
   /** Должность из профиля отрасли. Права не даёт, но её видят коллеги. */
   position?: string,
 ): Promise<boolean> {
-  const approver = await env.DB
-    .prepare("SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL")
-    .bind(orgId, approverId)
-    .first<{ role: Role }>();
-  if (!approver || (approver.role !== 'creator' && approver.role !== 'super_admin')) return false;
+  if (!(await canDecide(env, approverId, orgId, applicantId))) return false;
 
   // Владельца с кнопки не выдают: владелец у организации один, и передача
   // владения -- отдельное осознанное действие, а не выбор под уведомлением.
-  if (role === 'creator') return false;
+  // super_admin больше не выдаётся (решение 10.09: ролей три).
+  if (role === 'creator' || role === 'super_admin') return false;
 
   const res = await env.DB
     .prepare(`UPDATE org_memberships SET confirmed_at = ?, role = ?, position = COALESCE(?, position)
@@ -199,7 +267,13 @@ export async function approveJoin(
     ? await env.DB.prepare('SELECT id FROM projects WHERE id = ? AND org_id = ? AND archived_at IS NULL')
         .bind(projectId, orgId).first<{ id: string }>()
     : null;
-  const target = own?.id ?? await ensureDefaultProject(env, orgId, approverId);
+  // Отдел по умолчанию -- доска ПРИНИМАЮЩЕГО: руководитель отдела сажает
+  // новичка к себе, а не на первую доску организации.
+  const approverBoard = own ? null : await env.DB.prepare(
+    `SELECT pm.project_id AS id FROM project_memberships pm JOIN projects p ON p.id = pm.project_id
+     WHERE pm.org_id = ? AND pm.user_id = ? AND p.archived_at IS NULL ORDER BY p.created_at LIMIT 1`,
+  ).bind(orgId, approverId).first<{ id: string }>();
+  const target = own?.id ?? approverBoard?.id ?? await ensureDefaultProject(env, orgId, approverId);
   await env.DB
     .prepare('INSERT OR IGNORE INTO project_memberships (id, project_id, user_id, org_id) VALUES (?, ?, ?, ?)')
     .bind(uuid(), target, applicantId, orgId)
@@ -218,11 +292,7 @@ export async function approveJoin(
 
 /** Отклонение заявки: строка удаляется, человек может подать её снова. */
 export async function rejectJoin(env: Env, approverId: string, orgId: string, applicantId: string): Promise<boolean> {
-  const approver = await env.DB
-    .prepare("SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL")
-    .bind(orgId, approverId)
-    .first<{ role: Role }>();
-  if (!approver || (approver.role !== 'creator' && approver.role !== 'super_admin')) return false;
+  if (!(await canDecide(env, approverId, orgId, applicantId))) return false;
   const res = await env.DB
     .prepare('DELETE FROM org_memberships WHERE org_id = ? AND user_id = ? AND confirmed_at IS NULL')
     .bind(orgId, applicantId)
@@ -231,18 +301,25 @@ export async function rejectJoin(env: Env, approverId: string, orgId: string, ap
 }
 
 /** Заявка, ожидающая решения владельца. */
-export type PendingRequest = { user_id: string; name: string; telegram_username: string | null; created_at: string };
+export type PendingRequest = { user_id: string; name: string; telegram_username: string | null; created_at: string; invited_by: string | null };
 
-/** Заявки организации. Живут в базе, а не только в отправленном сообщении:
- *  сообщение с кнопкой тонет среди уведомлений, и заявка пропадала вместе с ним. */
-export async function pendingRequests(env: Env, orgId: string): Promise<PendingRequest[]> {
+/**
+ * Заявки, которые вправе решить этот человек: владелец -- все, руководитель
+ * отдела -- поданные по его ссылке. Живут в базе, а не только в отправленном
+ * сообщении: сообщение с кнопкой тонет среди уведомлений.
+ */
+export async function pendingRequests(env: Env, orgId: string, viewerId?: string): Promise<PendingRequest[]> {
   const { results } = await env.DB.prepare(
-    `SELECT u.id AS user_id, u.name, u.telegram_username, m.created_at
+    `SELECT u.id AS user_id, u.name, u.telegram_username, m.created_at, m.invited_by
      FROM org_memberships m JOIN users u ON u.id = m.user_id
      WHERE m.org_id = ? AND m.confirmed_at IS NULL AND m.left_at IS NULL
      ORDER BY m.created_at`,
   ).bind(orgId).all<PendingRequest>();
-  return results;
+  if (!viewerId) return results;
+  const viewer = await env.DB.prepare('SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
+    .bind(orgId, viewerId).first<{ role: Role }>();
+  if (!viewer) return [];
+  return BOSS_ROLES.includes(viewer.role) ? results : results.filter((r) => r.invited_by === viewerId);
 }
 
 /**
@@ -258,7 +335,8 @@ export async function pendingOrgFor(env: Env, approverId: string, applicantId: s
   const row = await env.DB.prepare(
     `SELECT m.org_id FROM org_memberships m
      JOIN org_memberships a ON a.org_id = m.org_id AND a.user_id = ?
-       AND a.left_at IS NULL AND a.confirmed_at IS NOT NULL AND a.role IN ('creator','super_admin')
+       AND a.left_at IS NULL AND a.confirmed_at IS NOT NULL
+       AND (a.role IN ('creator','super_admin') OR (a.role = 'admin' AND m.invited_by = a.user_id))
      WHERE m.user_id = ? AND m.confirmed_at IS NULL AND m.left_at IS NULL
      ORDER BY m.created_at LIMIT 1`,
   ).bind(approverId, applicantId).first<{ org_id: string }>();
@@ -268,7 +346,23 @@ export async function pendingOrgFor(env: Env, approverId: string, applicantId: s
 /** Отделы организации по порядку -- ими подписаны кнопки выбора при подтверждении. */
 export async function orgDepartments(env: Env, orgId: string): Promise<{ id: string; name: string }[]> {
   const { results } = await env.DB
-    .prepare('SELECT id, name FROM projects WHERE org_id = ? AND archived_at IS NULL ORDER BY created_at')
+    .prepare('SELECT id, name FROM projects WHERE org_id = ? AND archived_at IS NULL ORDER BY created_at, rowid')
     .bind(orgId).all<{ id: string; name: string }>();
   return results;
+}
+
+/**
+ * Отделы, куда ЭТОТ человек вправе сажать новичка: владелец -- в любой,
+ * руководитель отдела -- только в свои доски (раздел 19). Нет своих -- любой.
+ */
+export async function departmentsFor(env: Env, orgId: string, approverId: string): Promise<{ id: string; name: string }[]> {
+  const all = await orgDepartments(env, orgId);
+  const approver = await env.DB.prepare('SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND left_at IS NULL AND confirmed_at IS NOT NULL')
+    .bind(orgId, approverId).first<{ role: Role }>();
+  if (!approver || BOSS_ROLES.includes(approver.role)) return all;
+  const { results } = await env.DB.prepare('SELECT project_id FROM project_memberships WHERE org_id = ? AND user_id = ?')
+    .bind(orgId, approverId).all<{ project_id: string }>();
+  const mine = new Set(results.map((r) => r.project_id));
+  const own = all.filter((d) => mine.has(d.id));
+  return own.length ? own : all;
 }

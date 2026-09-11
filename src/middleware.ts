@@ -19,14 +19,26 @@ export type AppEnv = {
 // явно: лишний SELECT на каждый запрос от старой сессии. Приемлемо на
 // 12-часовом окне, неприемлемо как постоянное состояние -- ветка снимается на
 // contract-релизе вместе с ужесточением org_id до NOT NULL.
+// Что доступно сессии БЕЗ организации: ровно то, что нужно экрану «создайте
+// или вступите». Всё остальное -- 401, как и раньше.
+const ORGLESS_OK = new Set(['GET /me', 'GET /orgs/mine', 'GET /packs', 'POST /orgs', 'POST /orgs/join', 'PATCH /me']);
+
 export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   const payload = await verifySession(c.env.SESSION_SECRET, getCookie(c, SESSION_COOKIE));
   if (!payload) return c.json({ error: 'unauthorized' }, 401);
   const orgId = payload.org_id ?? (await resolveOrgId(c.env.DB, payload.sub));
   // Организация не резолвится -- человека отозвали отовсюду либо членств
-  // несколько и ни одно не выбрано. И то и другое лечится релогином, а не
-  // догадкой о том, чьи данные ему показать.
-  if (!orgId) return c.json({ error: 'unauthorized' }, 401);
+  // несколько и ни одно не выбрано. Первая организация создаётся В ПРИЛОЖЕНИИ
+  // (раздел 18), поэтому такой сессии открыт короткий список роутов; остальное
+  // лечится релогином, а не догадкой о том, чьи данные ему показать.
+  if (!orgId) {
+    const key = `${c.req.method} ${c.req.path.replace(/^\/api/, '')}`;
+    if (!ORGLESS_OK.has(key)) return c.json({ error: 'unauthorized' }, 401);
+    c.set('userId', payload.sub);
+    c.set('role', 'member');
+    c.set('orgId', '');
+    return next();
+  }
 
   // Членство ПЕРЕПРОВЕРЯЕТСЯ на каждом запросе, а не берётся из claim'а.
   // Токен -- stateless, живёт 12ч и не отзывается; до 2a это стоило дёшево,

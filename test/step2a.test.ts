@@ -147,6 +147,10 @@ const FIXTURES: Record<string, Probe> = {
   'POST /tasks/dictate': { path: '/tasks/dictate', method: 'POST', body: { text: 'позвонить в банк завтра', assignee_id: 'b1' } },
   'PATCH /tasks/:id/quick': { path: '/tasks/tb/quick', method: 'PATCH', body: { priority: 'urgent' } },
   'GET /drafts': { path: '/drafts', skip: 'отдаёт СВОИ черновики в СВОЕЙ организации; идентификаторов не принимает' },
+  'GET /orgs/:orgId/invite': { path: `/orgs/${ORG_B}/invite` },
+  'GET /org/subtree-tasks': { path: '/org/subtree-tasks', skip: 'поддерево в СВОЕЙ организации; идентификаторов не принимает' },
+  'POST /users/:id/freeze': { path: '/users/b1/freeze', method: 'POST', body: {} },
+  'POST /users/:id/unfreeze': { path: '/users/b1/unfreeze', method: 'POST', body: {} },
   'PATCH /drafts/:id': { path: '/drafts/db', method: 'PATCH', body: { title: 'взломан' } },
   'POST /drafts/:id/confirm': { path: '/drafts/db/confirm', method: 'POST', body: {} },
   'DELETE /drafts/:id': { path: '/drafts/db', method: 'DELETE' },
@@ -550,7 +554,7 @@ describe('шаг 2a: предикаты, до которых загрузчик 
 
     const res = await apiRoutes.request('/users/a1', {
       method: 'PATCH', headers: { Cookie: await cookie('boss', 'creator', ORG_A), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'super_admin' }),
+      body: JSON.stringify({ role: 'member' }),
     }, env);
     expect(res.status).toBe(200);
 
@@ -615,13 +619,13 @@ describe('шаг 2a: ветка «участник» и записи по чле
 
     const res = await apiRoutes.request('/users/w', {
       method: 'PATCH', headers: { Cookie: await cookie('boss2', 'creator', ORG_A), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'super_admin' }),
+      body: JSON.stringify({ role: 'member' }),
     }, env);
     expect(res.status).toBe(200);
 
     const { results } = await testEnv.DB.prepare("SELECT org_id, role FROM org_memberships WHERE user_id='w' ORDER BY org_id").all<{ org_id: string; role: string }>();
-    // Повышен только в А. В Б -- как был.
-    expect(results).toEqual([{ org_id: ORG_A, role: 'super_admin' }, { org_id: ORG_B, role: 'admin' }]);
+    // Понижен только в А. В Б -- как был.
+    expect(results).toEqual([{ org_id: ORG_A, role: 'member' }, { org_id: ORG_B, role: 'admin' }]);
   });
 
   it('отзыв членства в одной организации не трогает членство в другой', async () => {

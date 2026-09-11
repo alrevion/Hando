@@ -44,6 +44,7 @@ export const BTN = {
   digestOn: '📰 Сводка: включить',
   digestOff: '📰 Сводка: выключить',
   digestTime: '🕘 Час сводки',
+  invite: '🔗 Ссылка-приглашение',
 } as const;
 
 /** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
@@ -53,6 +54,8 @@ export type BotState = {
   fix?: string;
   /** Задача, по которой ждём причину «не успею» / «отказ». */
   task?: string;
+  /** Код личной ссылки: заявка подаётся после знакомства, когда есть имя. */
+  join?: string;
   /** Незаконченный ввод: название организации ждёт выбора профиля. */
   draft?: string;
   /** Выбранная категория отрасли: второй шаг показывает её отрасли. */
@@ -198,11 +201,13 @@ export function orgScreen(org: OrgRow, userId: string, pending = 0): Screen {
   // Число в тексте, а не в подписи кнопки: подпись reply-кнопки -- это то, что
   // бот получит обратно текстом, и счётчик в ней превратил бы её в подвижную
   // мишень для сравнения.
-  if (isOwner && pending > 0) lines.push('', `Заявок на вступление: ${pending}`);
+  if (pending > 0) lines.push('', `Заявок на вступление: ${pending}`);
 
   const rows: { text: string }[][] = [];
   if (!org.is_current) rows.push([{ text: BTN.switch }]);
-  if (isOwner && pending > 0) rows.push([{ text: BTN.requests }]);
+  if (pending > 0) rows.push([{ text: BTN.requests }]);
+  // Личная ссылка -- у каждого, кто вправе приглашать: заявка придёт ему.
+  if (isOwner || org.role === 'admin' || org.role === 'super_admin') rows.push([{ text: BTN.invite }]);
   if (isOwner) rows.push([{ text: BTN.rename }, { text: BTN.remove }]);
   else rows.push([{ text: BTN.leave }]);
   rows.push([{ text: BTN.back }]);
@@ -317,7 +322,7 @@ export function profileScreen(name: string, orgs: OrgRow[]): Screen {
 }
 
 function roleName(role: Role): string {
-  return role === 'creator' ? 'владелец' : role === 'super_admin' ? 'администратор' : role === 'admin' ? 'сотрудник' : 'участник';
+  return role === 'creator' ? 'владелец' : role === 'super_admin' ? 'руководитель' : role === 'admin' ? 'руководитель отдела' : 'участник';
 }
 
 // --------------------------------------------------------------------- действия

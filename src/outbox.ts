@@ -73,12 +73,18 @@ export async function drainOutbox(env: Env, now: Date = new Date()): Promise<num
     // работодателя бессрочно. Режим уведомлений -- у получателя, поэтому он
     // читается вместе с адресом, ДО гейтов.
     const to = await env.DB.prepare(
-      `SELECT u.telegram_user_id, COALESCE(u.notify_mode, 'all') AS notify_mode FROM users u
+      `SELECT u.telegram_user_id, COALESCE(u.notify_mode, 'all') AS notify_mode, m.frozen_at FROM users u
        JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL
        WHERE u.id = ?`,
     )
       .bind(row.org_id, p.recipient_user_id)
-      .first<{ telegram_user_id: string | null; notify_mode: string }>();
+      .first<{ telegram_user_id: string | null; notify_mode: string; frozen_at: string | null }>();
+    // Замороженный (отпуск, болезнь) уведомлений не получает вовсе: строка
+    // гасится, а не ждёт -- после разморозки старые «примите» уже не нужны.
+    if (to?.frozen_at) {
+      await env.DB.prepare('UPDATE notifications SET sent_at = ?, attempts = attempts + 1 WHERE id = ?').bind(nowIso(), row.id).run();
+      continue;
+    }
     const chatId = to?.telegram_user_id;
     if (!chatId) {
       // Не адресат сейчас (не подключил бота или отозван). Считаем попытку --

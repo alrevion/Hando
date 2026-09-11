@@ -539,7 +539,7 @@ describe('access control', () => {
     spy.mockRestore();
   });
 
-  it('a super_admin cannot promote someone to super_admin (403) -- creator only', async () => {
+  it('super_admin больше не выдаётся никем: ни super_admin, ни creator (400)', async () => {
     const env = await envWith({
       users: [
         { id: 's1', phone: '+9', name: 'S', role: 'super_admin' },
@@ -553,10 +553,10 @@ describe('access control', () => {
       { method: 'PATCH', headers: { Cookie: await cookie('s1', 'super_admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'super_admin' }) },
       env,
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(400);
   });
 
-  it('the creator can promote an admin to super_admin', async () => {
+  it('владелец меняет роль между «руководитель отдела» и «участник»', async () => {
     const env = await envWith({
       users: [
         { id: 'c1', phone: '+0', name: 'C', role: 'creator' },
@@ -567,7 +567,7 @@ describe('access control', () => {
     });
     const res = await apiRoutes.request(
       '/users/a1',
-      { method: 'PATCH', headers: { Cookie: await cookie('c1', 'creator'), 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'super_admin' }) },
+      { method: 'PATCH', headers: { Cookie: await cookie('c1', 'creator'), 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'member' }) },
       env,
     );
     expect(res.status).toBe(200);

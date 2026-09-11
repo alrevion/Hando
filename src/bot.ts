@@ -20,7 +20,7 @@ import { myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassign
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
-import { approveJoin, createOrg, ensureUser, joinByCode, orgDepartments, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, createOrg, departmentsFor, ensureUser, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
 import { setTaskDeadline } from './intake';
 import {
   assigneesOf, confirmDraft, draftByMessage, getDraft, latestDraft, listDrafts, mediaOf,
@@ -82,6 +82,20 @@ async function connectByInvite(env: Env, tg: TgUser, token: string): Promise<str
   return row.name;
 }
 
+/** Заявка по личной ссылке и карточка её хозяину. */
+async function applyInvite(env: Env, userId: string, chatId: string, code: string): Promise<void> {
+  const res = await joinByInvite(env, userId, code);
+  if (!res.ok) {
+    await sendMessage(env, chatId,
+      res.reason === 'already_member' ? 'Вы уже в этой организации.'
+      : res.reason === 'already_pending' ? 'Заявка уже подана, ждём подтверждения.'
+      : 'Ссылка не подошла. Попросите новую у того, кто приглашал.');
+    return;
+  }
+  await sendMessage(env, chatId, `Заявка в «${res.orgName}» отправлена. Ждём подтверждения.`);
+  await notifyApprover(env, res, userId);
+}
+
 /**
  * Создаёт задачу из разобранной фразы и прикладывает медиа, если оно было.
  *
@@ -112,17 +126,18 @@ const MONTH_TITLE = ['Январь', 'Февраль', 'Март', 'Апрель
 //
 // Код роли в кнопке однобуквенный, а отдел -- НОМЕР в списке организации, а не
 // его идентификатор: два UUID в callback_data не помещаются (предел 64 байта).
-const ROLE_CODE: Record<string, Role> = { m: 'member', a: 'admin', s: 'super_admin' };
+// Ролей три (решение 10.09): владелец, руководитель отдела, участник.
+// super_admin больше не выдаётся; существующие работают как раньше.
+const ROLE_CODE: Record<string, Role> = { m: 'member', a: 'admin' };
 const ROLE_TITLE: Record<Role, string> = {
-  creator: 'Владелец', super_admin: 'Руководитель', admin: 'Руководитель отдела', member: 'Сотрудник',
+  creator: 'Владелец', super_admin: 'Руководитель', admin: 'Руководитель отдела', member: 'Участник',
 };
 
 function roleKeyboard(applicantId: string): InlineKeyboard {
   return {
     inline_keyboard: [
-      [{ text: '👤 Сотрудник', callback_data: `jr:${applicantId}:m` }],
+      [{ text: '👤 Участник', callback_data: `jr:${applicantId}:m` }],
       [{ text: '📋 Руководитель отдела', callback_data: `jr:${applicantId}:a` }],
-      [{ text: '⭐️ Руководитель', callback_data: `jr:${applicantId}:s` }],
       [{ text: '✖️ Отклонить', callback_data: `join_no:${applicantId}` }],
     ],
   };
@@ -357,7 +372,8 @@ botApp.post('/webhook', async (c) => {
         return c.json({ ok: true });
       }
 
-      const depts = await orgDepartments(c.env, orgId);
+      // Руководитель отдела сажает только в свои доски; владелец -- в любую.
+      const depts = await departmentsFor(c.env, orgId, who.userId);
 
       // Шаг 2: в какой отдел. Если отдел один, вопроса нет.
       if (action === 'jr') {
@@ -746,6 +762,22 @@ botApp.post('/webhook', async (c) => {
   if (msg.chat.type !== 'private' && msg.chat.id !== msg.from.id) return c.json({ ok: true });
 
   const start = msg.text?.match(/^\/start\s+(\S+)/);
+  if (start && start[1].startsWith('j_')) {
+    // Личная ссылка-приглашение: заявка уходит её хозяину. Незнакомец сначала
+    // называет себя -- в заявке должно стоять имя, а не никнейм.
+    const tgName0 = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || msg.from.username || 'Без имени';
+    const uid = await ensureUser(c.env, String(msg.from.id), tgName0, msg.from.username ?? null);
+    const code = start[1].slice(2);
+    if (!(await isOnboarded(c.env, uid))) {
+      // show() пишет состояние экрана -- код ссылки кладём ПОСЛЕ него.
+      await show(c.env, String(msg.chat.id), uid, askNameScreen());
+      await setState(c.env, uid, { await: 'name', join: code });
+      return c.json({ ok: true });
+    }
+    await applyInvite(c.env, uid, String(msg.chat.id), code);
+    await show(c.env, String(msg.chat.id), uid, mainScreen(tgName0, await myOrgs(c.env, uid)));
+    return c.json({ ok: true });
+  }
   if (start) {
     const name = await connectByInvite(c.env, msg.from, start[1]);
     if (name) {
@@ -793,6 +825,10 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     await sendMessage(c.env, chatId, `Приятно познакомиться, ${text.trim()}.`);
+    if (st.join) {
+      await setState(c.env, userId, {});
+      await applyInvite(c.env, userId, chatId, st.join);
+    }
     await show(c.env, chatId, userId, mainScreen(text.trim(), await myOrgs(c.env, userId)));
     return c.json({ ok: true });
   }
@@ -883,16 +919,9 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     await sendMessage(c.env, chatId, `Заявка в «${res.orgName}» отправлена. Ждём подтверждения.`);
-    if (res.ownerTgId) {
-      // Заявка -- инлайновой клавиатурой НАМЕРЕННО: кнопка привязана к этому
-      // человеку и к этой заявке, а не к навигации.
-      await sendMessage(c.env, res.ownerTgId, `К Вам просится: ${res.applicantName}`, {
-        inline_keyboard: [[
-          { text: '✅ Принять', callback_data: `join_ok:${userId}` },
-          { text: '✖️ Отклонить', callback_data: `join_no:${userId}` },
-        ]],
-      });
-    }
+    // Карточка решающему -- инлайновой клавиатурой НАМЕРЕННО: кнопка привязана
+    // к этому человеку и к этой заявке, а не к навигации.
+    await notifyApprover(c.env, res, userId);
     return c.json({ ok: true });
   }
 
@@ -901,7 +930,7 @@ botApp.post('/webhook', async (c) => {
   // Reply-кнопка присылает свой текст, поэтому нажатие -- это совпадение с
   // подписью. Экран учитывается: «‹ Назад» на разных экранах ведёт в разное.
   const openOrg = async (org: OrgRow) =>
-    show(c.env, chatId, userId, orgScreen(org, userId, (await pendingRequests(c.env, org.id)).length));
+    show(c.env, chatId, userId, orgScreen(org, userId, (await pendingRequests(c.env, org.id, userId)).length));
   const current = st.org ? orgs.find((o) => o.id === st.org) : undefined;
 
   switch (text) {
@@ -947,7 +976,7 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     case BTN.requests: {
       if (!current) return c.json({ ok: true });
-      const list = await pendingRequests(c.env, current.id);
+      const list = await pendingRequests(c.env, current.id, userId);
       if (list.length === 0) {
         await sendMessage(c.env, chatId, 'Заявок нет.');
         return c.json({ ok: true });
@@ -1001,6 +1030,14 @@ botApp.post('/webhook', async (c) => {
     case BTN.digestTime: {
       await setState(c.env, userId, { ...st, await: 'digest_time', screen: 'settings' });
       await sendMessage(c.env, chatId, 'В какой час присылать сводку? Напишите, например: 08:30');
+      return c.json({ ok: true });
+    }
+    case BTN.invite: {
+      if (!current) return c.json({ ok: true });
+      const code = await inviteCodeFor(c.env, current.id, userId);
+      await sendMessage(c.env, chatId, code
+        ? `Ваша ссылка-приглашение в «${current.name}»:\n${inviteLink(code)}\n\nКто перейдёт по ней, подаст заявку Вам -- Вы её подтверждаете и выбираете роль и отдел.`
+        : 'Приглашать могут владелец и руководители отделов.');
       return c.json({ ok: true });
     }
     case BTN.rename:
