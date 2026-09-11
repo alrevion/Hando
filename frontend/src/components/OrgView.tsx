@@ -51,8 +51,8 @@ export function OrgView({ user }: { user: User }) {
           <form className="field" style={{ marginBottom: 0 }} onSubmit={async (e) => { e.preventDefault(); if (!name.trim() || name.trim() === org.name) return; setBusy(true); try { await renameOrg(org.id, name.trim()); toast('Переименовано'); setUser((await getMe()).user); load(); } finally { setBusy(false); } }}>
             <label className="lbl" htmlFor="org-title">Название</label>
             <div className="t-row" style={{ gap: 8 }}>
-              <input id="org-title" className="inp grow" value={name} onChange={(e) => setName(e.target.value)} />
-              <button type="submit" className="btn" disabled={busy || !name.trim() || name.trim() === org.name}>Сохранить</button>
+              <input id="org-title" className="inp" style={{ flex: '1 1 auto', minWidth: 0 }} value={name} onChange={(e) => setName(e.target.value)} />
+              <button type="submit" className="btn" style={{ flex: '0 0 auto' }} disabled={busy || !name.trim() || name.trim() === org.name}>Сохранить</button>
             </div>
           </form>
         ) : <span className="t-title">{org.name}</span>}

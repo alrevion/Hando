@@ -281,7 +281,7 @@ export function PeopleView() {
                       return <>{line('30 дней', st.last30)}{line('Всё время', st.all)}</>;
                     })()}
                     {canManage && me && row.user.id !== me.id && row.user.role !== 'creator' ? (
-                      <div className="btn-row" style={{ marginTop: 8 }}>
+                      <div className="btn-row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
                         <select className="inp" style={{ width: 'auto', padding: '6px 10px' }} aria-label="Роль" value={row.user.role === 'super_admin' ? 'admin' : row.user.role} disabled={busyId === row.user.id}
                           onChange={(e) => manage(row.user.id, () => updateUser(row.user.id, { role: e.target.value as 'admin' | 'member' }), 'Роль изменена')}>
                           {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
