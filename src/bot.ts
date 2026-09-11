@@ -20,7 +20,7 @@ import { myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassign
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
-import { approveJoin, createOrg, departmentsFor, ensureUser, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
 import { setTaskDeadline } from './intake';
 import {
   assigneesOf, confirmDraft, draftByMessage, getDraft, latestDraft, listDrafts, mediaOf,
@@ -884,6 +884,11 @@ botApp.post('/webhook', async (c) => {
         return c.json({ ok: true });
       }
       const orgName = orgDraft;
+      if (!(await canCreateOrg(c.env, userId))) {
+        await sendMessage(c.env, chatId, 'У Вас уже много организаций. Удалите ненужную, чтобы создать новую.');
+        await show(c.env, chatId, userId, mainScreen(myName, orgs));
+        return c.json({ ok: true });
+      }
       const { code, departments } = await createOrg(c.env, userId, orgName, chosen.id);
       await sendMessage(c.env, chatId, [
         `Организация «${orgName}» создана. Вы её владелец.`,

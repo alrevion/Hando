@@ -3,7 +3,7 @@
 import { type Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Env, Role, Task, TaskStatus } from './types';
-import { logEvent, nowIso, uuid } from './db';
+import { chunks, logEvent, nowIso, uuid } from './db';
 import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyInitData, verifyOtp, verifySession } from './auth';
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
@@ -17,7 +17,7 @@ import {
 } from './drafts';
 import { CATEGORIES, PACKS, pack } from './packs';
 import { localIso, parseTask, transcribe } from './parse';
-import { approveJoin, createOrg, inviteCodeFor, inviteLink, joinByCode, notifyApprover, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, canCreateOrg, createOrg, inviteCodeFor, inviteLink, joinByCode, notifyApprover, pendingRequests, rejectJoin } from './signup';
 import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers, visibleUserIds } from './hierarchy';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
 import { askAssistant, type AskTurn } from './assistant';
@@ -684,6 +684,7 @@ apiRoutes.get('/org/positions', async (c) => {
 });
 
 apiRoutes.post('/orgs', async (c) => {
+  if (!(await canCreateOrg(c.env, c.get('userId')))) return c.json({ error: 'Слишком много организаций', code: 'ORG_CAP' }, 429);
   const { name, pack } = await c.req.json<{ name?: string; pack?: string }>().catch(() => ({}) as Record<string, undefined>);
   if (!name?.trim()) return c.json({ error: 'name required' }, 400);
   const { orgId, code } = await createOrg(c.env, c.get('userId'), name.trim(), pack ?? 'generic');
@@ -755,12 +756,17 @@ apiRoutes.get('/org/subtree-tasks', requireRole('admin', 'super_admin', 'creator
     rows = (await c.env.DB.prepare("SELECT * FROM tasks WHERE org_id = ? AND status IN ('todo','in_progress','done') ORDER BY created_at").bind(orgId).all<Record<string, unknown>>()).results;
   } else {
     const ids = [...(await subtreeOf(c.env, orgId, c.get('userId'))), c.get('userId')];
-    const holes = ids.map(() => '?').join(',');
-    rows = (await c.env.DB.prepare(
-      `SELECT * FROM tasks t WHERE t.org_id = ? AND t.status IN ('todo','in_progress','done')
-         AND (t.author_id IN (${holes}) OR EXISTS (SELECT 1 FROM task_assignees a WHERE a.task_id = t.id AND a.user_id IN (${holes})))
-       ORDER BY t.created_at`,
-    ).bind(orgId, ...ids, ...ids).all<Record<string, unknown>>()).results;
+    // Кусками (предел D1 -- 100 параметров), с объединением по id.
+    const seen = new Map<string, Record<string, unknown>>();
+    for (const part of chunks(ids, 45)) {
+      const holes = part.map(() => '?').join(',');
+      const { results } = await c.env.DB.prepare(
+        `SELECT * FROM tasks t WHERE t.org_id = ? AND t.status IN ('todo','in_progress','done')
+           AND (t.author_id IN (${holes}) OR EXISTS (SELECT 1 FROM task_assignees a WHERE a.task_id = t.id AND a.user_id IN (${holes})))`,
+      ).bind(orgId, ...part, ...part).all<Record<string, unknown>>();
+      for (const r of results) seen.set(r.id as string, r);
+    }
+    rows = [...seen.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
   }
   return c.json({ tasks: await attachAssignees(c.env, orgId, rows) });
 });
@@ -803,6 +809,7 @@ apiRoutes.post('/ask', async (c) => {
   if (!question) return c.json({ error: 'question required' }, 400);
   const history = Array.isArray(b.history)
     ? b.history.filter((h) => (h.role === 'user' || h.role === 'assistant') && typeof h.text === 'string').slice(-6)
+        .map((h) => ({ role: h.role, text: h.text.slice(0, 2000) }))
     : [];
   const me = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(c.get('userId')).first<{ name: string }>();
   const answer = await askAssistant(c.env, { userId: c.get('userId'), orgId: c.get('orgId'), role: c.get('role'), name: me?.name ?? '' }, question, history);
@@ -896,12 +903,16 @@ apiRoutes.get('/org/snapshot', async (c) => {
 async function attachAssignees(env: Env, orgId: string, tasks: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
   const taskIds = (tasks as { id: string }[]).map((t) => t.id);
   if (taskIds.length === 0) return [];
-  const aHoles = taskIds.map(() => '?').join(',');
-  const { results: rows } = await env.DB.prepare(
-    `SELECT a.task_id, a.user_id, a.state, a.due_at, u.name AS user_name
-     FROM task_assignees a JOIN users u ON u.id = a.user_id
-     WHERE a.org_id = ? AND a.task_id IN (${aHoles}) ORDER BY a.created_at`,
-  ).bind(orgId, ...taskIds).all<{ task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }>();
+  const rows: { task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }[] = [];
+  // Кусками: предел D1 -- 100 параметров на запрос.
+  for (const part of chunks(taskIds)) {
+    const { results } = await env.DB.prepare(
+      `SELECT a.task_id, a.user_id, a.state, a.due_at, u.name AS user_name
+       FROM task_assignees a JOIN users u ON u.id = a.user_id
+       WHERE a.org_id = ? AND a.task_id IN (${part.map(() => '?').join(',')}) ORDER BY a.created_at`,
+    ).bind(orgId, ...part).all<{ task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }>();
+    rows.push(...results);
+  }
   const byTask = new Map<string, unknown[]>();
   for (const r of rows) {
     const list = byTask.get(r.task_id);

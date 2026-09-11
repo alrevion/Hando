@@ -1,7 +1,7 @@
 // Cron (каждые 5 минут): архив залежавшихся Done, матрица напоминаний
 // (раздел 21), сводка в начало рабочего дня, поводы и страховка за очередь.
 import type { Env, Task } from './types';
-import { nowIso, uuid } from './db';
+import { chunks, nowIso, uuid } from './db';
 import { reconcileWebhook, type InlineButton } from './telegram';
 import { applyTransition, assigneeButtons, openButton } from './transition';
 import { drainOutbox } from './outbox';
@@ -45,10 +45,13 @@ export async function scheduled(_controller: ScheduledController, env: Env, _ctx
 // Единственная ветка cron, которая пишет status, -- и потому единственная, что
 // идёт через applyTransition. Остальные проходы пишут только журнал напоминаний.
 async function autoArchive(env: Env): Promise<void> {
-  const { results } = await env.DB.prepare("SELECT * FROM tasks WHERE status = 'done' AND done_at IS NOT NULL").all<Task>();
-  const cutoff = Date.now() - SEVEN_DAYS_MS;
+  // Порог -- в SQL: выбирать все закрытые задачи за всё время и отсеивать в
+  // коде значило бы читать растущую таблицу каждые пять минут.
+  const cutoff = new Date(Date.now() - SEVEN_DAYS_MS).toISOString();
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM tasks WHERE status = 'done' AND done_at IS NOT NULL AND datetime(done_at) <= datetime(?) LIMIT 200",
+  ).bind(cutoff).all<Task>();
   for (const t of results) {
-    if (Date.parse(t.done_at as string) > cutoff) continue;
     // actorId null -- отметка «сделала система»: по ней архив отличают от ручного.
     // Уведомления нет намеренно: автоархив семидневной давности никого не касается.
     await applyTransition(env, { task: t, to: 'archived', actorId: null, action: 'archived' });
@@ -100,11 +103,13 @@ const ROW_COLS = `a.id, a.due_at, a.state, a.user_id, t.id AS task_id, t.title, 
  */
 async function sentLog(env: Env, rowIds: string[]): Promise<Map<string, number>> {
   const map = new Map<string, number>();
-  if (rowIds.length === 0) return map;
-  const { results } = await env.DB.prepare(
-    `SELECT assignee_row_id, kind, sent_at FROM reminders WHERE assignee_row_id IN (${rowIds.map(() => '?').join(',')})`,
-  ).bind(...rowIds).all<{ assignee_row_id: string; kind: string; sent_at: string }>();
-  for (const r of results) map.set(`${r.assignee_row_id}:${r.kind}`, Date.parse(r.sent_at));
+  // Кусками: предел D1 -- 100 параметров, а строки здесь со ВСЕХ арендаторов.
+  for (const part of chunks(rowIds)) {
+    const { results } = await env.DB.prepare(
+      `SELECT assignee_row_id, kind, sent_at FROM reminders WHERE assignee_row_id IN (${part.map(() => '?').join(',')})`,
+    ).bind(...part).all<{ assignee_row_id: string; kind: string; sent_at: string }>();
+    for (const r of results) map.set(`${r.assignee_row_id}:${r.kind}`, Date.parse(r.sent_at));
+  }
   return map;
 }
 
@@ -282,7 +287,7 @@ export async function sendDigests(env: Env, now: Date): Promise<number> {
     const { results: members } = await env.DB.prepare(
       `SELECT m.id AS mid, m.user_id, u.telegram_user_id FROM org_memberships m
        JOIN users u ON u.id = m.user_id
-       WHERE m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
+       WHERE m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL AND m.frozen_at IS NULL
          AND u.telegram_user_id IS NOT NULL AND (m.digest_sent_on IS NULL OR m.digest_sent_on <> ?)`,
     ).bind(s.id, dayKey).all<{ mid: string; user_id: string; telegram_user_id: string }>();
     for (const m of members) {

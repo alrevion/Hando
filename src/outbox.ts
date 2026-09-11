@@ -74,7 +74,8 @@ export async function drainOutbox(env: Env, now: Date = new Date()): Promise<num
     // читается вместе с адресом, ДО гейтов.
     const to = await env.DB.prepare(
       `SELECT u.telegram_user_id, COALESCE(u.notify_mode, 'all') AS notify_mode, m.frozen_at FROM users u
-       JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL
+       JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
+       JOIN orgs og ON og.id = m.org_id AND og.archived_at IS NULL
        WHERE u.id = ?`,
     )
       .bind(row.org_id, p.recipient_user_id)

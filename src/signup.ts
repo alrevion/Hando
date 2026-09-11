@@ -25,9 +25,22 @@ import { sendMessage, type InlineButton } from './telegram';
  */
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 export function generateJoinCode(): string {
-  const bytes = new Uint8Array(6);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join('');
+  // Без смещения по модулю: байты ≥ 248 (= 8 × 31) отбрасываются, иначе первые
+  // восемь символов алфавита выпадали бы на 12% чаще остальных.
+  const out: string[] = [];
+  while (out.length < 6) {
+    const bytes = new Uint8Array(12);
+    crypto.getRandomValues(bytes);
+    for (const b of bytes) if (b < 248 && out.length < 6) out.push(ALPHABET[b % ALPHABET.length]);
+  }
+  return out.join('');
+}
+
+/** Потолок организаций на человека: создать можно из сессии без организации, и без потолка это была бы бесплатная запись пятнадцати досок за запрос. */
+const ORG_CAP = 10;
+export async function canCreateOrg(env: Env, userId: string): Promise<boolean> {
+  const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM orgs WHERE owner_user_id = ? AND archived_at IS NULL').bind(userId).first<{ n: number }>();
+  return (row?.n ?? 0) < ORG_CAP;
 }
 
 /** Человек, подключивший бота, но ещё не выбравший организацию. */
@@ -70,7 +83,7 @@ export async function createOrg(
   const home = profile.category === 'home';
   await env.DB.batch([
     env.DB.prepare('INSERT INTO orgs (id, name, join_code, owner_user_id, industry_pack, always_on, quiet_hours) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(orgId, name, code, userId, profile.id, home ? 1 : 0, home ? 0 : 1),
+      .bind(orgId, name.trim().slice(0, 60), code, userId, profile.id, home ? 1 : 0, home ? 0 : 1),
     env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?, ?, ?, ?, ?)')
       .bind(uuid(), orgId, userId, 'creator', now),
     // Липкий контекст: человек сразу оказывается в созданной организации.

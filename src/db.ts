@@ -28,3 +28,16 @@ export async function logEvent(db: Env['DB'], e: EventInput): Promise<void> {
     .bind(uuid(), e.actorId, e.orgId, e.targetType, e.targetId, e.action, e.comment ?? null, e.overdueBy ?? null, nowIso())
     .run();
 }
+
+/**
+ * D1 принимает не больше 100 параметров на запрос. Любой `IN (?, ?, …)` по
+ * списку, который растёт с данными, обязан идти кусками -- иначе организация
+ * со ста задачами роняет главный экран, а сто открытых строк одного арендатора
+ * останавливают напоминания у всех.
+ */
+export const D1_CHUNK = 90;
+export function chunks<T>(items: T[], size = D1_CHUNK): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
