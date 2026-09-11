@@ -684,6 +684,22 @@ export async function refineDraft(
   if (when.iso) patch.deadline = when.iso;
   if (pri.usedWords.size > 0) { patch.priority = pri.priority; patch.priorityExplicit = true; }
 
+  // «Убери срок», «срок убери», «без срока» -- снять срок. Раньше такая фраза
+  // не совпадала ни с одним признаком и уезжала в НАЗВАНИЕ: черновик получал
+  // тему «Срок убери».
+  if (!when.iso && /(?:убер[аи][а-яё]*|снят[ьи]|удал[а-яё]*)\s+срок|срок\s+(?:убер[аи][а-яё]*|снят[ьи]|не\s+нужен|не\s+надо)|без\s+срока/i.test(clean)) {
+    patch.deadline = null;
+  }
+
+  // «Тема: купить бумагу», «поменяй тему на купить бумагу» -- новая тема без
+  // имени и без срока. Слова-указатели съедаются, остаётся сама тема.
+  const topic = clean.match(/(?:^|[\s,])(?:тем[ауы]|назван[а-яё]+|заголов[а-яё]+)\s*(?:поменя[а-яё]*|измени[а-яё]*|замени[а-яё]*)?\s*(?:на|:)?\s+(.{3,200})$/i)
+    ?? clean.match(/(?:^|[\s,])(?:поменя[а-яё]*|измени[а-яё]*|замени[а-яё]*)\s+тем[ауы]\s*(?:на|:)?\s+(.{3,200})$/i);
+  if (topic) {
+    const t = topic[1].trim().replace(/^[«"']|[»"'.]$/g, '');
+    if (t.length >= 3) patch.title = t[0].toUpperCase() + t.slice(1);
+  }
+
   const rest = buildTitle(clean, [who.usedWords, when.usedWords, pri.usedWords]);
   const isEdit = EDIT_MARKERS.test(clean);
   // Полная фраза заново: назван человек, осталась суть, и это не «X -- это Y».

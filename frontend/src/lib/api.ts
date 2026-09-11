@@ -356,6 +356,30 @@ export const askByVoice = (audio: Blob) => {
   return request<{ question: string; answer: string }>('/ask/dictate', { method: 'POST', body: form, headers: {} });
 };
 
+/**
+ * Поправка словами к черновику: «не Азизу, а Беку», «срок вторник», «это
+ * срочно». Возвращает РАЗНИЦУ, а не новый черновик: карточка правится на
+ * устройстве, и записывать до «Создать» нечего.
+ */
+export type DraftPatchView = {
+  heard: string;
+  patch: Partial<{ title: string; assignee_ids: string[]; deadline: string | null; priority: Priority }>;
+};
+
+export function refineDraftByPhrase(
+  id: string,
+  input: { text: string } | { audio: Blob },
+  current: { title: string; assignee_ids: string[]; deadline: string | null; priority: Priority },
+): Promise<DraftPatchView> {
+  if ('audio' in input) {
+    const form = new FormData();
+    form.append('audio', input.audio, 'fix.webm');
+    form.append('current', JSON.stringify(current));
+    return request<DraftPatchView>(`/drafts/${id}/refine`, { method: 'POST', body: form, headers: {} });
+  }
+  return request<DraftPatchView>(`/drafts/${id}/refine`, { method: 'POST', body: JSON.stringify({ text: input.text, current }) });
+}
+
 /** Вложение к черновику -- до того, как поручение создано. */
 export const uploadDraftFile = (draftId: string, file: File) => {
   const form = new FormData();

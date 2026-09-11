@@ -16,7 +16,7 @@ import {
   saveDraft, type DraftPatch, type DraftRow,
 } from './drafts';
 import { CATEGORIES, PACKS, pack } from './packs';
-import { localIso, parseTask, transcribe } from './parse';
+import { learnAlias, localIso, parseTask, refineDraft, transcribe } from './parse';
 import { approveJoin, canCreateOrg, createOrg, inviteCodeFor, inviteLink, joinByCode, notifyApprover, pendingRequests, rejectJoin } from './signup';
 import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers, visibleUserIds } from './hierarchy';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
@@ -635,6 +635,72 @@ apiRoutes.post('/drafts/:id/confirm', async (c) => {
  * поручение, а потом его править. Файл ложится в тот же склад (бот-группа) и
  * доезжает до задачи вместе с подтверждением -- как вложение, присланное боту.
  */
+/**
+ * ПОПРАВКА СЛОВАМИ: «не Азизу, а Беку», «срок вторник», «это срочно», «Ивия --
+ * это Ева». В боте так правят с самого начала -- ответом на карточку; в
+ * приложении правили только руками по полям, и одно и то же действие выглядело
+ * в двух поверхностях по-разному.
+ *
+ * Маршрут НИЧЕГО НЕ ПИШЕТ в базу. Он получает то, что человек видит на экране
+ * сейчас (карточка правится на устройстве), разбирает фразу поверх этих
+ * значений и возвращает разницу. Записать -- дело кнопки «Создать», как и
+ * раньше: иначе поправка голосом молча сохраняла бы черновик, а отмена
+ * перестала бы отменять.
+ */
+apiRoutes.post('/drafts/:id/refine', async (c) => {
+  const row = await ownDraft(c);
+  if (!row) return c.json({ error: 'not found' }, 404);
+
+  const type = c.req.header('content-type') ?? '';
+  let phrase = '';
+  let seen: Record<string, unknown> = {};
+  if (type.includes('multipart/form-data')) {
+    const form = await c.req.formData();
+    const audio = form.get('audio');
+    if (!audio || typeof audio === 'string') return c.json({ error: 'audio required' }, 400);
+    const name = (audio as { name?: string }).name || 'voice.webm';
+    const text = await transcribe(c.env, audio as Blob, name);
+    if (!text) return c.json({ error: 'Не удалось разобрать запись. Напишите текстом.' }, 422);
+    phrase = text;
+    const cur = form.get('current');
+    if (typeof cur === 'string') seen = JSON.parse(cur) as Record<string, unknown>;
+  } else {
+    const b = await c.req.json<{ text?: string; current?: Record<string, unknown> }>().catch(() => ({}) as Record<string, undefined>);
+    phrase = (b.text ?? '').trim().slice(0, 1000);
+    seen = b.current ?? {};
+  }
+  if (!phrase) return c.json({ error: 'text required' }, 400);
+
+  // За основу -- то, что на экране; чего экран не прислал, берём из строки.
+  const current = {
+    title: typeof seen.title === 'string' ? seen.title : row.title,
+    assigneeIds: Array.isArray(seen.assignee_ids) ? (seen.assignee_ids as unknown[]).map(String) : assigneesOf(row),
+    deadline: seen.deadline === null || typeof seen.deadline === 'string' ? (seen.deadline as string | null) : row.deadline,
+    priority: (PRIORITIES.includes(String(seen.priority)) ? String(seen.priority) : row.priority) as DraftRow['priority'],
+    priorityExplicit: row.priority_explicit === 1,
+  };
+
+  const people = await assignableMembers(c.env, c.get('orgId'), c.get('userId'), c.get('role'));
+  const roster = people.map((p) => ({ id: p.id, name: p.name, aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined }));
+  const org = await c.env.DB.prepare('SELECT industry_pack FROM orgs WHERE id = ?').bind(c.get('orgId')).first<{ industry_pack: string }>();
+  const sched = await loadSchedule(c.env, c.get('orgId'));
+  const patch = await refineDraft(c.env, current, phrase, roster, sched.timezone, org?.industry_pack, new Date(), dayEnd(sched));
+
+  // Поправка научила систему новому прозвищу -- запоминаем, как и в боте.
+  const to = patch.assigneeIds?.[0];
+  if (to && !current.assigneeIds.includes(to)) await learnAlias(c.env, phrase, roster, to);
+
+  return c.json({
+    heard: phrase,
+    patch: {
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.assigneeIds !== undefined ? { assignee_ids: patch.assigneeIds } : {}),
+      ...(patch.deadline !== undefined ? { deadline: patch.deadline } : {}),
+      ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+    },
+  });
+});
+
 apiRoutes.post('/drafts/:id/attachments', async (c) => {
   const row = await ownDraft(c);
   if (!row) return c.json({ error: 'not found' }, 404);

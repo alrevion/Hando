@@ -43,6 +43,22 @@ describe('срок словами: месяцы, «до пятого», часы
     expect(local(matchDeadline('оплатить счёт до 5-го', NOW, TZ).iso!)).toBe('05.09, 18:00');
   });
 
+  it('поправка словами: «убери срок» снимает срок, «тема: …» меняет тему', async () => {
+    const env = await envWith({
+      users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }, { id: 'u-aziz', phone: '+2', name: 'Азиз', role: 'admin' }],
+      memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'u-aziz' }],
+      projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+      tasks: [],
+    });
+    const people = [{ id: 'u-aziz', name: 'Азиз' }];
+    const current = { title: 'Подготовить отчёт', assigneeIds: ['u-aziz'], deadline: '2026-09-18T13:00:00.000Z', priority: 'medium' as const, priorityExplicit: false };
+    // Раньше это уезжало в НАЗВАНИЕ: черновик получал тему «Срок убери».
+    expect((await refineDraft(env, current, 'срок убери', people, 'Asia/Tashkent')).deadline).toBe(null);
+    expect((await refineDraft(env, current, 'убери срок', people, 'Asia/Tashkent')).deadline).toBe(null);
+    expect((await refineDraft(env, current, 'тема: подготовить смету', people, 'Asia/Tashkent')).title).toBe('Подготовить смету');
+    expect((await refineDraft(env, current, 'поменяй тему на подготовить смету', people, 'Asia/Tashkent')).title).toBe('Подготовить смету');
+  });
+
   it('«завтра до трёх часов дня» -- 15:00, а не три ночи', () => {
     expect(local(matchDeadline('завтра до трёх часов дня забрать документы', NOW, TZ).iso!)).toBe('03.09, 15:00');
   });
@@ -81,9 +97,10 @@ describe('поправка к черновику без модели', () => {
     expect(local(p.deadline!)).toBe('04.09, 18:00');
   });
 
-  it('новая суть без имени -- только тема', async () => {
+  it('новая суть без имени -- только тема, и слово «тема» в неё не попадает', async () => {
     const p = await refineDraft(env, current, 'тема сдать квартальный отчёт', PEOPLE, TZ, null, NOW);
-    expect(p.title).toBe('Тема сдать квартальный отчёт');
+    // Прежде слово-указатель оставалось в названии: «Тема сдать квартальный отчёт».
+    expect(p.title).toBe('Сдать квартальный отчёт');
     expect(p.assigneeIds).toBeUndefined();
   });
 });
