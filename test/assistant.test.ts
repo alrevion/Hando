@@ -194,6 +194,22 @@ describe('помощник', () => {
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM answer_cache').first<{ n: number }>())!.n).toBe(1);
   });
 
+  it('вчерашний разговор не считается контекстом: через двадцать минут вопрос новый', async () => {
+    const env = await world();
+    const spy = tg();
+    // Реплики есть, но они старые -- значит история не подхватывается.
+    await testEnv.DB.prepare("UPDATE users SET bot_state = ? WHERE id='w1'").bind(JSON.stringify({
+      screen: 'main',
+      ask: [{ role: 'user', text: 'вчерашний вопрос' }, { role: 'assistant', text: 'вчерашний ответ' }],
+      askAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    })).run();
+    await say(env, 'tg-w1', 'за что взяться?');
+    const st = JSON.parse((await testEnv.DB.prepare("SELECT bot_state FROM users WHERE id='w1'").first<{ bot_state: string }>())!.bot_state) as { ask: unknown[] };
+    // Вчерашняя пара выброшена, осталась только сегодняшняя.
+    expect(st.ask).toHaveLength(2);
+    expect(sent(spy).at(-1)!.text).toContain('Сдать отчёт');
+  });
+
   it('эмбеддер недоступен -- помощник отвечает как обычно', async () => {
     const env = { ...(await world()), GROQ_API_KEY: 'k', EMBED_URL: 'http://embed.local' };
     restore = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {

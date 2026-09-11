@@ -1260,11 +1260,15 @@ botApp.post('/webhook', async (c) => {
   const named = matchPeople(phrase, roster).ids.length > 0;
   if (await classifyIntent(c.env, phrase, named) === 'ask') {
     const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
-    const history = st.ask ?? [];
+    // Разговор живёт двадцать минут. Вчерашние реплики -- не контекст, а помеха:
+    // они меняют смысл сегодняшнего вопроса и закрывают ему память ответов,
+    // потому что продолжение диалога из общей памяти брать нельзя.
+    const fresh = st.askAt ? Date.now() - Date.parse(st.askAt) < 20 * 60 * 1000 : false;
+    const history = fresh ? (st.ask ?? []) : [];
     const answer = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
     await sendMessage(c.env, chat, answer, { inline_keyboard: [[{ text: '📌 Это поручение', callback_data: 'as_task' }]] });
     await setState(c.env, userId, {
-      ...st, said: phrase,
+      ...st, said: phrase, askAt: nowIso(),
       ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: answer }].slice(-6),
     });
     return c.json({ ok: true });
