@@ -184,7 +184,11 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
     // их не касается, и раньше это письмо уходило каждому на каждое действие
     // каждого: на рассылке из 14 -- 196 сообщений за цикл, и Telegram упирался
     // бы в rate limit раньше, чем пилот в метрики.
-    if (to === 'done' || to === 'archived' || action === 'rejected') {
+    // 'edited_reopened' здесь потому, что правка задачи -- это НОВАЯ задача
+    // (раздел 03): строки сброшены в pending, и человек обязан принять заново.
+    // Без этого письмо «возвращено в TODO» уходило в пустоту: автор -- он же
+    // актор, а адресаты под условие не попадали.
+    if (to === 'done' || to === 'archived' || action === 'rejected' || action === 'edited_reopened') {
       const { results } = await env.DB.prepare(
         "SELECT user_id FROM task_assignees WHERE task_id = ? AND state <> 'declined'",
       ).bind(task.id).all<{ user_id: string }>();

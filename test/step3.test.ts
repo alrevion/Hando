@@ -94,6 +94,37 @@ describe('шаг 3: рассылка на четырнадцать челове�
     expect((await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'done' }), env)).status).toBe(409);
   });
 
+  it('переназначение в приложении говорит новому исполнителю, а правка -- старому', async () => {
+    const env = await world();
+    const spy = tg();
+    const res = await apiRoutes.request('/projects/p1/tasks',
+      json(await cookie('boss', 'creator', ORG_A), { title: 'Свозить документы', assignee_ids: ['u0'], deadline: '2030-01-01T00:00:00.000Z' }), env);
+    const { id } = await res.json<{ id: string }>();
+
+    // Переназначение: прежняя строка отказана, новая заведена, новому -- письмо.
+    spy.mockClear();
+    const patch = await apiRoutes.request(`/tasks/${id}`, {
+      method: 'PATCH', headers: { Cookie: await cookie('boss', 'creator', ORG_A), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ responsible_user_id: 'u1' }),
+    }, env);
+    expect(patch.status).toBe(200);
+    const { results: rows } = await testEnv.DB.prepare('SELECT user_id, state FROM task_assignees WHERE task_id = ?').bind(id).all<{ user_id: string; state: string }>();
+    expect(rows.find((r) => r.user_id === 'u0')!.state).toBe('declined');
+    expect(rows.find((r) => r.user_id === 'u1')!.state).toBe('pending');
+    const toNew = sends(spy).map(([, i]) => JSON.parse(i!.body as string) as { text: string });
+    expect(toNew.some((m) => m.text.includes('Вам поручено') && m.text.includes('Свозить документы'))).toBe(true);
+
+    // Правка задачи в работе = новая задача: исполнитель обязан узнать.
+    await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('u1', 'admin', ORG_A), { to: 'in_progress' }), env);
+    spy.mockClear();
+    await apiRoutes.request(`/tasks/${id}`, {
+      method: 'PATCH', headers: { Cookie: await cookie('boss', 'creator', ORG_A), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Свозить документы в налоговую' }),
+    }, env);
+    const edited = sends(spy).map(([, i]) => JSON.parse(i!.body as string) as { text: string });
+    expect(edited.some((m) => m.text.includes('Возвращено в TODO') && m.text.includes('в налоговую'))).toBe(true);
+  });
+
   it('исполнитель узнаёт, что автор подвинул его этап', async () => {
     const env = await world();
     const spy = tg();

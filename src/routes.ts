@@ -8,7 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
-import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
+import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, reassignTask, resetAssignees, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { setTaskDeadline } from './intake';
 import {
@@ -1321,12 +1321,12 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
   // Смена адресата у задачи с ОДНИМ адресатом. У рассылки «сменить
   // ответственного» смысла не имеет -- там адресатов много, и правка списка
   // это отдельная операция, а не поле формы.
-  if (b.responsible_user_id !== undefined) {
-    if (task.kind !== 'single') return c.json({ error: 'multi-assignee task: edit assignees, not responsible_user_id' }, 409);
-    await c.env.DB.prepare('UPDATE task_assignees SET user_id = ? WHERE task_id = ? AND org_id = ?')
-      .bind(b.responsible_user_id, task.id, c.get('orgId'))
-      .run();
+  if (b.responsible_user_id !== undefined && task.kind !== 'single') {
+    return c.json({ error: 'multi-assignee task: edit assignees, not responsible_user_id' }, 409);
   }
+  // Сама смена -- ПОСЛЕ правки содержимого и ниже по коду: новый человек
+  // обязан увидеть новый заголовок и новый срок, а не прежние.
+  const reassignTo = b.responsible_user_id;
   const priority = b.priority && PRIORITIES.includes(b.priority) ? b.priority : null;
   // Правка содержимого status НЕ трогает: иначе «единственный писатель» стал бы
   // «единственный писатель, кроме PATCH». Возврат в todo -- это переход, и он
@@ -1351,6 +1351,7 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
 
   if (!reopening) {
     await logEvent(c.env.DB, { actorId: c.get('userId'), orgId: c.get('orgId'), targetType: 'task', targetId: task.id, action: 'edited' });
+    await handoff(c, task, reassignTo);
     return c.json({ success: true });
   }
 
@@ -1371,9 +1372,25 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
     set: { telegram_message_id: null },
     notify: { emoji: '↩️', label: 'Возвращено в TODO (отредактировано)', deletePrevious: true },
   });
+  await handoff(c, task, reassignTo);
   await drainOutbox(c.env);
   return c.json({ success: true });
 });
+
+/**
+ * Смена адресата у задачи с одним исполнителем -- ТОТ ЖЕ путь, что кнопка
+ * «Переназначить» в боте: прежняя строка отказывается, новая заводится
+ * заново, журнал напоминаний чистится, а новый человек получает «Вам
+ * поручено» с кнопками. Прямая подмена user_id всего этого не делала:
+ * задача молча меняла хозяина, и ни один из двоих об этом не узнавал.
+ */
+async function handoff(c: Context<AppEnv>, task: Task, toUserId: string | undefined): Promise<void> {
+  if (!toUserId) return;
+  const fresh = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?')
+    .bind(task.id, task.org_id).first<Task>();
+  await reassignTask(c.env, fresh ?? task, toUserId, c.get('userId'));
+  await drainOutbox(c.env);
+}
 
 // Кто принимает работу: автор задачи, а после R1-1 это может быть кто угодно --
 // включая рядового сотрудника, поручившего что-то директору. creator/super_admin
