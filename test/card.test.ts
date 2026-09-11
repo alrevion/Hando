@@ -195,3 +195,35 @@ describe('карточка адресата', () => {
     expect(ev).not.toBeNull();
   });
 });
+
+describe('списки в боте: текущая организация, по десять, с листанием', () => {
+  it('«Мои задачи»: 12 задач -- две страницы; чужая организация не примешивается', async () => {
+    const env = await envWith({
+      users: [
+        { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
+        { id: 'w1', phone: '+2', name: 'Азиз Каримов', role: 'member', orgs: [ORG_A, 'org-b'] },
+        { id: 'bb', phone: '+3', name: 'Босс Б', role: 'creator', orgs: ['org-b'] },
+      ],
+      memberships: [{ project_id: 'p1', user_id: 'w1' }, { project_id: 'pb', user_id: 'w1', org_id: 'org-b' }],
+      projects: [{ id: 'p1', telegram_chat_id: '-100111', created_by: 'boss' }, { id: 'pb', telegram_chat_id: '-100222', created_by: 'bb', org_id: 'org-b' }],
+      tasks: [
+        ...Array.from({ length: 12 }, (_, i) => ({ id: `a${i}`, project_id: 'p1', title: `Задача ${i + 1}`, status: 'todo', responsible_user_id: 'w1', author_id: 'boss', priority: i === 0 ? 'urgent' : 'medium', deadline: `2026-09-${String(12 + i).padStart(2, '0')}T10:00:00.000Z` })),
+        { id: 'zb', project_id: 'pb', title: 'Чужая', status: 'todo', responsible_user_id: 'w1', author_id: 'bb', org_id: 'org-b' },
+      ],
+    });
+    const spy = tg();
+    await say(env, 'tg-w1', '📋 Мои задачи');
+    const first = sent(spy).at(-1)!;
+    expect(first.text).toContain('Ваши задачи (12) · стр. 1/2');
+    expect(first.text).toContain('1. ‼️ «Задача 1»');
+    expect(first.text).toContain('10. «Задача 10»');
+    expect(first.text).not.toContain('Задача 11');
+    expect(first.text).not.toContain('Чужая');
+    expect(labels(first)).toEqual(['Далее ›', '📱 Открыть приложение']);
+    await press(env, 'tg-w1', 'pg:m:1');
+    const edited = calls(spy).filter(([u]) => u.includes('/editMessageText')).map(([, i]) => JSON.parse(String(i.body)) as Sent).at(-1)!;
+    expect(edited.text).toContain('стр. 2/2');
+    expect(edited.text).toContain('11. «Задача 11»');
+    expect(labels(edited)).toEqual(['‹ Назад', '📱 Открыть приложение']);
+  });
+});

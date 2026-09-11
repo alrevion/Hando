@@ -465,14 +465,16 @@ describe('access control', () => {
     spy.mockRestore();
   });
 
-  it('creating a project without a telegram_group_id is rejected (400)', async () => {
+  it('доска без группы Telegram -- отдел; создатель сразу на ней', async () => {
     const env = await envWith({ users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }], memberships: [], tasks: [] });
     const res = await apiRoutes.request(
       '/projects',
       { method: 'POST', headers: { Cookie: await cookie('s1', 'super_admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'X' }) },
       env,
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
+    const { id } = await res.json<{ id: string }>();
+    expect(await testEnv.DB.prepare('SELECT 1 FROM project_memberships WHERE project_id = ? AND user_id = ?').bind(id, 's1').first()).not.toBeNull();
   });
 
   it('auth pre-check makes ZERO calls to auth-api for an unregistered phone', async () => {

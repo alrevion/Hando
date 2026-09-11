@@ -20,20 +20,12 @@ export const BTN = {
   tasks: '📋 Мои задачи',
   assigned: '📤 Мои поручения',
   orgs: '🏢 Организации',
-  billing: '💳 Подписка',
-  profile: '👤 Профиль',
   create: '➕ Создать организацию',
   join: '🔑 Вступить по коду',
   createShort: '➕ Создать',
   joinShort: '🔑 Вступить',
   requests: '📨 Заявки',
-  rename: '✏️ Переименовать',
-  remove: '🗑 Удалить',
-  switch: '↪️ Переключиться сюда',
-  leave: '🚪 Выйти из организации',
-  editName: '✏️ Изменить имя',
   back: '‹ Назад',
-  yes: '❌ Да, удалить',
   drafts: '📝 Черновики',
   settings: '⚙️ Настройки',
   notifyAll: '🔔 Уведомления: сразу из всех',
@@ -50,7 +42,7 @@ export const BTN = {
 
 /** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
 export type BotState = {
-  await?: 'name' | 'new' | 'pack' | 'join' | 'rename' | 'fix' | 'late' | 'decline' | 'digest_time' | 'ask';
+  await?: 'name' | 'new' | 'pack' | 'join' | 'fix' | 'late' | 'decline' | 'digest_time' | 'ask';
   /** Последние реплики диалога с помощником -- чтобы уточнения работали. */
   ask?: { role: 'user' | 'assistant'; text: string }[];
   /** Черновик, который ждёт правку после «Изменить». */
@@ -64,9 +56,7 @@ export type BotState = {
   /** Выбранная категория отрасли: второй шаг показывает её отрасли. */
   cat?: string;
   /** Экран: по нему разбирается нажатие, потому что подписи повторяются. */
-  screen?: 'main' | 'orgs' | 'org' | 'profile' | 'billing' | 'confirm_delete' | 'settings';
-  /** Организация, открытая в карточке. */
-  org?: string;
+  screen?: 'main' | 'orgs' | 'settings';
 };
 
 export type OrgRow = {
@@ -139,7 +129,7 @@ export function mainScreen(name: string, orgs: OrgRow[]): Screen {
   if (orgs.length === 0) {
     return {
       text: `${name}, чтобы начать — создайте организацию или вступите в существующую по коду.`,
-      keyboard: kb([[{ text: BTN.create }], [{ text: BTN.join }], [{ text: BTN.profile }]]),
+      keyboard: kb([[{ text: BTN.create }], [{ text: BTN.join }]]),
       state: { screen: 'main' },
     };
   }
@@ -153,9 +143,9 @@ export function mainScreen(name: string, orgs: OrgRow[]): Screen {
         // Черновики -- то, что продиктовано, но не подтверждено. Они не
         // пропадают, и кнопка нужна, чтобы к ним вернуться. «Вопрос» -- помощник.
         [{ text: BTN.drafts }, { text: BTN.ask }],
+        // Профиля и подписки в боте нет (раздел 18): имя, организации и всё
+        // «редкое» -- в приложении. Здесь остаётся то, что делается одной кнопкой.
         [{ text: BTN.orgs }],
-        [{ text: BTN.billing }],
-        [{ text: BTN.profile }],
       ],
       'Поручение или сообщение…',
     ),
@@ -164,58 +154,19 @@ export function mainScreen(name: string, orgs: OrgRow[]): Screen {
 }
 
 /**
- * Подписка. Биллинга ещё нет, и экран об этом говорит прямо, а не рисует
- * несуществующие тарифы: платит владелец организации, и когда оплата появится,
- * ему важно понимать, за что именно.
+ * Организации: тап по названию -- переключение, без вопросов (раздел 18).
+ * Заявки, личная ссылка и настройки -- рядом. Переименование, удаление и выход
+ * -- в приложении.
  */
-export function billingScreen(orgs: OrgRow[], userId: string): Screen {
-  const owned = orgs.filter((o) => o.owner_user_id === userId || o.role === 'creator');
-  const lines = ['Подписка', ''];
-  if (owned.length === 0) {
-    lines.push('Вы не владеете организациями — за них платит их владелец.');
-  } else {
-    lines.push('Вы платите за:');
-    for (const o of owned) lines.push(`• ${o.name}`);
-    lines.push('', 'Сейчас всё бесплатно: оплата ещё не подключена.');
-  }
-  return { text: lines.join('\n'), keyboard: kb([[{ text: BTN.back }]]), state: { screen: 'billing' } };
-}
-
-export function orgsScreen(orgs: OrgRow[]): Screen {
-  return {
-    text: orgs.length ? 'Ваши организации. Текущая отмечена ●' : 'У Вас пока нет организаций.',
-    keyboard: kb([
-      ...orgs.map((o) => [{ text: `${o.is_current ? '● ' : '○ '}${o.name}` }]),
-      [{ text: BTN.createShort }, { text: BTN.joinShort }],
-      // Уведомления и сводка -- здесь (раздел 21): это настройка человека и
-      // его текущей организации, а не отдельный экран.
-      [{ text: BTN.settings }],
-      [{ text: BTN.back }],
-    ]),
-    state: { screen: 'orgs' },
-  };
-}
-
-/** Карточка организации. Кнопки зависят от прав: чужую фирму не переименовать. */
-export function orgScreen(org: OrgRow, userId: string, pending = 0): Screen {
-  const isOwner = org.owner_user_id === userId || org.role === 'creator';
-  const lines = [`«${org.name}»`, `Ваша роль: ${roleName(org.role)}`];
-  if (isOwner && org.join_code) lines.push('', `Код для сотрудников: ${org.join_code}`);
-  // Число в тексте, а не в подписи кнопки: подпись reply-кнопки -- это то, что
-  // бот получит обратно текстом, и счётчик в ней превратил бы её в подвижную
-  // мишень для сравнения.
-  if (pending > 0) lines.push('', `Заявок на вступление: ${pending}`);
-
-  const rows: { text: string }[][] = [];
-  if (!org.is_current) rows.push([{ text: BTN.switch }]);
+export function orgsScreen(orgs: OrgRow[], pending = 0, canInvite = false): Screen {
+  const rows: { text: string }[][] = orgs.map((o) => [{ text: `${o.is_current ? '● ' : '○ '}${o.name}` }]);
   if (pending > 0) rows.push([{ text: BTN.requests }]);
-  // Личная ссылка -- у каждого, кто вправе приглашать: заявка придёт ему.
-  if (isOwner || org.role === 'admin' || org.role === 'super_admin') rows.push([{ text: BTN.invite }]);
-  if (isOwner) rows.push([{ text: BTN.rename }, { text: BTN.remove }]);
-  else rows.push([{ text: BTN.leave }]);
-  rows.push([{ text: BTN.back }]);
-
-  return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'org', org: org.id } };
+  if (canInvite) rows.push([{ text: BTN.invite }]);
+  if (orgs.length > 0) rows.push([{ text: BTN.settings }]);
+  rows.push([{ text: BTN.createShort }, { text: BTN.joinShort }], [{ text: BTN.back }]);
+  const lines = [orgs.length ? 'Ваши организации. Текущая отмечена ● — нажмите на другую, чтобы переключиться.' : 'У Вас пока нет организаций.'];
+  if (pending > 0) lines.push(`Заявок на вступление: ${pending}`);
+  return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'orgs' } };
 }
 
 /**
@@ -321,30 +272,6 @@ export const START_TIPS = [
   '• Сдать работу, увидеть этапы, людей и аналитику — в приложении.',
 ].join('\n');
 
-export function confirmDeleteScreen(org: OrgRow): Screen {
-  return {
-    text: `Удалить «${org.name}»?\n\nЗадачи и история сохранятся, но организация исчезнет у всех её сотрудников.`,
-    keyboard: kb([[{ text: BTN.yes }], [{ text: BTN.back }]]),
-    state: { screen: 'confirm_delete', org: org.id },
-  };
-}
-
-export function profileScreen(name: string, orgs: OrgRow[]): Screen {
-  const lines = [`Вас зовут: ${name}`];
-  if (orgs.length) {
-    lines.push('', 'Организации:');
-    for (const o of orgs) lines.push(`${o.is_current ? '● ' : '○ '}${o.name} — ${roleName(o.role)}`);
-  }
-  return {
-    text: lines.join('\n'),
-    keyboard: kb([[{ text: BTN.editName }], [{ text: BTN.back }]]),
-    state: { screen: 'profile' },
-  };
-}
-
-function roleName(role: Role): string {
-  return role === 'creator' ? 'владелец' : role === 'super_admin' ? 'руководитель' : role === 'admin' ? 'руководитель отдела' : 'участник';
-}
 
 // --------------------------------------------------------------------- действия
 

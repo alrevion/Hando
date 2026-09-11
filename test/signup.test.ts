@@ -279,8 +279,8 @@ describe('регистрация целиком через бота -- ПОСТ�
     // Кнопки мини-приложения в клавиатуре нет: у Telegram для этого своя кнопка
     // меню слева от строки ввода.
     expect(rows.flat().map((b) => b.text)).not.toContain('🌐 Приложение');
-    // Черновики и вопрос рядом; организации, подписка и профиль -- по одной кнопке в ряд.
-    expect(rows.slice(1).map((r) => r.map((b) => b.text))).toEqual([[BTN.drafts, BTN.ask], [BTN.orgs], [BTN.billing], [BTN.profile]]);
+    // Черновики и вопрос рядом; организации -- отдельно. Профиля и подписки в боте нет (раздел 18).
+    expect(rows.slice(1).map((r) => r.map((b) => b.text))).toEqual([[BTN.drafts, BTN.ask], [BTN.orgs]]);
 
     // Сотрудник приходит узнать, что делать ЕМУ.
     const code = sent(spy).map((m) => m.text).join(' ').match(/[A-Z2-9]{6}/)![0];
@@ -295,34 +295,7 @@ describe('регистрация целиком через бота -- ПОСТ�
     expect(workerRows[0].map((b) => b.text)).toEqual([BTN.tasks, BTN.assigned]);
   });
 
-  it('подписка говорит, за что человек платит, и не рисует несуществующих тарифов', async () => {
-    const env = await blank();
-    const spy = tg();
-    await meet(env, 606, 'Владелец');
-    await createOrgViaBot(env, 606, 'Моя фирма');
-    await tap(env, 606, BTN.billing);
-
-    const text = sent(spy).at(-1)!.text;
-    expect(text).toContain('Моя фирма');
-    // Честно про то, что биллинга ещё нет: рисовать тарифы, которых нет, хуже
-    // чем сказать прямо.
-    expect(text).toContain('оплата ещё не подключена');
-  });
-
-  it('профиль: имя правится кнопкой', async () => {
-    const env = await blank();
-    const spy = tg();
-    await meet(env, 808, 'Старое Имя');
-    await tap(env, 808, BTN.profile);
-    expect(sent(spy).at(-1)!.text).toContain('Старое Имя');
-
-    await tap(env, 808, BTN.editName);
-    await hook(env, msg(808, 'Новое Имя'));
-    const me = await testEnv.DB.prepare("SELECT name FROM users WHERE telegram_user_id = '808'").first<{ name: string }>();
-    expect(me!.name).toBe('Новое Имя');
-  });
-
-  it('переключение, переименование и удаление -- кнопками', async () => {
+  it('организации: тап по названию переключает без вопросов; переименование и удаление -- в приложении', async () => {
     const env = await blank();
     const spy = tg();
     await meet(env, 303, 'Владелец');
@@ -332,28 +305,15 @@ describe('регистрация целиком через бота -- ПОСТ�
     const me = await testEnv.DB.prepare("SELECT id FROM users WHERE telegram_user_id = '303'").first<{ id: string }>();
     const first = await testEnv.DB.prepare("SELECT id FROM orgs WHERE name = 'Первая'").first<{ id: string }>();
 
-    // Список организаций -> выбор по названию -> карточка.
     await tap(env, 303, BTN.orgs);
-    expect(kbOf(sent(spy).at(-1)!)).toContain('Первая');
+    const kb = kbOf(sent(spy).at(-1)!);
+    expect(kb).toContain('Первая');
+    expect(kb).toContain(BTN.settings);
+    expect(kb).toContain(BTN.invite);
+    expect(kb).not.toContain('Переименовать');
     await tap(env, 303, '○ Первая');
-    await tap(env, 303, BTN.switch);
     expect(await resolveOrgId(testEnv.DB, me!.id)).toBe(first!.id);
-
-    await tap(env, 303, BTN.orgs);
-    await tap(env, 303, '● Первая');
-    await tap(env, 303, BTN.rename);
-    await hook(env, msg(303, 'Школа №1'));
-    expect((await testEnv.DB.prepare('SELECT name FROM orgs WHERE id = ?').bind(first!.id).first<{ name: string }>())!.name).toBe('Школа №1');
-
-    await tap(env, 303, BTN.orgs);
-    await tap(env, 303, '● Школа №1');
-    await tap(env, 303, BTN.remove);
-    await tap(env, 303, BTN.yes);
-    const org = await testEnv.DB.prepare('SELECT archived_at FROM orgs WHERE id = ?').bind(first!.id).first<{ archived_at: string | null }>();
-    expect(org!.archived_at).not.toBeNull();
-    // Человека не выбросило в никуда: контекст переехал на вторую организацию.
-    const second = await testEnv.DB.prepare("SELECT id FROM orgs WHERE name = 'Вторая'").first<{ id: string }>();
-    expect(await resolveOrgId(testEnv.DB, me!.id)).toBe(second!.id);
+    expect(sent(spy).at(-1)!.text).toContain('Сейчас Вы в «Первая»');
   });
 
   it('чужой организации в списке просто нет -- нажать не на что', async () => {

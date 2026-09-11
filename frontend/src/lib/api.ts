@@ -65,8 +65,8 @@ export const authLogout = () => post<void>('/auth/logout');
 export const getProjects = () => get<Project[]>('/projects');
 // telegramGroupId: raw digits as copied from an id bot -- the backend prepends
 // the -100 supergroup prefix, so don't ask the user to remember it.
-export const createProject = (name: string, telegramGroupId: string) =>
-  post<{ id: string; name: string; telegram_chat_id: string }>('/projects', { name, telegram_group_id: telegramGroupId });
+export const createProject = (name: string, telegramGroupId?: string) =>
+  post<{ id: string; name: string; telegram_chat_id: string | null }>('/projects', { name, ...(telegramGroupId ? { telegram_group_id: telegramGroupId } : {}) });
 // A "delete" is really a soft archive (backend sets archived_at, never a hard
 // delete) -- these two round out the loop: see it, bring it back.
 export const deleteProject = (id: string) => del<void>(`/projects/${id}`);

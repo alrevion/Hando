@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Copy, Link2, Send, Trash2 } from 'lucide-react';
+import { Copy, Link2, Plus, Send, Trash2 } from 'lucide-react';
 import type { User } from '../types';
 import {
-  ApiError, deleteOrg, getInviteLink, getMe, getMyOrgs, getPacks, renameOrg, updateOrgSettings, type MyOrg, type OrgPack, type OrgSettingsPatch,
+  ApiError, createProject, deleteOrg, getInviteLink, getMe, getMyOrgs, getPacks, renameOrg, updateOrgSettings, type MyOrg, type OrgPack, type OrgSettingsPatch,
 } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
@@ -18,8 +18,9 @@ const DAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
  */
 export function OrgView({ user }: { user: User }) {
   const { setUser } = useAuth();
-  const { refresh } = useData();
+  const { refresh, projects } = useData();
   const [org, setOrg] = useState<MyOrg | null>(null);
+  const [dept, setDept] = useState('');
   const [packs, setPacks] = useState<OrgPack[]>([]);
   const [invite, setInvite] = useState<{ link: string; code: string } | null>(null);
   const [name, setName] = useState('');
@@ -77,6 +78,20 @@ export function OrgView({ user }: { user: User }) {
             </>
           ) : <p className="muted">Загрузка…</p>}
           {owner && org.join_code ? <p className="hint"><Link2 aria-hidden="true" style={{ width: 13, height: 13, verticalAlign: '-2px' }} /> Общий код организации: <b>{org.join_code}</b> — заявки по нему приходят вам.</p> : null}
+        </div>
+      ) : null}
+
+      {canInvite ? (
+        <div className="card">
+          <div className="sec-title" style={{ marginTop: 0 }}>Отделы</div>
+          <div className="pills" style={{ marginBottom: 8 }}>
+            {projects.map((p) => <span key={p.id} className="pill"><span>{p.name}</span></span>)}
+          </div>
+          <form className="t-row" style={{ gap: 8 }} onSubmit={async (e) => { e.preventDefault(); if (!dept.trim()) return; setBusy(true); try { await createProject(dept.trim()); toast('Отдел добавлен'); setDept(''); await refresh(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(false); } }}>
+            <input className="inp" style={{ flex: '1 1 auto', minWidth: 0 }} value={dept} placeholder="Новый отдел" onChange={(e) => setDept(e.target.value)} />
+            <button type="submit" className="btn" style={{ flex: '0 0 auto' }} disabled={busy || !dept.trim()}><Plus aria-hidden="true" style={{ width: 16, height: 16 }} />Добавить</button>
+          </form>
+          <p className="hint">Отдел — это доска: кого туда приняли, тот видит её задачи.</p>
         </div>
       ) : null}
 

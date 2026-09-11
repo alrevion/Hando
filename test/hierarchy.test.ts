@@ -154,6 +154,18 @@ describe('личная ссылка-приглашение', () => {
     expect(await ids(await api(env, '/users', 'GET', undefined, 'a1', 'admin'))).toEqual(['a1', 'boss', newbie.id, 'w1'].sort());
   });
 
+  it('руководитель отдела заводит доску и принимает работу в своём поддереве', async () => {
+    const env = await world();
+    tg();
+    expect((await api(env, '/projects', 'POST', { name: 'Наружка' }, 'a1', 'admin')).status).toBe(201);
+    expect((await api(env, '/projects', 'POST', { name: 'Х' }, 'w1', 'member')).status).toBe(403);
+    // Задача, которую поручил w1 (в поддереве a1) -- сдана; a1 принимает, a2 -- нет.
+    await testEnv.DB.prepare("UPDATE tasks SET author_id = 'w1', status = 'done', done_at = '2026-09-10T00:00:00.000Z' WHERE id = 't1'").run();
+    await testEnv.DB.prepare("UPDATE task_assignees SET state = 'done', done_at = '2026-09-10T00:00:00.000Z' WHERE task_id = 't1'").run();
+    expect((await api(env, '/tasks/t1/confirm', 'POST', {}, 'a2', 'admin')).status).toBe(403);
+    expect((await api(env, '/tasks/t1/confirm', 'POST', {}, 'a1', 'admin')).status).toBe(200);
+  });
+
   it('ролей две при подтверждении: super_admin не выдаётся', async () => {
     const env = await world();
     tg();

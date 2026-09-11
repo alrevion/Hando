@@ -971,21 +971,29 @@ apiRoutes.get('/projects/archived', requireRole('super_admin', 'creator'), async
 
 // telegram_group_id is the raw group id (digits only, as copied from an id bot) --
 // different projects post to different Telegram groups, so this is required per project.
-apiRoutes.post('/projects', requireRole('super_admin', 'creator'), async (c) => {
+// Доска = отдел. Заводит владелец и руководитель отдела (раздел 19); создатель
+// сразу на ней -- иначе руководитель завёл бы доску, которой сам не видит.
+// Группа Telegram не обязательна: уведомления идут людям лично (ADR-4).
+apiRoutes.post('/projects', requireRole('admin', 'super_admin', 'creator'), async (c) => {
   const { name, telegram_group_id } = await c.req.json<{ name?: string; telegram_group_id?: string }>().catch(() => ({}) as Record<string, undefined>);
-  if (!name) return c.json({ error: 'name required' }, 400);
-  if (!telegram_group_id || !telegram_group_id.replace(/\D/g, '')) return c.json({ error: 'telegram_group_id required' }, 400);
-  // Validated against Telegram itself (tries both the supergroup -100 and plain
-  // group - prefix) so a wrong/not-yet-added-bot group fails loudly here, not
-  // silently on every notification afterward.
-  const chatId = await resolveChatId(c.env, telegram_group_id);
-  if (!chatId) return c.json({ error: 'Telegram group not found -- make sure the bot has been added to it' }, 400);
+  if (!name?.trim()) return c.json({ error: 'name required' }, 400);
+  let chatId: string | null = null;
+  if (telegram_group_id && telegram_group_id.replace(/\D/g, '')) {
+    // Validated against Telegram itself (tries both the supergroup -100 and plain
+    // group - prefix) so a wrong/not-yet-added-bot group fails loudly here, not
+    // silently on every notification afterward.
+    chatId = await resolveChatId(c.env, telegram_group_id);
+    if (!chatId) return c.json({ error: 'Telegram group not found -- make sure the bot has been added to it' }, 400);
+  }
   const id = uuid();
-  await c.env.DB.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id) VALUES (?, ?, ?, ?, ?)')
-    .bind(id, c.get('orgId'), name, c.get('userId'), chatId)
-    .run();
+  await c.env.DB.batch([
+    c.env.DB.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id) VALUES (?, ?, ?, ?, ?)')
+      .bind(id, c.get('orgId'), name.trim().slice(0, 60), c.get('userId'), chatId),
+    c.env.DB.prepare('INSERT OR IGNORE INTO project_memberships (id, project_id, user_id, org_id) VALUES (?, ?, ?, ?)')
+      .bind(uuid(), id, c.get('userId'), c.get('orgId')),
+  ]);
   await logEvent(c.env.DB, { actorId: c.get('userId'), orgId: c.get('orgId'), targetType: 'project', targetId: id, action: 'created' });
-  return c.json({ id, name, telegram_chat_id: chatId }, 201);
+  return c.json({ id, name: name.trim().slice(0, 60), telegram_chat_id: chatId }, 201);
 });
 
 // Soft-delete: sets archived_at. Tasks stay visible via the Archive tab; the
@@ -1379,10 +1387,14 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
 // включая рядового сотрудника, поручившего что-то директору. creator/super_admin
 // остаются запасным ключом на случай, когда автор уволился: иначе его задачи
 // нельзя закрыть никогда.
-function isReviewer(c: Context<AppEnv>, task: Task): boolean {
+async function isReviewer(c: Context<AppEnv>, task: Task): Promise<boolean> {
   if (task.author_id && task.author_id === c.get('userId')) return true;
   const role = c.get('role');
-  return role === 'creator' || role === 'super_admin';
+  if (role === 'creator' || role === 'super_admin') return true;
+  // Руководитель отдела принимает работу в своём поддереве (раздел 19): то, что
+  // поручили его люди.
+  if (role === 'admin' && task.author_id) return (await subtreeOf(c.env, c.get('orgId'), c.get('userId'))).has(task.author_id);
+  return false;
 }
 
 // Таблица переходов задачи уехала в assignees.ts: движется теперь строка
@@ -1471,7 +1483,7 @@ apiRoutes.get('/tasks/:id/assignees', requireProjectAccess('task'), async (c) =>
 apiRoutes.delete('/tasks/:id', requireProjectAccess('task'), async (c) => {
   const task = c.get('task')!;
   // Удаляет автор или владелец -- те же, кто отменяет кнопкой в боте.
-  if (!isReviewer(c, task)) return c.json({ error: 'only the author can delete' }, 403);
+  if (!(await isReviewer(c, task))) return c.json({ error: 'only the author can delete' }, 403);
   await applyTransition(c.env, {
     task, to: 'archived', actorId: c.get('userId'), action: 'deleted',
     set: { telegram_message_id: null },
@@ -1508,7 +1520,7 @@ apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), async (c) => 
   // сторону: сотрудник, попросивший директора, обязан иметь право принять
   // работу, а посторонний super_admin -- нет. Роль остаётся запасным ключом для
   // владельца организации: без неё некому закрыть задачу уволившегося автора.
-  if (!isReviewer(c, task)) return c.json({ error: 'only the author can confirm' }, 403);
+  if (!(await isReviewer(c, task))) return c.json({ error: 'only the author can confirm' }, 403);
   if (task.status !== 'done') return c.json({ error: 'task is not in done' }, 409);
   if (task.confirmed_at) return c.json({ error: 'task already confirmed' }, 409);
   let overdueBy: number | null = null;
@@ -1536,7 +1548,7 @@ apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), async (c) => 
 // Escalation timers reset so the new deadline gets its own overdue/reminder cycle.
 apiRoutes.post('/tasks/:id/reject', requireProjectAccess('task'), async (c) => {
   const task = c.get('task')!;
-  if (!isReviewer(c, task)) return c.json({ error: 'only the author can reject' }, 403);
+  if (!(await isReviewer(c, task))) return c.json({ error: 'only the author can reject' }, 403);
   if (task.status !== 'done') return c.json({ error: 'task is not in done' }, 409);
   const { comment, extra_days } = await c.req.json<{ comment?: string; extra_days?: number }>().catch(() => ({}) as Record<string, undefined>);
   if (!comment || !comment.trim()) return c.json({ error: 'comment required' }, 400);

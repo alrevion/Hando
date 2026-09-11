@@ -155,7 +155,8 @@ export function PeopleView() {
                   <span className="avatar avatar-lg">{initials(p.name) || '·'}</span>
                   <span className="grow">
                     <span className="t-title">{p.name}</span>
-                    {p.telegram_username ? <span className="t-meta"><span>@{p.telegram_username}</span></span> : null}
+                    {/* Ссылка на контакт: самозванец с чужим именем выдаёт себя пустой перепиской. */}
+                    {p.telegram_username ? <span className="t-meta"><a href={`https://t.me/${p.telegram_username}`} target="_blank" rel="noreferrer">@{p.telegram_username} · написать</a></span> : null}
                   </span>
                 </div>
 

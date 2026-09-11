@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import type { Env, Role, Task } from './types';
 import { nowIso, uuid } from './db';
 import { myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
-import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineKeyboard, editMessageText } from './telegram';
+import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
 import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
@@ -28,12 +28,11 @@ import {
 } from './drafts';
 import { categoryByButton, packByButton } from './packs';
 import {
-  askNameScreen, BTN, confirmDeleteScreen, deleteOrg, getState, isOnboarded, leaveOrg,
-  billingScreen, categoryScreen, industryScreen, mainScreen, myOrgs, orgScreen, orgsScreen, profileScreen, renameOrg, setDisplayName,
-  setState, switchOrg, type OrgRow, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner, askScreen, START_TIPS } from './menu';
+  askNameScreen, BTN, getState, isOnboarded, categoryScreen, industryScreen, mainScreen, myOrgs, orgsScreen, setDisplayName,
+  setState, switchOrg, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner, askScreen, START_TIPS } from './menu';
 import { download, extractMedia } from './media';
 import { formatWhen, parseTask, refineDraft, transcribe, localIso, localToday } from './parse';
-import { dayEnd, hm, loadSchedule, type OrgSchedule } from './schedule';
+import { dayEnd, hm, loadSchedule, localHm, type OrgSchedule } from './schedule';
 import { askAssistant } from './assistant';
 import { assignableMembers } from './hierarchy';
 import { APP_URL } from './transition';
@@ -269,48 +268,77 @@ function calendarKeyboard(
  * на каком этапе, а не что делать самому. Свои же задачи (адресат = автор) сюда
  * не попадают -- они и так в «Моих задачах».
  */
-async function assignedByMeText(env: Env, userId: string): Promise<string> {
-  const { results } = await env.DB.prepare(
-    `SELECT t.title, u.name AS who, a.state, a.due_at
-     FROM tasks t
-     JOIN task_assignees a ON a.task_id = t.id
-     JOIN users u ON u.id = a.user_id
-     JOIN org_memberships m ON m.org_id = a.org_id AND m.user_id = a.user_id AND m.left_at IS NULL
-     WHERE t.author_id = ? AND a.user_id <> ? AND t.status <> 'archived'
-     ORDER BY a.due_at IS NULL, a.due_at`,
-  ).bind(userId, userId).all<{ title: string; who: string; state: string; due_at: string | null }>();
+const PAGE = 10;
 
-  if (!results.length) return 'Вы пока ничего не поручали.';
-  const mark: Record<string, string> = {
-    pending: '⏳ не принял', accepted: '🚀 в работе', done: '✅ сдал',
-    confirmed: '✔️ принято', rejected: '❌ вернули', declined: '🚫 отказался',
-  };
-  return ['Ваши поручения:', ...results.map((r) =>
-    `• ${r.title} — ${r.who}, ${mark[r.state] ?? r.state}${r.due_at ? ` (до ${r.due_at.slice(0, 10)})` : ''}`)].join('\n');
+/** «сегодня 15:00», «завтра 18:00», «через 3 дн.», «просрочено на 2ч 10м», «без срока». */
+function dueWords(due: string | null, now: Date, tz: string): string {
+  if (!due) return 'без срока';
+  const ms = Date.parse(due) - now.getTime();
+  const time = new Intl.DateTimeFormat('ru-RU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(due));
+  if (ms < 0) {
+    const h = Math.floor(-ms / 3600000); const m = Math.floor((-ms % 3600000) / 60000);
+    return `просрочено на ${h >= 24 ? `${Math.floor(h / 24)} дн.` : h > 0 ? `${h}ч ${m}м` : `${m}м`}`;
+  }
+  const dayOf = (d: Date) => Date.parse(localHm(d, tz).dayKey);
+  const days = Math.round((dayOf(new Date(due)) - dayOf(now)) / 86400000);
+  if (days === 0) return `сегодня ${time}`;
+  if (days === 1) return `завтра ${time}`;
+  return `через ${days} дн.`;
 }
 
-/**
- * «Моё» -- ОДИН список на человека, а не по одному на организацию: у него один
- * Telegram-аккаунт, и разделять список по арендаторам значило бы заставлять
- * переключаться, чтобы увидеть свой день целиком.
- */
-async function myTasksText(env: Env, userId: string): Promise<string> {
-  const { results } = await env.DB.prepare(
-    `SELECT t.title, o.name AS org_name, a.due_at
-     FROM task_assignees a
-     JOIN tasks t ON t.id = a.task_id
-     JOIN orgs o ON o.id = a.org_id
-     -- Действующее членство обязательно: уволенный не должен видеть задачи
-     -- бывшего работодателя. Строка task_assignees отзыв не переживает по
-     -- смыслу, но физически остаётся -- задачи и события на неё ссылаются.
-     JOIN org_memberships m ON m.org_id = a.org_id AND m.user_id = a.user_id AND m.left_at IS NULL
-     WHERE a.user_id = ? AND a.state IN ('pending','accepted','rejected') AND t.status <> 'archived'
-     ORDER BY a.due_at IS NULL, a.due_at`,
-  ).bind(userId).all<{ title: string; org_name: string; due_at: string | null }>();
+const PRI_MARK: Record<string, string> = { urgent: '‼️ ', low: '↓ ', medium: '' };
+const STATE_MARK: Record<string, string> = {
+  pending: 'не принял', accepted: 'в работе', done: 'сдал', confirmed: 'принято', rejected: 'вернули', declined: 'отказался',
+};
 
-  return results.length
-    ? ['Ваши задачи:', ...results.map((r) => `• ${r.title} — ${r.org_name}${r.due_at ? ` (до ${r.due_at.slice(0, 10)})` : ''}`)].join('\n')
-    : 'Активных задач нет.';
+/**
+ * Список задач (что поручили мне) или поручений (что поручил я) -- ТЕКУЩЕЙ
+ * организации, по десять, с листанием инлайн-кнопками (раздел 18). В строке:
+ * важность, тема, кому и состояние (у поручений), сколько до срока.
+ */
+async function taskPage(env: Env, userId: string, orgId: string, kind: 'm' | 'a', page: number): Promise<{ text: string; kb: InlineKeyboard }> {
+  const s = await loadSchedule(env, orgId);
+  const now = new Date();
+  type R = { id: string; title: string; priority: string; due_at: string | null; state: string; who: string };
+  const { results } = kind === 'm'
+    ? await env.DB.prepare(
+        `SELECT t.id, t.title, t.priority, a.due_at, a.state, '' AS who
+         FROM task_assignees a JOIN tasks t ON t.id = a.task_id
+         WHERE a.user_id = ? AND a.org_id = ? AND a.state IN ('pending','accepted','rejected') AND t.status NOT IN ('archived','done')
+         ORDER BY a.due_at IS NULL, a.due_at, t.created_at`,
+      ).bind(userId, orgId).all<R>()
+    : await env.DB.prepare(
+        `SELECT t.id, t.title, t.priority, a.due_at, a.state, u.name AS who
+         FROM tasks t JOIN task_assignees a ON a.task_id = t.id JOIN users u ON u.id = a.user_id
+         WHERE t.author_id = ? AND t.org_id = ? AND a.user_id <> ? AND t.status <> 'archived' AND a.state <> 'declined'
+         ORDER BY a.due_at IS NULL, a.due_at, t.created_at`,
+      ).bind(userId, orgId, userId).all<R>();
+  // Рассылка -- одной строкой: «Азиз и ещё 13», состояние -- по первому.
+  const items: (R & { n: number })[] = [];
+  const seen = new Map<string, R & { n: number }>();
+  for (const r of results) {
+    const prev = seen.get(r.id);
+    if (prev) { prev.n += 1; continue; }
+    const row = { ...r, n: 1 }; seen.set(r.id, row); items.push(row);
+  }
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / PAGE));
+  const p = Math.min(Math.max(0, page), pages - 1);
+  const slice = items.slice(p * PAGE, p * PAGE + PAGE);
+  const head = kind === 'm' ? `Ваши задачи (${total})` : `Ваши поручения (${total})`;
+  const lines = total === 0
+    ? [kind === 'm' ? 'Активных задач нет.' : 'Вы пока ничего не поручали.']
+    : [pages > 1 ? `${head} · стр. ${p + 1}/${pages}` : head, ...slice.map((r, i) => {
+        const who = kind === 'a' ? ` — ${r.who}${r.n > 1 ? ` и ещё ${r.n - 1}` : ''}, ${STATE_MARK[r.state] ?? r.state}` : '';
+        return `${p * PAGE + i + 1}. ${PRI_MARK[r.priority] ?? ''}«${r.title}»${who} · ${dueWords(r.due_at, now, s.timezone)}`;
+      })];
+  const nav: InlineButton[] = [];
+  if (p > 0) nav.push({ text: '‹ Назад', callback_data: `pg:${kind}:${p - 1}` });
+  if (p + 1 < pages) nav.push({ text: 'Далее ›', callback_data: `pg:${kind}:${p + 1}` });
+  const rows: InlineButton[][] = [];
+  if (nav.length) rows.push(nav);
+  rows.push([{ text: '📱 Открыть приложение', web_app: { url: `${APP_URL}/` } }]);
+  return { text: lines.join('\n'), kb: { inline_keyboard: rows } };
 }
 
 /**
@@ -415,6 +443,15 @@ botApp.post('/webhook', async (c) => {
       if (ok && applicant?.telegram_user_id) {
         await sendMessage(c.env, applicant.telegram_user_id, `Вас приняли в отдел «${dept?.name ?? '-'}». /moe -- ваши задачи.`);
       }
+      return c.json({ ok: true });
+    }
+
+    // ------------------------------------------------------------ листание
+    if (action === 'pg') {
+      const kind = parts[1] === 'a' ? 'a' : 'm';
+      const page = await taskPage(c.env, who.userId, who.orgId, kind, Number(parts[2] ?? 0) || 0);
+      await answerCallbackQuery(c.env, cq.id);
+      if (cq.message) await editMessageText(c.env, String(cq.message.chat.id), String(cq.message.message_id), page.text, page.kb);
       return c.json({ ok: true });
     }
 
@@ -866,12 +903,6 @@ botApp.post('/webhook', async (c) => {
 
   // fix/late/decline разбираются в хвосте: там фраза уже расшифрована и с голоса.
   if (st.await && st.await !== 'fix' && st.await !== 'late' && st.await !== 'decline' && st.await !== 'ask' && text) {
-    if (st.await === 'name') {
-      const ok = await setDisplayName(c.env, userId, text);
-      await sendMessage(c.env, chatId, ok ? 'Имя обновлено.' : 'Слишком короткое имя.');
-      await show(c.env, chatId, userId, profileScreen(ok ? text.trim() : myName, orgs));
-      return c.json({ ok: true });
-    }
     if (st.await === 'new') {
       // Название запомнили, теперь профиль: он решает, какие отделы завести.
       await show(c.env, chatId, userId, categoryScreen(text.slice(0, 60)));
@@ -926,12 +957,6 @@ botApp.post('/webhook', async (c) => {
       }
       return c.json({ ok: true });
     }
-    if (st.await === 'rename' && st.org) {
-      const ok = await renameOrg(c.env, userId, st.org, text);
-      await sendMessage(c.env, chatId, ok ? 'Переименовано.' : 'Переименовать не удалось.');
-      await show(c.env, chatId, userId, orgsScreen(await myOrgs(c.env, userId)));
-      return c.json({ ok: true });
-    }
     // st.await === 'join'
     const res = await joinByCode(c.env, userId, text);
     if (!res.ok) {
@@ -953,29 +978,21 @@ botApp.post('/webhook', async (c) => {
   //
   // Reply-кнопка присылает свой текст, поэтому нажатие -- это совпадение с
   // подписью. Экран учитывается: «‹ Назад» на разных экранах ведёт в разное.
-  const openOrg = async (org: OrgRow) =>
-    show(c.env, chatId, userId, orgScreen(org, userId, (await pendingRequests(c.env, org.id, userId)).length));
-  const current = st.org ? orgs.find((o) => o.id === st.org) : undefined;
+  const current = orgs.find((o) => o.is_current) ?? orgs[0];
+  const orgsView = async () => show(c.env, chatId, userId, orgsScreen(orgs,
+    current ? (await pendingRequests(c.env, current.id, userId)).length : 0,
+    !!current && current.role !== 'member'));
 
   switch (text) {
     case BTN.tasks:
-      await sendMessage(c.env, chatId, await myTasksText(c.env, userId));
+    case BTN.assigned: {
+      if (!current) return c.json({ ok: true });
+      const page = await taskPage(c.env, userId, current.id, text === BTN.tasks ? 'm' : 'a', 0);
+      await sendMessage(c.env, chatId, page.text, page.kb);
       return c.json({ ok: true });
-    case BTN.assigned:
-      await sendMessage(c.env, chatId, await assignedByMeText(c.env, userId));
-      return c.json({ ok: true });
-    case BTN.billing:
-      await show(c.env, chatId, userId, billingScreen(orgs, userId));
-      return c.json({ ok: true });
+    }
     case BTN.orgs:
-      await show(c.env, chatId, userId, orgsScreen(orgs));
-      return c.json({ ok: true });
-    case BTN.profile:
-      await show(c.env, chatId, userId, profileScreen(myName, orgs));
-      return c.json({ ok: true });
-    case BTN.editName:
-      await setState(c.env, userId, { await: 'name', screen: 'profile' });
-      await sendMessage(c.env, chatId, 'Как к Вам обращаться? Напишите имя и фамилию.');
+      await orgsView();
       return c.json({ ok: true });
     case BTN.create:
     case BTN.createShort:
@@ -988,15 +1005,9 @@ botApp.post('/webhook', async (c) => {
       await sendMessage(c.env, chatId, 'Пришлите код организации.');
       return c.json({ ok: true });
     case BTN.back:
-      // «Назад» зависит от экрана: из карточки -- в список, иначе на главный.
-      await show(c.env, chatId, userId, st.screen === 'org' || st.screen === 'confirm_delete' || st.screen === 'settings'
-        ? orgsScreen(orgs)
-        : mainScreen(myName, orgs));
-      return c.json({ ok: true });
-    case BTN.switch:
-      if (current && (await switchOrg(c.env, userId, current.id))) {
-        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
-      }
+      // «Назад» зависит от экрана: из настроек -- в организации, иначе на главный.
+      if (st.screen === 'settings') await orgsView();
+      else await show(c.env, chatId, userId, mainScreen(myName, orgs));
       return c.json({ ok: true });
     case BTN.requests: {
       if (!current) return c.json({ ok: true });
@@ -1067,34 +1078,14 @@ botApp.post('/webhook', async (c) => {
         : 'Приглашать могут владелец и руководители отделов.');
       return c.json({ ok: true });
     }
-    case BTN.rename:
-      if (current) {
-        await setState(c.env, userId, { await: 'rename', screen: 'org', org: current.id });
-        await sendMessage(c.env, chatId, `Новое название для «${current.name}»?`);
-      }
-      return c.json({ ok: true });
-    case BTN.remove:
-      if (current) await show(c.env, chatId, userId, confirmDeleteScreen(current));
-      return c.json({ ok: true });
-    case BTN.yes:
-      if (st.screen === 'confirm_delete' && st.org && (await deleteOrg(c.env, userId, st.org))) {
-        await sendMessage(c.env, chatId, 'Организация удалена.');
-        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
-      }
-      return c.json({ ok: true });
-    case BTN.leave:
-      if (current && (await leaveOrg(c.env, userId, current.id))) {
-        await sendMessage(c.env, chatId, 'Вы вышли из организации.');
-        await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
-      }
-      return c.json({ ok: true });
   }
 
-  // Выбор организации из списка: подпись -- это её название с маркером.
+  // Выбор организации из списка: тап -- переключение, без вопросов (раздел 18).
   if (st.screen === 'orgs' && text) {
     const picked = orgs.find((o) => `${o.is_current ? '● ' : '○ '}${o.name}` === text);
     if (picked) {
-      await openOrg(picked);
+      if (!picked.is_current) await switchOrg(c.env, userId, picked.id);
+      await show(c.env, chatId, userId, mainScreen(myName, await myOrgs(c.env, userId)));
       return c.json({ ok: true });
     }
   }
@@ -1108,7 +1099,8 @@ botApp.post('/webhook', async (c) => {
   }
 
   if (msg.text === '/moe' || msg.text === '/мое' || msg.text === '/моё') {
-    await sendMessage(c.env, String(msg.chat.id), await myTasksText(c.env, who.userId));
+    const page = await taskPage(c.env, who.userId, who.orgId, 'm', 0);
+    await sendMessage(c.env, String(msg.chat.id), page.text, page.kb);
     return c.json({ ok: true });
   }
 
