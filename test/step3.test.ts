@@ -94,6 +94,18 @@ describe('шаг 3: рассылка на четырнадцать челове�
     expect((await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'done' }), env)).status).toBe(409);
   });
 
+  it('исполнитель узнаёт, что автор подвинул его этап', async () => {
+    const env = await world();
+    const spy = tg();
+    const res = await apiRoutes.request('/projects/p1/tasks',
+      json(await cookie('boss', 'creator', ORG_A), { title: 'Занести бумаги', assignee_ids: ['u0'], deadline: '2030-01-01T00:00:00.000Z' }), env);
+    const { id } = await res.json<{ id: string }>();
+    spy.mockClear();
+    await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'in_progress' }), env);
+    const texts = sends(spy).map(([, init]) => JSON.parse(init!.body as string) as { chat_id: string; text: string });
+    expect(texts.some((m) => m.text.includes('В работе') && m.text.includes('Занести бумаги'))).toBe(true);
+  });
+
   it('у каждого адресата СВОЙ таймер: cron предупреждает всех, а не одного', async () => {
     const env = await world();
     tg();

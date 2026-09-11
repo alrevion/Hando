@@ -36,6 +36,11 @@ export type TransitionInput = {
   comment?: string | null;
   overdueBy?: number | null;
   set?: LifecycleFields;
+  // Кому ещё уходит уведомление сверх обычных получателей: тот, чью строку
+  // подвинул ЧУЖОЙ человек (автор нажал стрелку этапа за исполнителя). Без
+  // этого исполнитель узнавал бы о переводе, только нажав кнопку в боте и
+  // получив «Уже нельзя».
+  alsoNotify?: string[];
   notify?: {
     emoji: string;
     label: string;
@@ -108,7 +113,7 @@ async function composeText(
  * что слать) строка notifications -- атомарно. Отправка НЕ делается здесь.
  */
 export async function applyTransition(env: Env, input: TransitionInput): Promise<void> {
-  const { task, to, actorId, action, comment, overdueBy, set, notify } = input;
+  const { task, to, actorId, action, comment, overdueBy, set, notify, alsoNotify } = input;
   const now = nowIso();
 
   // Собираем UPDATE только из тех колонок, которые переход реально просили
@@ -161,6 +166,9 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
     // (2) АВТОР -- ему видеть ход работы, которую он поручил. Себе о собственном
     // действии не пишем: человек только что нажал кнопку.
     if (task.author_id && task.author_id !== actorId) targets.add(task.author_id);
+
+    // (2a) ТОТ, ЧЬЮ СТРОКУ ПОДВИНУЛИ, если двигал не он сам.
+    for (const uid of alsoNotify ?? []) if (uid !== actorId) targets.add(uid);
 
     // (3) ОСТАЛЬНЫЕ адресаты -- только когда переход меняет ИХ работу: задача
     // закрыта, ушла в архив или возвращена в работу. «Коллега взял свою часть»

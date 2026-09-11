@@ -216,7 +216,9 @@ export async function transitionAssignee(
   // состояние ('accepted', 'declined'), задача -- свой переход ('moved_done').
   // Слои разные: «Пётр отказался» и «задача закрыта» -- разные факты, и после
   // рассылки на 14 человек первое случается 14 раз, а второе один.
-  await recomputeTaskStatus(env, task, actorId, notify);
+  // Двигал не сам адресат -- значит ему и сообщаем: иначе он узнает о
+  // переводе, только нажав кнопку в боте и получив «Уже нельзя».
+  await recomputeTaskStatus(env, task, actorId, notify, assignee.user_id === actorId ? undefined : [assignee.user_id]);
   return { ok: true };
 }
 
@@ -226,6 +228,7 @@ export async function recomputeTaskStatus(
   task: Task,
   actorId: string | null,
   notify?: { emoji: string; label: string; extraLine?: string; track?: boolean; deletePrevious?: boolean },
+  alsoNotify?: string[],
 ): Promise<void> {
   const rows = await loadAssignees(env, task.id, task.org_id);
   const next = rollup((task.kind ?? 'single') as TaskKind, rows.map((r) => r.state));
@@ -250,6 +253,7 @@ export async function recomputeTaskStatus(
       ? { done_at: task.done_at ?? nowIso(), telegram_message_id: null }
       : undefined,
     notify,
+    alsoNotify,
   });
 }
 
