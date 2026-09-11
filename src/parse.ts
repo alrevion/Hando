@@ -16,6 +16,15 @@
 import type { Env } from './types';
 import { pack } from './packs';
 
+/** «пятница, 12 сентября, 18:00» в поясе организации. */
+export function formatWhen(iso: string, timeZone: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const day = new Intl.DateTimeFormat('ru-RU', { timeZone, weekday: 'long', day: 'numeric', month: 'long' }).format(d);
+  const time = new Intl.DateTimeFormat('ru-RU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+  return `${day}, ${time}`;
+}
+
 export type Person = { id: string; name: string; aliases?: string[] };
 
 export type Draft = {

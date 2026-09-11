@@ -5,6 +5,7 @@
 // (тогда задержка та же, что была до outbox), и из cron как страховку за то,
 // что первый вызов не дошёл.
 import type { Env } from './types';
+import type { InlineButton } from './telegram';
 import { nowIso } from './db';
 import { deleteMessage, sendMessage } from './telegram';
 import { isQuiet } from './quiet';
@@ -17,7 +18,7 @@ type Payload = {
   track: boolean;
   // Пробивает тихие часы: срок, наступающий ночью, важнее тишины.
   urgent?: boolean;
-  keyboard?: { text: string; callback_data: string }[][] | null;
+  keyboard?: InlineButton[][] | null;
 };
 
 const BATCH = 50;

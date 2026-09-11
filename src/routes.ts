@@ -7,8 +7,8 @@ import { logEvent, nowIso, uuid } from './db';
 import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyInitData, verifyOtp, verifySession } from './auth';
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
-import { applyTransition, buildNotification } from './transition';
-import { buildAssignees, confirmAssignees, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
+import { applyTransition, assigneeButtons, buildNotification } from './transition';
+import { buildAssignees, confirmAssignees, declineAssignee, myAssignee, resetAssignees, transitionAssignee, type Assignee, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { setTaskDeadline } from './intake';
 import {
@@ -1120,12 +1120,10 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
     // Каждому адресату -- своё письмо со своей кнопкой: у рассылки на 14 человек
     // одного получателя нет.
     ...(await Promise.all(assignees.map((uid) =>
-      buildNotification(c.env, created, 'created', {
-        emoji: '📌', label: 'Новая задача',
-        // «Принял» -- ключевая кнопка продукта: она превращает уведомление в
-        // подтверждаемое поручение вместо объявления в чате.
-        buttons: [[{ text: '✅ Принял', callback_data: `accept:${id}` }]],
-      }, b.deadline ?? null, uid),
+      // Та же карточка, что у задач из бота: субъект -- автор, иначе «От кого»
+      // печатало бы имя самого получателя.
+      buildNotification(c.env, created, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(created) },
+        b.deadline ?? null, uid, c.get('userId')),
     ))),
   ]);
   await drainOutbox(c.env);
@@ -1287,24 +1285,8 @@ apiRoutes.post('/tasks/:id/decline', requireProjectAccess('task'), async (c) => 
   const { reason } = await c.req.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
   if (!reason || !reason.trim()) return c.json({ error: 'reason required' }, 400);
 
-  const res = await transitionAssignee(c.env, { task, assignee: mine, to: 'declined', actorId: c.get('userId'), reason: reason.trim() });
+  const res = await declineAssignee(c.env, task, mine, c.get('userId'), reason.trim());
   if (!res.ok) return c.json({ error: res.error }, 409);
-
-  // Уведомление АВТОРУ, а не «живым адресатам». Раньше оно шло через
-  // applyTransition, а тот рассылает всем со state <> 'declined' -- то есть
-  // отказавшийся из списка уже выпал, автора в списке не было никогда, и при
-  // единственном адресате не уходило НИЧЕГО: задача тихо уезжала в архив, а
-  // поднять её автор-сотрудник сам не может. При рассылке было ещё хуже -- письмо
-  // про отказ получали тринадцать посторонних и не получал тот, кому оно нужно.
-  if (task.author_id) {
-    const who = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(c.get('userId')).first<{ name: string }>();
-    await c.env.DB.batch([
-      await buildNotification(c.env, task, 'declined', {
-        emoji: '🚫', label: 'Отказ от поручения',
-        extraLine: `${who?.name ?? 'Исполнитель'} отказался. Причина: ${reason.trim()}`,
-      }, task.deadline ?? null, task.author_id),
-    ]);
-  }
   await drainOutbox(c.env);
   return c.json({ success: true });
 });

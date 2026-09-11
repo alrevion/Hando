@@ -286,7 +286,8 @@ describe('access control', () => {
     const [sendUrl, sendInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(sendUrl).toContain('sendMessage');
     const body = JSON.parse(sendInit.body as string);
-    expect(body.text).toContain('?task=');
+    // В задачу ведёт кнопка «Открыть», @username в тексте по-прежнему пингует.
+    expect(JSON.stringify(body.reply_markup)).toContain('?task=');
     expect(body.text).toContain('@a_handle');
     // chat_id проверяется ЯВНО. Имя теста до 2026-09-05 говорило «в групповой
     // чат» -- то есть описывало поведение, отменённое ADR-4, -- и оставалось

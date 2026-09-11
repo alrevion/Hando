@@ -83,9 +83,11 @@ describe('регрессия шага -1: создание и редактиро
     // уведомление уводило человека на чужую доску -- ошибка, невидимая в коде
     // ответа: маршрут всё это время отвечал 201.
     const calls = (restore as unknown as { mock: { calls: [string, { body?: string }][] } }).mock.calls;
-    const sent = JSON.parse(calls.at(-1)![1].body!).text as string;
-    expect(sent).toContain(`https://hando.alrevion.com/?task=${id}`);
-    expect(sent).not.toContain('sayn.alrevion.com');
+    // Ссылка живёт в кнопке «Открыть» (web_app), а не в тексте.
+    const body = JSON.parse(calls.at(-1)![1].body!) as { reply_markup: { inline_keyboard: { web_app?: { url: string } }[][] } };
+    const urls = body.reply_markup.inline_keyboard.flat().map((b) => b.web_app?.url ?? '');
+    expect(urls).toContain(`https://hando.alrevion.com/?task=${id}`);
+    expect(JSON.stringify(body)).not.toContain('sayn.alrevion.com');
   });
 
   it('2. edit-lock: в todo правка проходит и меняет поля, в done -- 409 и строка не тронута', async () => {

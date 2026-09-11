@@ -8,6 +8,7 @@
 //   -- каждый повод пишется в nudges, иначе три из пяти принятых метрик не
 //      имеют знаменателя: они считаются по строкам, а не по сообщениям.
 import type { Env } from './types';
+import type { InlineButton } from './telegram';
 import { nowIso, uuid } from './db';
 import { localParts } from './quiet';
 
@@ -20,7 +21,7 @@ type Candidate = {
   taskId: string;
   text: string;
   actionable: boolean;
-  buttons?: { text: string; callback_data: string }[][];
+  buttons?: InlineButton[][];
 };
 
 /** Сколько поводов человек уже получил СЕГОДНЯ в поясе своей организации. */

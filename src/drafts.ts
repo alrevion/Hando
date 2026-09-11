@@ -11,7 +11,7 @@
 // черновиков -- это пять черновиков в «Черновиках», а не пять потерянных мыслей.
 import type { Env } from './types';
 import { nowIso, uuid } from './db';
-import type { Draft } from './parse';
+import { formatWhen, type Draft } from './parse';
 import type { Media } from './media';
 import { createFromDraft } from './intake';
 import { editMessageText, sendMessage, type InlineKeyboard } from './telegram';
@@ -145,14 +145,6 @@ export async function confirmDraft(env: Env, row: DraftRow): Promise<string | nu
 
 // ------------------------------------------------------------ карточка
 
-/** «пятница, 12 сентября, 18:00» в поясе организации. */
-export function formatWhen(iso: string, timeZone: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const day = new Intl.DateTimeFormat('ru-RU', { timeZone, weekday: 'long', day: 'numeric', month: 'long' }).format(d);
-  const time = new Intl.DateTimeFormat('ru-RU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
-  return `${day}, ${time}`;
-}
 
 export async function draftText(env: Env, row: DraftRow, timeZone: string): Promise<string> {
   const ids = assigneesOf(row);

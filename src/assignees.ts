@@ -9,7 +9,8 @@
 // чтобы инвариант «единственный писатель tasks.status» остался верным.
 import type { Env, Task, TaskStatus } from './types';
 import { nowIso, uuid } from './db';
-import { applyTransition } from './transition';
+import { applyTransition, assigneeButtons, buildNotification } from './transition';
+import type { InlineButton } from './telegram';
 
 export type AssigneeState = 'pending' | 'accepted' | 'done' | 'confirmed' | 'rejected' | 'declined';
 
@@ -236,4 +237,112 @@ export async function recomputeTaskStatus(
       : undefined,
     notify,
   });
+}
+
+// ------------------------------------------------ ответы адресата с карточки
+//
+// «Не успею», «Отказать», «Переназначить» -- один путь для бота и для API:
+// вторая копия правил разошлась бы с первой на первой же правке.
+
+/**
+ * Кому можно переназначить: подтверждённые участники организации, без автора.
+ * Порядок ФИКСИРОВАН (имя, id): кнопка хранит индекс, а не id -- два uuid в
+ * callback_data не помещаются в 64 байта.
+ */
+export async function reassignCandidates(env: Env, orgId: string, authorId: string | null): Promise<{ id: string; name: string }[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT u.id, u.name FROM users u
+     JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL
+     WHERE u.id <> ? ORDER BY u.name, u.id`,
+  ).bind(orgId, authorId ?? '').all<{ id: string; name: string }>();
+  return results;
+}
+
+/** Кнопки автору под ответом адресата. Переназначить рассылку нельзя: у неё нет «того самого» адресата. */
+function authorButtons(task: Task, after: 'late' | 'declined'): InlineButton[][] {
+  const rows: InlineButton[][] = [];
+  if (after === 'late') {
+    // «Перенести срок» открывает штатную клавиатуру срока (cal:…:back -> dueKeyboard).
+    rows.push([{ text: '📅 Перенести срок', callback_data: `cal:${task.id}:back` }, { text: 'Оставить как есть', callback_data: `keep:${task.id}` }]);
+  }
+  const row: InlineButton[] = [];
+  if (task.kind !== 'each') row.push({ text: '👤 Переназначить', callback_data: `ra:${task.id}:` });
+  if (after === 'declined') row.push({ text: '🗑 Отменить задачу', callback_data: `cancel:${task.id}` });
+  if (row.length) rows.push(row);
+  return rows;
+}
+
+/** Причина -- одной строкой и с потолком: перевод строки в ней подделал бы следующую строку карточки автора. */
+function cleanReason(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+/** «Не успею»: состояние строки не меняется, автор получает причину и кнопки. */
+export async function lateAssignee(env: Env, task: Task, mine: Assignee, actorId: string, rawComment: string): Promise<boolean> {
+  const comment = cleanReason(rawComment);
+  // Гейт по состоянию: на отказавшейся или сданной строке «не успею» не значит ничего,
+  // а без гейта каждое нажатие слало бы автору новую карточку.
+  if (mine.state !== 'pending' && mine.state !== 'accepted') return false;
+  const writes = [
+    env.DB.prepare(
+      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
+       VALUES (?, ?, ?, 'assignee', ?, 'late', ?, NULL, ?)`,
+    ).bind(uuid(), actorId, task.org_id, mine.id, comment, nowIso()),
+  ];
+  if (task.author_id && task.author_id !== actorId) {
+    writes.push(await buildNotification(env, task, 'late', {
+      emoji: '⏳', label: 'Не успевает', extraLine: `Причина: ${comment}`, buttons: authorButtons(task, 'late'),
+    }, task.deadline ?? null, task.author_id, actorId));
+  }
+  await env.DB.batch(writes);
+  return true;
+}
+
+/**
+ * Отказ: строка -> declined, автору причина и кнопки. Уведомление АВТОРУ, а не
+ * «живым адресатам»: отказавшийся из списка уже выпал, автора в нём не было
+ * никогда, и при единственном адресате не уходило бы ничего.
+ */
+export async function declineAssignee(
+  env: Env, task: Task, mine: Assignee, actorId: string, rawReason: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const reason = cleanReason(rawReason);
+  const res = await transitionAssignee(env, { task, assignee: mine, to: 'declined', actorId, reason });
+  if (!res.ok) return res;
+  if (task.author_id && task.author_id !== actorId) {
+    await env.DB.batch([await buildNotification(env, task, 'declined', {
+      emoji: '🚫', label: 'Отказ от поручения', extraLine: `Причина: ${reason}`, buttons: authorButtons(task, 'declined'),
+    }, task.deadline ?? null, task.author_id, actorId)]);
+  }
+  return { ok: true };
+}
+
+/**
+ * Переназначение: прежние живые строки -> declined («переназначено»), новый
+ * адресат -> pending, статус задачи пересчитывается.
+ *
+ * ON CONFLICT нужен всерьёз: у отказавшегося строка уже есть (уникальный индекс
+ * task_id+user_id), и «вернуть ему же» -- это воскрешение строки, а не вставка.
+ * Пересчёт после -- тоже всерьёз: единственный адресат отказался, свёртка дала
+ * archived, и без пересчёта новый человек получил бы карточку архивной задачи.
+ */
+export async function reassignTask(env: Env, task: Task, toUserId: string, actorId: string): Promise<void> {
+  const now = nowIso();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE task_assignees SET state = 'declined', declined_reason = 'переназначено'
+       WHERE task_id = ? AND user_id <> ? AND state IN ('pending', 'accepted', 'rejected')`,
+    ).bind(task.id, toUserId),
+    env.DB.prepare(
+      `INSERT INTO task_assignees (id, task_id, user_id, org_id, state, due_at) VALUES (?, ?, ?, ?, 'pending', ?)
+       ON CONFLICT(task_id, user_id) DO UPDATE SET state = 'pending', accepted_at = NULL, acknowledged_at = NULL, done_at = NULL,
+         declined_reason = NULL, due_at = excluded.due_at, last_escalated_at = NULL, reminder_sent_at = NULL, review_reminded_at = NULL`,
+    ).bind(uuid(), task.id, toUserId, task.org_id, task.deadline ?? null),
+    env.DB.prepare(
+      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
+       VALUES (?, ?, ?, 'task', ?, 'reassigned', ?, NULL, ?)`,
+    ).bind(uuid(), actorId, task.org_id, task.id, toUserId, now),
+    await buildNotification(env, task, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(task) }, task.deadline ?? null, toUserId, actorId),
+  ]);
+  await recomputeTaskStatus(env, task, actorId);
 }

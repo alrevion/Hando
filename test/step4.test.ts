@@ -158,7 +158,7 @@ describe('шаг 4a: кнопка и её погашение', () => {
     expect(calls(spy).filter(([u]) => u.includes('editMessageReplyMarkup'))).toHaveLength(0);
   });
 
-  it('закрытие из бота и из mini-app дают одинаковую строку tasks', async () => {
+  it('«Готово» из бота больше нет: done:… строку не двигает, сдают в приложении', async () => {
     const env = await world([
       { id: 'ui', project_id: 'p1', status: 'in_progress', responsible_user_id: 'w1', author_id: 'boss' },
       { id: 'bot', project_id: 'p1', status: 'in_progress', responsible_user_id: 'w1', author_id: 'boss' },
@@ -172,10 +172,10 @@ describe('шаг 4a: кнопка и её погашение', () => {
       callback_query: { id: 'cb3', from: { id: 'tg-w1' as unknown as number }, data: 'done:bot', message: { chat: { id: 5, type: 'private' }, message_id: 8 } },
     }));
 
-    const row = (id: string) => testEnv.DB.prepare('SELECT status, telegram_message_id, confirmed_at FROM tasks WHERE id = ?').bind(id).first<Record<string, unknown>>();
-    // Один автомат на оба канала -- значит и строка обязана совпасть, а не
-    // «примерно совпасть».
-    expect(await row('bot')).toEqual(await row('ui'));
+    const row = (id: string) => testEnv.DB.prepare('SELECT status FROM tasks WHERE id = ?').bind(id).first<{ status: string }>();
+    // Решение владельца: техничка тоже открывает приложение и нажимает «Готово» там.
+    expect((await row('ui'))!.status).toBe('done');
+    expect((await row('bot'))!.status).toBe('in_progress');
   });
 });
 

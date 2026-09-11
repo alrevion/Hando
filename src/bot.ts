@@ -14,15 +14,16 @@
 // Неизвестный отправитель получает МОЛЧАНИЕ, а не «вы не зарегистрированы»:
 // последнее -- оракул существования, ровно то, что запрещено для проектов.
 import { Hono } from 'hono';
-import type { Env, Role } from './types';
+import type { Env, Role, Task } from './types';
 import { nowIso, uuid } from './db';
-import { myAssignee, transitionAssignee } from './assignees';
+import { myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
+import { applyTransition, openButton } from './transition';
 import { approveJoin, createOrg, ensureUser, joinByCode, orgDepartments, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
 import { setTaskDeadline } from './intake';
 import {
-  assigneesOf, confirmDraft, draftByMessage, formatWhen, getDraft, latestDraft, listDrafts, mediaOf,
+  assigneesOf, confirmDraft, draftByMessage, getDraft, latestDraft, listDrafts, mediaOf,
   patchDraft, removeDraft, renderCreated, renderDraft, saveDraft, type DraftPatch,
 } from './drafts';
 import { categoryByButton, packByButton } from './packs';
@@ -32,7 +33,7 @@ import {
   setState, switchOrg, type OrgRow, type Screen,
 } from './menu';
 import { download, extractMedia } from './media';
-import { parseTask, refineDraft, transcribe, localIso, localToday } from './parse';
+import { formatWhen, parseTask, refineDraft, transcribe, localIso, localToday } from './parse';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -181,8 +182,8 @@ function dueKeyboard(taskId: string): InlineKeyboard {
         { text: '📅 Свой срок', callback_data: `cal:${taskId}:` },
       ],
       [
-        { text: '❗️ Срочно', callback_data: `pri:${taskId}:u` },
-        { text: '↓ Не срочно', callback_data: `pri:${taskId}:l` },
+        { text: '❗️ Высокая', callback_data: `pri:${taskId}:u` },
+        { text: '↓ Низкая', callback_data: `pri:${taskId}:l` },
       ],
     ],
   };
@@ -602,6 +603,72 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
 
+    // --------------------------------------------- ответы автора на карточку
+    //
+    // «Оставить как есть», «Переназначить», «Отменить задачу» нажимает АВТОР, а
+    // строки адресата у него обычно нет -- поэтому ветка стоит ДО проверки
+    // «ты адресат», как и поводы выше.
+    if (action === 'keep' || action === 'ra' || action === 'cancel') {
+      if (task.author_id !== who.userId) {
+        await answerCallbackQuery(c.env, cq.id, 'Это не ваше поручение');
+        return c.json({ ok: true });
+      }
+      const chat = cq.message ? String(cq.message.chat.id) : null;
+      const msgId = cq.message ? String(cq.message.message_id) : null;
+      if (action === 'keep') {
+        await answerCallbackQuery(c.env, cq.id, 'Хорошо');
+        if (chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
+        return c.json({ ok: true });
+      }
+      if (action === 'cancel') {
+        if (task.status === 'archived') {
+          await answerCallbackQuery(c.env, cq.id, 'Уже отменена');
+          return c.json({ ok: true });
+        }
+        // Гейт -- авторство, как у подтверждения: своё поручение отменяет тот, кто его дал.
+        await applyTransition(c.env, {
+          task, to: 'archived', actorId: who.userId, action: 'deleted',
+          set: { telegram_message_id: null },
+          notify: { emoji: '🗑', label: 'Поручение отменено', deletePrevious: true },
+        });
+        await answerCallbackQuery(c.env, cq.id, 'Отменено');
+        if (chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId);
+        await drainOutbox(c.env);
+        return c.json({ ok: true });
+      }
+      // ra: без индекса -- показать список, с индексом -- переназначить.
+      const people = await reassignCandidates(c.env, who.orgId, task.author_id);
+      const pick = parts[2] ?? '';
+      if (pick === '') {
+        if (people.length === 0) {
+          await answerCallbackQuery(c.env, cq.id, 'Некому переназначить');
+          return c.json({ ok: true });
+        }
+        // ponytail: первые десять по алфавиту; поиск по имени -- когда организации перерастут экран.
+        // Индекс + хвост id: между показом и нажатием кто-то мог вступить, и
+        // позиция сдвинулась бы на другого человека.
+        const rows = people.slice(0, 10).map((p, i) => {
+          const tag = p.id.slice(0, 8);
+          return [{ text: p.name, callback_data: `ra:${task.id}:${i}:${tag}` }];
+        });
+        rows.push([{ text: '‹ Отмена', callback_data: `keep:${task.id}` }]);
+        await answerCallbackQuery(c.env, cq.id);
+        if (chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: rows });
+        return c.json({ ok: true });
+      }
+      const chosen = people.slice(0, 10)[Number(pick)];
+      if (!chosen || chosen.id.slice(0, 8) !== (parts[3] ?? '')) {
+        await answerCallbackQuery(c.env, cq.id, 'Список изменился, откройте заново');
+        return c.json({ ok: true });
+      }
+      await reassignTask(c.env, task, chosen.id, who.userId);
+      await answerCallbackQuery(c.env, cq.id, `Переназначено: ${chosen.name}`);
+      if (chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
+      await sendMessage(c.env, String(cq.from.id), `↪ «${task.title}» — теперь у ${chosen.name}. Карточка ушла.`);
+      await drainOutbox(c.env);
+      return c.json({ ok: true });
+    }
+
     // Сообщение уходит в ЛИЧКУ адресата (ADR-4), но нажать всё равно может
     // только тот, у кого есть своя строка: пересланное сообщение кнопку не
     // делает чужой.
@@ -611,24 +678,45 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
 
-    const target = action === 'accept' ? 'accepted' : action === 'done' ? 'done' : null;
-    if (!target) {
+    const chat = cq.message ? String(cq.message.chat.id) : null;
+    const msgId = cq.message ? String(cq.message.message_id) : null;
+
+    // «Не успею» и «Отказать» просят причину: следующее сообщение -- она.
+    if (action === 'late' || action === 'decline') {
+      if (mine.state !== 'pending' && mine.state !== 'accepted') {
+        await answerCallbackQuery(c.env, cq.id, 'Уже нельзя');
+        return c.json({ ok: true });
+      }
+      const st = await getState(c.env, who.userId);
+      await setState(c.env, who.userId, { ...st, await: action, task: task.id });
       await answerCallbackQuery(c.env, cq.id);
+      // В ЛИЧКУ нажавшего, а не в чат с кнопкой: карточку можно переслать в
+      // группу, а заголовок туда уходить не должен (ADR-4).
+      await sendMessage(c.env, String(cq.from.id), action === 'late'
+        ? `Почему не успеваете «${task.title}»? Напишите или наговорите одной фразой — передам автору.`
+        : `Почему отказываетесь от «${task.title}»? Напишите или наговорите причину — передам автору.`);
       return c.json({ ok: true });
     }
 
+    if (action !== 'accept' && action !== 'ack') {
+      await answerCallbackQuery(c.env, cq.id);
+      return c.json({ ok: true });
+    }
+    // «Готово» из бота нет: сдают в приложении (решение владельца). Здесь --
+    // принять и «ознакомился»; для рассылки «прочитать» accepted и есть закрытие.
     const res = await transitionAssignee(c.env, {
-      task, assignee: mine, to: target, actorId: who.userId,
-      notify: target === 'accepted'
-        ? { emoji: '🚀', label: 'В работе', track: true }
-        : { emoji: '✅', label: 'Готово', deletePrevious: true },
+      task, assignee: mine, to: 'accepted', actorId: who.userId,
+      notify: action === 'ack'
+        ? { emoji: '👁', label: 'Ознакомился' }
+        : { emoji: '🚀', label: 'Принято в работу', track: true },
     });
-    await answerCallbackQuery(c.env, cq.id, res.ok ? (target === 'accepted' ? 'Принято' : 'Отмечено готовым') : 'Уже нельзя');
+    await answerCallbackQuery(c.env, cq.id, res.ok ? (action === 'ack' ? 'Отмечено' : 'Принято') : 'Уже нельзя');
 
-    // Клавиатура гасится РОВНО ОДИН РАЗ на переход: иначе ту же кнопку можно
-    // нажать второй раз, и человек увидит «уже нельзя» на собственное действие.
-    if (res.ok && cq.message) {
-      await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
+    // Клавиатура меняется РОВНО ОДИН РАЗ на переход: остаётся только «Открыть».
+    // Иначе ту же кнопку можно нажать второй раз и увидеть «уже нельзя» на
+    // собственное действие.
+    if (res.ok && chat && msgId) {
+      await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
     }
     await drainOutbox(c.env);
     return c.json({ ok: true });
@@ -707,7 +795,16 @@ botApp.post('/webhook', async (c) => {
   //
   // Печатать приходится только то, чего бот знать не может: имя, название
   // организации или код. Всё остальное -- кнопки.
-  if (st.await && st.await !== 'fix' && text) {
+  // Кнопка меню перебивает ожидание причины «не успею» / «отказ»: человек
+  // передумал, и «Мои задачи» -- не причина. Сама причина разбирается ниже,
+  // вместе с голосом (см. хвост: там уже есть расшифровка).
+  if ((st.await === 'late' || st.await === 'decline') && (Object.values(BTN) as string[]).includes(text)) {
+    await setState(c.env, userId, { ...st, await: undefined, task: undefined });
+    st.await = undefined;
+  }
+
+  // fix/late/decline разбираются в хвосте: там фраза уже расшифрована и с голоса.
+  if (st.await && st.await !== 'fix' && st.await !== 'late' && st.await !== 'decline' && text) {
     if (st.await === 'name') {
       const ok = await setDisplayName(c.env, userId, text);
       await sendMessage(c.env, chatId, ok ? 'Имя обновлено.' : 'Слишком короткое имя.');
@@ -962,6 +1059,32 @@ botApp.post('/webhook', async (c) => {
     id: p.id, name: p.name,
     aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined,
   }));
+
+  // ------------------------------------------------ причина «не успею» / «отказ»
+  //
+  // Текстом или голосом: фраза выше уже расшифрована. Пустая расшифровка
+  // ожидание не снимает -- переспрашиваем, а не заводим черновик из тишины.
+  if ((st.await === 'late' || st.await === 'decline') && st.task) {
+    if (!phrase) {
+      await sendMessage(c.env, chat, 'Не разобрал. Напишите причину текстом.');
+      return c.json({ ok: true });
+    }
+    // Задача -- только ТЕКУЩЕЙ организации: ожидание могло пережить смену
+    // организации или отзыв членства.
+    const task = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').bind(st.task, who.orgId).first<Task>();
+    const mine = task ? await myAssignee(c.env, task.id, userId, task.org_id) : null;
+    await setState(c.env, userId, { ...st, await: undefined, task: undefined });
+    if (!task || !mine) {
+      await sendMessage(c.env, chat, 'Задача недоступна.');
+      return c.json({ ok: true });
+    }
+    const ok = st.await === 'late'
+      ? await lateAssignee(c.env, task, mine, userId, phrase)
+      : (await declineAssignee(c.env, task, mine, userId, phrase)).ok;
+    await sendMessage(c.env, chat, ok ? 'Передал автору.' : 'Уже нельзя: задача изменилась.');
+    await drainOutbox(c.env);
+    return c.json({ ok: true });
+  }
 
   // ------------------------------------------------ поправка к черновику
   //

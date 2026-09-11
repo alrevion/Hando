@@ -9,6 +9,8 @@
 // `UPDATE tasks SET ... status` вне этого файла -- падение.
 import type { Env, Task, TaskStatus } from './types';
 import { nowIso, uuid } from './db';
+import { formatWhen } from './parse';
+import type { InlineButton } from './telegram';
 
 // Колонки жизненного цикла, которые переход вправе трогать помимо status.
 // Список закрытый намеренно: переход -- не универсальный UPDATE, и title через
@@ -44,12 +46,30 @@ export type TransitionInput = {
     track?: boolean;
     // Погасить прежнее отслеживаемое сообщение перед отправкой нового.
     deletePrevious?: boolean;
-    // Инлайновые кнопки: callback_data вида "<действие>:<taskId>".
-    buttons?: { text: string; callback_data: string }[][];
+    // Инлайновые кнопки: callback_data вида "<действие>:<taskId>". «Открыть»
+    // добавляется сама -- см. buildNotification.
+    buttons?: InlineButton[][];
   };
 };
 
-const APP_URL = 'https://hando.alrevion.com';
+export const APP_URL = 'https://hando.alrevion.com';
+
+/** «Открыть» -- прямо в задачу в мини-приложении. web_app работает в личке, а уведомления по ADR-4 идут только туда. */
+export function openButton(taskId: string): InlineButton {
+  return { text: '📱 Открыть', web_app: { url: `${APP_URL}/?task=${taskId}` } };
+}
+
+/**
+ * Кнопки адресата под карточкой. «Готово» здесь нет: сдают в приложении
+ * (решение владельца). Рассылке «прочитать» хватает одного «Ознакомился».
+ */
+export function assigneeButtons(task: { id: string; kind?: string | null }): InlineButton[][] {
+  if (task.kind === 'ack') return [[{ text: '👁 Ознакомился', callback_data: `ack:${task.id}` }]];
+  return [
+    [{ text: '✅ Принять', callback_data: `accept:${task.id}` }, { text: '⏳ Не успею', callback_data: `late:${task.id}` }],
+    [{ text: '✖ Отказать', callback_data: `decline:${task.id}` }],
+  ];
+}
 
 // Текст собирается ЗДЕСЬ, а не в проходе отправки: payload обязан быть
 // самодостаточным. Иначе повторная отправка через сутки взяла бы уже изменённые
@@ -64,16 +84,22 @@ async function composeText(
   subjectId: string,
   n: NonNullable<TransitionInput['notify']>,
   deadline: string | null,
+  kind: string,
 ): Promise<string> {
   const resp = await env.DB.prepare('SELECT name, telegram_username FROM users WHERE id = ?')
     .bind(subjectId)
     .first<{ name: string; telegram_username: string | null }>();
   // @username действительно пингует в Telegram, простое имя в тексте -- нет.
   const who = resp ? (resp.telegram_username ? `@${resp.telegram_username} (${resp.name})` : resp.name) : '—';
-  const lines = [`${n.emoji} ${n.label}: "${task.title}"`, `Ответственный: ${who}`];
-  if (deadline) lines.push(`Дедлайн: ${deadline}`);
+  const org = await env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(task.org_id).first<{ timezone: string }>();
+  // Человеческий текст: тема в кавычках, срок словами в поясе организации,
+  // без ISO и без голого URL -- в задачу ведёт кнопка «Открыть».
+  const lines = [`${n.emoji} ${n.label}`, `«${task.title}»`, `${kind === 'created' ? 'От кого' : 'Кто'}: ${who}`];
+  if (deadline) lines.push(`Срок: ${formatWhen(deadline, org?.timezone ?? 'Asia/Tashkent')}`);
+  if (kind === 'created' && task.priority && task.priority !== 'medium') {
+    lines.push(`Важность: ${task.priority === 'urgent' ? 'высокая' : 'низкая'}`);
+  }
   if (n.extraLine) lines.push(n.extraLine);
-  lines.push(`${APP_URL}/?task=${task.id}`);
   return lines.join('\n');
 }
 
@@ -191,7 +217,7 @@ export async function buildNotification(
   // telegram_user_id резолвится проходом отправки.
   const payload = {
     recipient_user_id: recipientId,
-    text: await composeText(env, task, subjectId ?? recipientId, notify, deadline),
+    text: await composeText(env, task, subjectId ?? recipientId, notify, deadline, kind),
     // Гасим прежнее отслеживаемое сообщение (например «🚀 В работе») тем же
     // проходом отправки, чтобы порядок «удалить старое, отправить новое» не
     // зависел от того, чем закончился запрос.
@@ -200,7 +226,7 @@ export async function buildNotification(
     // Кнопки прикрепляются ТОЛЬКО с шага 4a: до появления входящего канала
     // нажатие крутило бы спиннер до таймаута. Предлагаем следующий шаг автомата,
     // а не все сразу -- «Принял» на уже принятой задаче ничего не значит.
-    keyboard: notify.buttons ?? null,
+    keyboard: [...(notify.buttons ?? []), [openButton(task.id)]],
   };
   return env.DB.prepare(
     `INSERT INTO notifications (id, task_id, assignee_id, org_id, kind, payload, scheduled_at)

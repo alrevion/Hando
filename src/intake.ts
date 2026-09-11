@@ -8,7 +8,7 @@ import type { Env, Task } from './types';
 import { nowIso, uuid } from './db';
 import type { Draft } from './parse';
 import { buildAssignees } from './assignees';
-import { buildNotification } from './transition';
+import { assigneeButtons, buildNotification } from './transition';
 import { storeByFileId, type Media } from './media';
 import { ensureDefaultProject } from './signup';
 
@@ -64,7 +64,7 @@ export async function createFromDraft(
   // продиктовал.
   for (const uid of draft.assigneeIds) {
     if (uid === who.userId) continue;
-    writes.push(await buildNotification(env, task, 'created', { emoji: '📌', label: 'Новая задача' }, draft.deadline, uid, who.userId));
+    writes.push(await buildNotification(env, task, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(task) }, draft.deadline, uid, who.userId));
   }
   await env.DB.batch(writes);
 
