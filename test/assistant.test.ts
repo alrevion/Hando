@@ -132,6 +132,26 @@ describe('помощник', () => {
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(1);
   });
 
+  it('спорную фразу разбирает модель -- и её ответ уважается', async () => {
+    const env = { ...(await world()), GROQ_API_KEY: 'k' };
+    const seen: string[] = [];
+    restore = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const body = String((init as { body?: string })?.body ?? '');
+      if (String(input).includes('groq')) {
+        seen.push(body);
+        return new Response(JSON.stringify({ choices: [{ message: { content: '{"intent":"ask"}' } }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+    });
+    // Ни вопросительного слова, ни «?», ни имени -- решает модель.
+    expect(await classifyIntent(env as Env, 'там с бумагой непонятно вышло', false)).toBe('ask');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('там с бумагой непонятно вышло');
+    // Имя названо -- модель не спрашиваем вовсе: лишний запрос на каждое поручение.
+    expect(await classifyIntent(env as Env, 'Азизу купить бумагу', true)).toBe('task');
+    expect(seen).toHaveLength(1);
+  });
+
   it('«Это поручение» превращает ответ в черновик той же фразой', async () => {
     const env = await world();
     tg();
