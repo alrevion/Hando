@@ -8,11 +8,11 @@ import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it } from 'vitest';
 import { botApp } from '../src/bot';
 import { apiRoutes } from '../src/routes';
-import { approveJoin, createOrg, ensureDefaultProject, ensureUser, generateJoinCode, joinByCode, pendingOrgFor, rejectJoin } from '../src/signup';
+import { approveJoin, createOrg, ensureDefaultProject, ensureUser, generateJoinCode, inviteCodeFor, joinByCode, pendingOrgFor, rejectJoin } from '../src/signup';
 import { BTN, deleteOrg, leaveOrg, myOrgs, renameOrg, switchOrg } from '../src/menu';
 import { CATEGORIES, PACKS, categoryButton, packButton } from '../src/packs';
 import { membershipRole, resolveOrgId } from '../src/auth';
-import { cookie, envWith, stubTelegram } from './fixture';
+import { cookie, envWith, ORG_A, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
 
 let restore: { mockRestore(): void } | null = null;
@@ -63,6 +63,34 @@ const approveViaBot = async (env: Env, ownerTgId: number, applicantId: string, r
 };
 
 describe('код вступления', () => {
+  it('по ссылке: сначала заявка, потом рассказ о продукте, и без «создайте организацию»', async () => {
+    // Человек пришёл по ссылке ради вступления. Ответ на СВОЁ действие он
+    // должен увидеть раньше рассказа о продукте, а звать его создавать
+    // организацию после поданной заявки -- бессмысленно.
+    const env = await envWith({
+      users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }],
+      memberships: [{ project_id: 'p1', user_id: 'boss' }],
+      projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+      tasks: [],
+    });
+    const code = (await testEnv.DB.prepare("SELECT invite_code FROM org_memberships WHERE user_id='boss'").first<{ invite_code: string | null }>())?.invite_code
+      ?? (await inviteCodeFor(env, ORG_A, 'boss'));
+    const spy = tg();
+    await hook(env, msg(9101, `/start j_${code}`));
+    await hook(env, msg(9101, 'Артём Каримов'));
+
+    const texts = sent(spy).filter((m) => m.chat_id === '9101').map((m) => m.text);
+    const hello = texts.findIndex((t) => t.startsWith('Приятно познакомиться'));
+    const request = texts.findIndex((t) => t.includes('отправлена'));
+    const tips = texts.findIndex((t) => t.startsWith('Что умеет Hando'));
+    expect(hello).toBeGreaterThanOrEqual(0);
+    expect(request).toBeGreaterThan(hello);
+    expect(tips).toBeGreaterThan(request);
+    // Главный экран не зовёт создавать организацию: заявка уже подана.
+    expect(texts.at(-1)).toContain('заявка отправлена');
+    expect(texts.at(-1)).not.toContain('создайте организацию');
+  });
+
   it('без похожих начертаний: ни 0/O, ни 1/I/L', () => {
     // Код диктуют голосом и переписывают с экрана. «Нолик или буква О» стоит
     // дороже, чем лишний символ алфавита.
