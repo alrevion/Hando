@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { botApp } from '../src/bot';
 import { apiRoutes } from '../src/routes';
 import { BTN } from '../src/menu';
-import { askAssistant } from '../src/assistant';
+import { askAssistant, plain } from '../src/assistant';
 import { cookie, envWith, ORG_A, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
 
@@ -30,6 +30,12 @@ const say = (env: Env, tgId: string, text: string) =>
   hook(env, { message: { chat: { id: tgId, type: 'private' }, from: { id: tgId, first_name: 'Ч' }, text } });
 
 describe('помощник', () => {
+  it('markdown из ответа модели снимается: Telegram показал бы звёздочки как есть', () => {
+    expect(plain('В приложении:\n- **Поручения** — что ты поручил.\n- **Задачи** — что поручили тебе.\n## Напоминания\nКод `dc`.'))
+      .toBe('В приложении:\n• Поручения — что ты поручил.\n• Задачи — что поручили тебе.\nНапоминания\nКод dc.');
+    expect(plain('2 * 3 = 6')).toBe('2 * 3 = 6');
+  });
+
   it('без модели: «за что взяться» -- порядок по сроку и важности, с уточнением', async () => {
     const env = await world();
     const a = await askAssistant(env, { userId: 'w1', orgId: ORG_A, role: 'member', name: 'Азиз' }, 'за что взяться сначала?');
