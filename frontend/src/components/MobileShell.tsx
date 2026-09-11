@@ -14,6 +14,7 @@ import { DraftsView } from './DraftsView';
 import { AllTasksView } from './AllTasksView';
 import { NotifyView } from './NotifyView';
 import { AskView } from './AskView';
+import { ArchiveView } from './ArchiveView';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TipsCard } from './TipsCard';
 
@@ -23,7 +24,7 @@ function initials(name: string): string {
 }
 
 const ROLE_LABEL: Record<string, string> = { creator: 'Владелец', super_admin: 'Руководитель', admin: 'Руководитель отдела', member: 'Участник' };
-const SUB_TITLE: Record<MoreSub, string> = { people: 'Люди', org: 'Организация', drafts: 'Черновики', all: 'Все задания', notify: 'Уведомления', ask: 'Вопрос' };
+const SUB_TITLE: Record<MoreSub, string> = { people: 'Люди', org: 'Организация', drafts: 'Черновики', all: 'Все задания', archive: 'Архив', notify: 'Уведомления', ask: 'Вопрос' };
 
 /**
  * Мобильная оболочка: четыре вкладки (раздел 22) -- Поручения · Задачи
@@ -79,6 +80,7 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
           : sub === 'org' ? <OrgView user={user} />
           : sub === 'drafts' ? <DraftsView me={user} />
           : sub === 'all' ? <AllTasksView />
+          : sub === 'archive' ? <ArchiveView user={user} />
           : sub === 'notify' ? <NotifyView user={user} />
           : <AskView />
         ) : null}

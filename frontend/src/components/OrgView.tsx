@@ -144,6 +144,11 @@ export function OrgView({ user }: { user: User }) {
           </div>
 
           <div className="card">
+            <div className="sec-title" style={{ marginTop: 0 }}>Подписка</div>
+            <p className="hint" style={{ marginTop: 0 }}>За «{org.name}» платит владелец. Сейчас всё бесплатно — оплата ещё не подключена; когда появится, тариф будет здесь.</p>
+          </div>
+
+          <div className="card">
             <div className="sec-title" style={{ marginTop: 0 }}>Удаление</div>
             <p className="hint" style={{ marginTop: 0 }}>Задачи и история сохранятся, но организация исчезнет у всех её сотрудников. Для подтверждения нужно ввести её название.</p>
             <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>

@@ -1,7 +1,7 @@
-import { ChevronRight, Building2, FileText, HelpCircle, Layers, UserRound, Users, Bell } from 'lucide-react';
+import { Archive, ChevronRight, Building2, FileText, HelpCircle, Layers, UserRound, Users, Bell } from 'lucide-react';
 import type { User } from '../types';
 
-export type MoreSub = 'people' | 'org' | 'drafts' | 'all' | 'notify' | 'ask';
+export type MoreSub = 'people' | 'org' | 'drafts' | 'all' | 'archive' | 'notify' | 'ask';
 
 /** «Ещё»: то, куда ходят раз в день, а не каждые пять минут. */
 export function MoreView({ user, onOpen, onProfile }: { user: User; onOpen: (sub: MoreSub) => void; onProfile: () => void }) {
@@ -12,6 +12,7 @@ export function MoreView({ user, onOpen, onProfile }: { user: User; onOpen: (sub
     { key: 'org', title: 'Организация', hint: 'Название, график, сводка, ссылка-приглашение', icon: Building2 },
     { key: 'drafts', title: 'Черновики', hint: 'Продиктовано, но не подтверждено', icon: FileText },
     ...(boss ? [{ key: 'all' as const, title: 'Все задания', hint: 'Обзор вашего поддерева', icon: Layers }] : []),
+    { key: 'archive', title: 'Архив', hint: 'Сданное и закрытое, с журналом', icon: Archive },
     { key: 'notify', title: 'Уведомления', hint: 'Режим и «за сколько минут»', icon: Bell },
     { key: 'ask', title: 'Вопрос', hint: 'Как пользоваться и за что взяться', icon: HelpCircle },
   ];
