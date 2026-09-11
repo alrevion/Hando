@@ -29,11 +29,11 @@ import {
 import { categoryByButton, packByButton } from './packs';
 import {
   askNameScreen, BTN, getState, isOnboarded, categoryScreen, industryScreen, mainScreen, myOrgs, orgsScreen, setDisplayName,
-  setState, switchOrg, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner, askScreen, START_TIPS } from './menu';
+  setState, switchOrg, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner, START_TIPS } from './menu';
 import { download, extractMedia } from './media';
-import { formatWhen, parseTask, refineDraft, transcribe, localIso, localToday } from './parse';
+import { formatWhen, parseTask, refineDraft, transcribe, localIso, localToday, matchPeople } from './parse';
 import { dayEnd, hm, loadSchedule, localHm, type OrgSchedule } from './schedule';
-import { askAssistant } from './assistant';
+import { askAssistant, classifyIntent } from './assistant';
 import { assignableMembers } from './hierarchy';
 import { APP_URL } from './transition';
 import { membershipRole, resolveOrgId } from './auth';
@@ -443,6 +443,30 @@ botApp.post('/webhook', async (c) => {
       if (ok && applicant?.telegram_user_id) {
         await sendMessage(c.env, applicant.telegram_user_id, `Вас приняли в отдел «${dept?.name ?? '-'}». /moe -- ваши задачи.`);
       }
+      return c.json({ ok: true });
+    }
+
+    // ------------------------------------- «это всё-таки поручение»
+    //
+    // Бот принял фразу за вопрос и ответил. Одно нажатие -- и та же фраза
+    // становится черновиком: цена ошибки разбора ровно такая.
+    if (action === 'as_task') {
+      const st = await getState(c.env, who.userId);
+      const said = st.said;
+      if (!said) {
+        await answerCallbackQuery(c.env, cq.id, 'Фраза потерялась');
+        return c.json({ ok: true });
+      }
+      const sched = await loadSchedule(c.env, who.orgId);
+      const org = await c.env.DB.prepare('SELECT industry_pack FROM orgs WHERE id = ?').bind(who.orgId).first<{ industry_pack: string }>();
+      const people = await assignableMembers(c.env, who.orgId, who.userId, who.role);
+      const roster = people.map((p) => ({ id: p.id, name: p.name, aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined }));
+      const draft = await parseTask(c.env, said, roster, who.userId, sched.timezone, new Date(), org?.industry_pack, dayEnd(sched));
+      const row = await saveDraft(c.env, who, draft, said, []);
+      await setState(c.env, who.userId, { ...st, said: undefined });
+      await answerCallbackQuery(c.env, cq.id, 'Завёл черновик');
+      if (cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
+      await renderDraft(c.env, row, String(cq.message?.chat.id ?? who.userId), sched.timezone);
       return c.json({ ok: true });
     }
 
@@ -898,13 +922,13 @@ botApp.post('/webhook', async (c) => {
   // Кнопка меню перебивает ожидание причины «не успею» / «отказ»: человек
   // передумал, и «Мои задачи» -- не причина. Сама причина разбирается ниже,
   // вместе с голосом (см. хвост: там уже есть расшифровка).
-  if ((st.await === 'late' || st.await === 'decline' || st.await === 'ask') && (Object.values(BTN) as string[]).includes(text)) {
+  if ((st.await === 'late' || st.await === 'decline') && (Object.values(BTN) as string[]).includes(text)) {
     await setState(c.env, userId, { ...st, await: undefined, task: undefined, ask: undefined });
     st.await = undefined;
   }
 
   // fix/late/decline разбираются в хвосте: там фраза уже расшифрована и с голоса.
-  if (st.await && st.await !== 'fix' && st.await !== 'late' && st.await !== 'decline' && st.await !== 'ask' && text) {
+  if (st.await && st.await !== 'fix' && st.await !== 'late' && st.await !== 'decline' && text) {
     if (st.await === 'new') {
       // Название запомнили, теперь профиль: он решает, какие отделы завести.
       await show(c.env, chatId, userId, categoryScreen(text.slice(0, 60)));
@@ -1069,9 +1093,6 @@ botApp.post('/webhook', async (c) => {
       await sendMessage(c.env, chatId, 'В какой час присылать сводку? Напишите, например: 08:30');
       return c.json({ ok: true });
     }
-    case BTN.ask:
-      await show(c.env, chatId, userId, askScreen());
-      return c.json({ ok: true });
     case BTN.invite: {
       if (!current) return c.json({ ok: true });
       const code = await inviteCodeFor(c.env, current.id, userId);
@@ -1158,20 +1179,6 @@ botApp.post('/webhook', async (c) => {
     aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined,
   }));
 
-  // ------------------------------------------------ вопрос помощнику
-  //
-  // Пока человек в диалоге, каждая фраза -- вопрос, а не поручение. Голос
-  // расшифрован выше. История -- в состоянии, чтобы уточнения работали.
-  if (st.await === 'ask') {
-    if (!phrase) return c.json({ ok: true });
-    const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
-    const history = st.ask ?? [];
-    const answer = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
-    await sendMessage(c.env, chat, answer);
-    await setState(c.env, userId, { ...st, ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: answer }].slice(-6) });
-    return c.json({ ok: true });
-  }
-
   // ------------------------------------------------ причина «не успею» / «отказ»
   //
   // Текстом или голосом: фраза выше уже расшифрована. Пустая расшифровка
@@ -1233,6 +1240,25 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     await sendMessage(c.env, chat, 'Что с этим сделать? Напишите подпись — я заведу черновик и приложу файл.');
+    return c.json({ ok: true });
+  }
+
+  // ------------------------------------------------ вопрос, просьба или поручение
+  //
+  // Режима «Вопрос» больше нет: одна строка ввода принимает всё, а решает
+  // СМЫСЛ фразы. Вопрос -- отвечаем; просьба к боту («удали», «напомни») --
+  // выполняем; остальное -- поручение, то есть черновик. Ошибка стоит одного
+  // нажатия: под ответом висит «Это поручение», под черновиком -- «Отменить».
+  const named = matchPeople(phrase, roster).ids.length > 0;
+  if (await classifyIntent(c.env, phrase, named) === 'ask') {
+    const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
+    const history = st.ask ?? [];
+    const answer = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
+    await sendMessage(c.env, chat, answer, { inline_keyboard: [[{ text: '📌 Это поручение', callback_data: 'as_task' }]] });
+    await setState(c.env, userId, {
+      ...st, said: phrase,
+      ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: answer }].slice(-6),
+    });
     return c.json({ ok: true });
   }
 

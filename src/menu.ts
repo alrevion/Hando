@@ -37,14 +37,15 @@ export const BTN = {
   digestOff: '📰 Сводка: выключить',
   digestTime: '🕘 Час сводки',
   invite: '🔗 Ссылка-приглашение',
-  ask: '❓ Вопрос',
 } as const;
 
 /** Что бот ждёт следующим сообщением, и на каком экране человек находится. */
 export type BotState = {
-  await?: 'name' | 'new' | 'pack' | 'join' | 'fix' | 'late' | 'decline' | 'digest_time' | 'ask';
+  await?: 'name' | 'new' | 'pack' | 'join' | 'fix' | 'late' | 'decline' | 'digest_time';
   /** Последние реплики диалога с помощником -- чтобы уточнения работали. */
   ask?: { role: 'user' | 'assistant'; text: string }[];
+  /** Последняя фраза, на которую бот ответил как на вопрос: её превращает в черновик кнопка «Это поручение». */
+  said?: string;
   /** Черновик, который ждёт правку после «Изменить». */
   fix?: string;
   /** Задача, по которой ждём причину «не успею» / «отказ». */
@@ -87,7 +88,11 @@ export async function getState(env: Env, userId: string): Promise<BotState> {
   const row = await env.DB.prepare('SELECT bot_state FROM users WHERE id = ?').bind(userId).first<{ bot_state: string | null }>();
   if (!row?.bot_state) return {};
   try {
-    return JSON.parse(row.bot_state) as BotState;
+    const st = JSON.parse(row.bot_state) as BotState;
+    // Режим «Вопрос» убран, но состояние людей пережило выкладку: оставить его
+    // как есть значило бы, что следующая фраза поедет в ветку кода вступления.
+    if ((st.await as string | undefined) === 'ask') delete st.await;
+    return st;
   } catch {
     return {};
   }
@@ -136,16 +141,15 @@ export function mainScreen(name: string, orgs: OrgRow[]): Screen {
   const current = orgs.find((o) => o.is_current) ?? orgs[0];
   const boss = current.role === 'creator' || current.role === 'super_admin';
   return {
-    text: `Сейчас Вы в «${current.name}».\n\nНапишите или наговорите поручение — я поставлю задачу.`,
+    text: `Сейчас Вы в «${current.name}».\n\nПишите или наговаривайте как есть: поручение — заведу черновик, вопрос — отвечу, просьбу («удали…», «напомни…») — выполню.`,
     keyboard: kb(
       [
         boss ? [{ text: BTN.assigned }, { text: BTN.tasks }] : [{ text: BTN.tasks }, { text: BTN.assigned }],
         // Черновики -- то, что продиктовано, но не подтверждено. Они не
-        // пропадают, и кнопка нужна, чтобы к ним вернуться. «Вопрос» -- помощник.
-        [{ text: BTN.drafts }, { text: BTN.ask }],
-        // Профиля и подписки в боте нет (раздел 18): имя, организации и всё
-        // «редкое» -- в приложении. Здесь остаётся то, что делается одной кнопкой.
-        [{ text: BTN.orgs }],
+        // пропадают, и кнопка нужна, чтобы к ним вернуться. Кнопки «Вопрос»
+        // здесь нет намеренно: вопрос отличается от поручения смыслом фразы, а
+        // не режимом, в который человек обязан сначала войти.
+        [{ text: BTN.drafts }, { text: BTN.orgs }],
       ],
       'Поручение или сообщение…',
     ),
@@ -254,21 +258,13 @@ export function settingsScreen(prefs: NotifyPrefs, org: OrgSchedule & { name: st
   return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'settings' } };
 }
 
-/** Экран диалога с помощником: любой текст или голос -- вопрос, «Назад» -- выход. */
-export function askScreen(): Screen {
-  return {
-    text: 'Спросите что угодно: «как отметить выполненную?», «за что взяться сначала?», «что у меня горит на неделе?». Можно голосом.',
-    keyboard: kb([[{ text: BTN.back }]], 'Ваш вопрос…'),
-    state: { screen: 'main', await: 'ask', ask: [] },
-  };
-}
-
 /** Тезисы для /start и /help (раздел 23): что умеет и куда нажимать. */
 export const START_TIPS = [
   'Что умеет Hando:',
   '• Напишите или наговорите поручение — «Азизу завтра до трёх подготовить отчёт». Я покажу черновик, вы нажмёте «Создать».',
   '• Адресат получит карточку и ответит кнопками: Принять · Не успею · Отказать.',
   '• Напомню за час и в срок, а утром пришлю сводку на день.',
+  '• Спросите что угодно прямо здесь: «за что взяться?», «как отметить выполненную?». Попросите — удалю задачу или напомню исполнителю.',
   '• Сдать работу, увидеть этапы, людей и аналитику — в приложении.',
 ].join('\n');
 

@@ -14,7 +14,7 @@ export function MoreView({ user, onOpen, onProfile }: { user: User; onOpen: (sub
     ...(boss ? [{ key: 'all' as const, title: 'Все задания', hint: 'Обзор вашего поддерева', icon: Layers }] : []),
     { key: 'archive', title: 'Архив', hint: 'Сданное и закрытое, с журналом', icon: Archive },
     { key: 'notify', title: 'Уведомления', hint: 'Режим и «за сколько минут»', icon: Bell },
-    { key: 'ask', title: 'Вопрос', hint: 'Как пользоваться и за что взяться', icon: HelpCircle },
+    { key: 'ask', title: 'Вопрос', hint: 'Спросить, попросить удалить или напомнить', icon: HelpCircle },
   ];
   return (
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">

@@ -1,10 +1,10 @@
-// Помощник «Вопрос» -- шаг 6 (раздел 23) -- и тезисы /start -- шаг 7.
+// Помощник -- шаг 6 (раздел 23) -- и тезисы /start -- шаг 7. Кнопки «Вопрос»
+// нет: бот сам решает по смыслу фразы, вопрос это, просьба или поручение.
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { botApp } from '../src/bot';
 import { apiRoutes } from '../src/routes';
-import { BTN } from '../src/menu';
-import { askAssistant, plain } from '../src/assistant';
+import { askAssistant, classifyIntent, plain } from '../src/assistant';
 import { cookie, envWith, ORG_A, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
 
@@ -90,18 +90,67 @@ describe('помощник', () => {
     expect((await testEnv.DB.prepare("SELECT status FROM tasks WHERE id='t2'").first<{ status: string }>())!.status).toBe('archived');
   });
 
-  it('бот: «Вопрос» открывает диалог, фраза -- вопрос, а не поручение; «Назад» выходит', async () => {
+  it('бот сам отличает вопрос от поручения -- без всяких кнопок', async () => {
     const env = await world();
     const spy = tg();
-    await say(env, 'tg-w1', BTN.ask);
+    // Вопрос: отвечаем и НЕ заводим черновик.
     await say(env, 'tg-w1', 'за что взяться?');
-    expect(sent(spy).at(-1)!.text).toContain('1. «Сдать отчёт»');
+    const answer = sent(spy).at(-1)!;
+    expect(answer.text).toContain('1. «Сдать отчёт»');
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
+    // Под ответом -- выход на случай промаха разбора.
+    expect(answer.reply_markup!.inline_keyboard![0][0].text).toBe('📌 Это поручение');
     const st = await testEnv.DB.prepare("SELECT bot_state FROM users WHERE id='w1'").first<{ bot_state: string }>();
     expect(JSON.parse(st!.bot_state).ask).toHaveLength(2);
-    await say(env, 'tg-w1', BTN.back);
+
+    // Поручение сразу после вопроса: режима выходить не надо, черновик заводится.
     await say(env, 'tg-w1', 'Азизу купить скрепки');
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(1);
+  });
+
+  it('намерение: вопрос, просьба к боту и поручение -- врозь', async () => {
+    const env = await world();
+    // Просьба к боту: кириллическая граница слова, на которой ломался \\b.
+    expect(await classifyIntent(env, 'напомни про отчёт', false)).toBe('ask');
+    expect(await classifyIntent(env, 'Удали задачу про бумагу', false)).toBe('ask');
+    expect(await classifyIntent(env, 'как отметить выполненную', false)).toBe('ask');
+    expect(await classifyIntent(env, 'что у меня на сегодня', false)).toBe('ask');
+    expect(await classifyIntent(env, 'успею до пятницы?', false)).toBe('ask');
+    // Поручения: имя названо -- вопросительный знак не в счёт.
+    expect(await classifyIntent(env, 'Азизу подготовить отчёт?', true)).toBe('task');
+    expect(await classifyIntent(env, 'купить бумагу до пятницы', false)).toBe('task');
+    // «Напоминание» -- не «напомни»: слово длиннее, и это поручение.
+    expect(await classifyIntent(env, 'Напоминание сделать отчёт', false)).toBe('task');
+  });
+
+  it('состояние старого режима «Вопрос» не превращает фразу в код вступления', async () => {
+    const env = await world();
+    const spy = tg();
+    await testEnv.DB.prepare("UPDATE users SET bot_state = ? WHERE id='w1'").bind(JSON.stringify({ screen: 'main', await: 'ask', ask: [] })).run();
+    await say(env, 'tg-w1', 'Азизу купить скрепки');
+    expect(sent(spy).at(-1)!.text).toContain('Черновик');
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(1);
+  });
+
+  it('«Это поручение» превращает ответ в черновик той же фразой', async () => {
+    const env = await world();
+    tg();
+    await say(env, 'tg-w1', 'что сделать с отчётом для налоговой?');
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
+    await hook(env, { callback_query: { id: 'c1', from: { id: 'tg-w1' }, data: 'as_task', message: { chat: { id: 'tg-w1', type: 'private' }, message_id: 7 } } });
+    const row = await testEnv.DB.prepare('SELECT title, heard FROM drafts').first<{ title: string; heard: string }>();
+    expect(row!.heard).toBe('что сделать с отчётом для налоговой?');
+  });
+
+  it('просьба к боту выполняется: «напомни …» толкает исполнителя', async () => {
+    const env = await world();
+    const spy = tg();
+    await testEnv.DB.prepare("INSERT INTO reminders (assignee_row_id, kind, sent_at) SELECT id, 'not_accepted', '2026-09-11T06:00:00.000Z' FROM task_assignees WHERE task_id='t1'").run();
+    await say(env, 'tg-boss', 'напомни про Сдать отчёт');
+    expect(sent(spy).at(-1)!.text).toContain('Напомню исполнителям: «Сдать отчёт»');
+    // Журнал очищен -- ближайший проход cron напомнит заново.
+    expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM reminders WHERE kind='not_accepted'").first<{ n: number }>())!.n).toBe(0);
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
   });
 
   it('API: POST /ask отвечает по своим задачам', async () => {
