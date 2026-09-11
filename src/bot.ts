@@ -1244,7 +1244,7 @@ botApp.post('/webhook', async (c) => {
       if (updated) await renderDraft(c.env, updated, chat, tz);
       return c.json({ ok: true });
     }
-    await sendMessage(c.env, chat, 'Что с этим сделать? Напишите подпись — я заведу черновик и приложу файл.');
+    await sendMessage(c.env, chat, 'Что с этим сделать? Напишите подпись — я заведу черновик и приложу файл.\n\nЕсли файл к уже созданной задаче — откройте приложение, задачу и нажмите «Прикрепить файл».');
     return c.json({ ok: true });
   }
 

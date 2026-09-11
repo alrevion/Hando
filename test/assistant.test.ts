@@ -108,6 +108,13 @@ describe('помощник', () => {
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(1);
   });
 
+  it('руководство отвечает про файлы: до подтверждения -- к черновику, после -- в приложении', async () => {
+    const env = await world();
+    const a = await askAssistant(env, { userId: 'w1', orgId: ORG_A, role: 'member', name: 'Азиз' }, 'как прикрепить фото к задаче?');
+    expect(a).toContain('Прикрепить файл');
+    expect(a).toContain('черновик');
+  });
+
   it('намерение: вопрос, просьба к боту и поручение -- врозь', async () => {
     const env = await world();
     // Просьба к боту: кириллическая граница слова, на которой ломался \\b.
