@@ -1,0 +1,28 @@
+# Отдельный проект compose: `docker compose -p embed`. Имена, тома и сеть свои,
+# контейнеры Evi (evi-core-1, evi-tts-1) не затрагиваются вовсе.
+services:
+  embed:
+    build: .
+    image: embed:local
+    container_name: embed-1
+    restart: unless-stopped
+    # Только петля: наружу -- через туннель и с токеном, не портом в интернет.
+    ports: ["127.0.0.1:8088:8088"]
+    environment:
+      # Реестр fastembed 0.5.1 знает из многоязычных только эти три:
+      #   paraphrase-multilingual-MiniLM-L12-v2  384  0.22 ГБ  14 мс
+      #   paraphrase-multilingual-mpnet-base-v2  768  1.0 ГБ   35 мс
+      #   intfloat/multilingual-e5-large        1024  2.24 ГБ  (узбекский)
+      # e5-small и LaBSE в реестре ОТСУТСТВУЮТ -- проверено на машине.
+      EMBED_MODEL: ${EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      EMBED_TOKEN: ${EMBED_TOKEN:-}
+    volumes: ["embed-cache:/data"]
+    # Потолок памяти: на двух ядрах рядом с Evi важно, чтобы эмбеддер не съел всё.
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8088/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  embed-cache: {}
