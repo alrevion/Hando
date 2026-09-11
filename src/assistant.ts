@@ -8,6 +8,7 @@ import { nowIso } from './db';
 import { loadSchedule } from './schedule';
 import { applyTransition } from './transition';
 import { drainOutbox } from './outbox';
+import { recallAnswer, rememberAnswer } from './semantic';
 import type { Task } from './types';
 
 const GROQ = 'https://api.groq.com/openai/v1';
@@ -138,8 +139,40 @@ export function plain(text: string): string {
     .trim();
 }
 
+/** Просьба сделать, а не объяснить: такое из памяти отдавать нельзя -- надо выполнять. */
+const ACTION_ASK = /(удали|убери|отмени|снеси|сотри|напомни|поторопи|подтолкни)/i;
+
+/**
+ * Не просочилось ли личное в ответ, который модель назвала общим. Вторая
+ * проверка после самой модели: в общую память идут только ответы про
+ * устройство Hando, и цена ошибки тут -- чужие задачи у постороннего.
+ */
+function isGeneral(answer: string, tasks: TaskLine[]): boolean {
+  const low = answer.toLowerCase();
+  for (const t of tasks) {
+    if (t.title.length >= 4 && low.includes(t.title.toLowerCase())) return false;
+    const firstName = t.who.split(/\s+/)[0]?.toLowerCase() ?? '';
+    if (firstName.length >= 3 && low.includes(firstName)) return false;
+  }
+  return true;
+}
+
 export async function askAssistant(env: Env, who: AskWho, question: string, history: AskTurn[] = []): Promise<string> {
   const tasks = await myTasks(env, who);
+
+  // ПАМЯТЬ ПО СМЫСЛУ. Вопрос про устройство Hando один и тот же у всех, сколько
+  // бы разными словами его ни задавали: «как отметить выполненную» и «где
+  // нажать что задача готова» -- 0.93 по замеру. Просьбы сделать (удали,
+  // напомни) сюда не заходят: их надо выполнять, а не пересказывать.
+  //
+  // Продолжение диалога тоже мимо: «а если он откажется?» без предыдущей
+  // реплики значит другое.
+  const reusable = history.length === 0 && !ACTION_ASK.test(question);
+  if (reusable) {
+    const known = await recallAnswer(env, question);
+    if (known) return known;
+  }
+
   if (!env.GROQ_API_KEY) return fallback(env, who, question, tasks);
   const roleRu = who.role === 'creator' ? 'владелец' : who.role === 'member' ? 'участник' : 'руководитель отдела';
   const context = tasks.length
@@ -147,7 +180,7 @@ export async function askAssistant(env: Env, who: AskWho, question: string, hist
     : '(задач нет)';
   const system = [
     'Ты -- помощник в Hando, отвечаешь по-русски, коротко и по делу, как коллега.',
-    'ФОРМАТ ОТВЕТА: строго JSON {"reply": "...", "delete": ["id", ...], "remind": ["id", ...]}. reply -- обычный текст для Telegram без разметки: ни звёздочек, ни подчёркиваний, ни решёток, ни обратных кавычек; списки -- строками с «•». delete -- id задач, которые человек ПРЯМО попросил удалить/убрать/отменить; remind -- id, по которым просят напомнить или поторопить исполнителя; оба поля иначе пустые. Трогать можно только задачи с «автор: я»; если просьба неоднозначна -- уточни в reply и оставь массивы пустыми. Не описывай, как сделать руками то, что можешь сделать сам.',
+    'ФОРМАТ ОТВЕТА: строго JSON {"reply": "...", "delete": ["id", ...], "remind": ["id", ...], "general": true|false}. reply -- обычный текст для Telegram без разметки: ни звёздочек, ни подчёркиваний, ни решёток, ни обратных кавычек; списки -- строками с «•». delete -- id задач, которые человек ПРЯМО попросил удалить/убрать/отменить; remind -- id, по которым просят напомнить или поторопить исполнителя; оба поля иначе пустые. general -- true, если ответ объясняет устройство Hando и годится ЛЮБОМУ пользователю; false, если он опирается на задачи этого человека, называет их или его коллег. Трогать можно только задачи с «автор: я»; если просьба неоднозначна -- уточни в reply и оставь массивы пустыми. Не описывай, как сделать руками то, что можешь сделать сам.',
     'Два дела: (1) объяснить, как пользоваться Hando -- строго по руководству ниже, не выдумывай кнопок; (2) помочь спланировать -- по задачам человека ниже. Если для плана не хватает данных (сколько займёт, что важнее), задай ОДИН уточняющий вопрос, а не гадай.',
     `Человек: ${who.name}, роль: ${roleRu}.`,
     'РУКОВОДСТВО:\n' + MANUAL,
@@ -178,8 +211,10 @@ export async function askAssistant(env: Env, who: AskWho, question: string, hist
     let reply = '';
     let ids: string[] = [];
     let nudge: string[] = [];
+    let general = false;
     try {
-      const parsed = JSON.parse(raw) as { reply?: string; delete?: unknown; remind?: unknown };
+      const parsed = JSON.parse(raw) as { reply?: string; delete?: unknown; remind?: unknown; general?: unknown };
+      general = parsed.general === true;
       reply = typeof parsed.reply === 'string' ? parsed.reply : '';
       const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
       ids = list(parsed.delete);
@@ -194,7 +229,12 @@ export async function askAssistant(env: Env, who: AskWho, question: string, hist
     if (done.length) lines.push(`Удалено: ${done.map((t) => `«${t}»`).join(', ')}.`);
     if (pushed.length) lines.push(`Напомню исполнителям: ${pushed.map((t) => `«${t}»`).join(', ')}.`);
     if (lines.length > 1) return lines.filter(Boolean).join('\n\n');
-    return text || fallback(env, who, question, tasks);
+    if (!text) return fallback(env, who, question, tasks);
+    // В общую память -- только объяснения устройства: модель пометила ответ
+    // общим, и код отдельно убедился, что ни одной задачи и ни одного имени в
+    // нём нет.
+    if (reusable && general && isGeneral(text, tasks)) await rememberAnswer(env, question, text);
+    return text;
   } catch {
     return fallback(env, who, question, tasks);
   }

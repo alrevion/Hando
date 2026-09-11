@@ -9,6 +9,7 @@ describe('тестовая база — настоящая D1', () => {
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'd1_%' ORDER BY name",
     ).all<{ name: string }>();
     expect(results.map((r: { name: string }) => r.name)).toEqual([
+      'answer_cache',
       'attachments',
       'drafts',
       'events',

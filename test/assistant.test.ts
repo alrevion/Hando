@@ -152,6 +152,62 @@ describe('помощник', () => {
     expect(seen).toHaveLength(1);
   });
 
+  it('память ответов: тот же по смыслу вопрос отдаётся без модели, личное не запоминается', async () => {
+    // Эмбеддер подделан: два «похожих» вопроса дают близкие векторы, третий -- далёкий.
+    const vecs: Record<string, number[]> = {
+      'как отметить выполненную?': [1, 0, 0],
+      'где нажать что задача готова': [0.97, 0.24, 0],
+      'за что взяться сначала?': [0, 1, 0],
+    };
+    const env = { ...(await world()), GROQ_API_KEY: 'k', EMBED_URL: 'http://embed.local', EMBED_TOKEN: 't' };
+    let llm = 0;
+    restore = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = JSON.parse(String((init as { body?: string })?.body ?? '{}')) as { texts?: string[] };
+      if (url.includes('embed.local')) {
+        const v = vecs[body.texts![0]] ?? [0, 0, 1];
+        return new Response(JSON.stringify({ model: 'mini', dim: 3, vectors: [v] }), { status: 200 });
+      }
+      if (url.includes('groq')) {
+        llm += 1;
+        const personal = llm > 1;
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(personal
+          ? { reply: 'Начните со «Сдать отчёт».', general: false }
+          : { reply: 'Откройте Задачи и нажмите «Готово».', general: true }) } }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+    });
+    const me = { userId: 'w1', orgId: ORG_A, role: 'member' as const, name: 'Азиз' };
+
+    // Первый раз -- модель, ответ общий, значит запоминается.
+    expect(await askAssistant(env, me, 'как отметить выполненную?')).toContain('«Готово»');
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM answer_cache').first<{ n: number }>())!.n).toBe(1);
+
+    // Другими словами про то же -- из памяти, модель не тревожим.
+    expect(await askAssistant(env, me, 'где нажать что задача готова')).toContain('«Готово»');
+    expect(llm).toBe(1);
+    expect((await testEnv.DB.prepare('SELECT hits FROM answer_cache').first<{ hits: number }>())!.hits).toBe(1);
+
+    // Далёкий вопрос -- снова модель; ответ личный, в общую память не идёт.
+    expect(await askAssistant(env, me, 'за что взяться сначала?')).toContain('Сдать отчёт');
+    expect(llm).toBe(2);
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM answer_cache').first<{ n: number }>())!.n).toBe(1);
+  });
+
+  it('эмбеддер недоступен -- помощник отвечает как обычно', async () => {
+    const env = { ...(await world()), GROQ_API_KEY: 'k', EMBED_URL: 'http://embed.local' };
+    restore = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('embed.local')) throw new Error('сервер лежит');
+      if (url.includes('groq')) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply: 'Ответ модели.', general: true }) } }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+    });
+    expect(await askAssistant(env, { userId: 'w1', orgId: ORG_A, role: 'member', name: 'Азиз' }, 'как удалить организацию?')).toBe('Ответ модели.');
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM answer_cache').first<{ n: number }>())!.n).toBe(0);
+  });
+
   it('память намерения: та же фраза второй раз до модели не доходит', async () => {
     const env = { ...(await world()), GROQ_API_KEY: 'k' };
     let calls = 0;

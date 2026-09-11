@@ -145,6 +145,9 @@ export interface Env {
   // vars, чтобы менять их без выкладки кода. Пустой ключ = разбор работает
   // только паттернами, а не падает: см. parseTask.
   GROQ_API_KEY: string;
+  /** Эмбеддер на Ampere: без него помощник просто всегда спрашивает модель. */
+  EMBED_URL?: string;
+  EMBED_TOKEN?: string;
   GROQ_STT_MODEL: string;
   GROQ_LLM_MODEL: string;
 }
