@@ -619,6 +619,7 @@ apiRoutes.post('/drafts/:id/confirm', async (c) => {
     row = res.row;
   }
 
+  if (row.title.trim().length < 2) return c.json({ error: 'Напишите тему — чего это касается', code: 'NO_TITLE' }, 400);
   // Адресаты перепроверяются при подтверждении: с момента разбора кого-то
   // могли заморозить или отозвать.
   if (!(await draftAssignable(c.env, row))) return c.json({ error: 'Кому-то из адресатов сейчас поручать нельзя', code: 'NOT_ASSIGNABLE' }, 409);

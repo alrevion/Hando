@@ -493,6 +493,12 @@ botApp.post('/webhook', async (c) => {
       const msgId = cq.message ? String(cq.message.message_id) : null;
 
       if (action === 'dc') {
+        // Пустая тема -- нечего создавать: такой черновик рождается из файла
+        // без подписи и ждёт фразу.
+        if (row.title.trim().length < 2) {
+          await answerCallbackQuery(c.env, cq.id, 'Сначала напишите, чего это касается');
+          return c.json({ ok: true });
+        }
         // Самая главная кнопка: только она превращает черновик в поручение.
         // Адресаты перепроверяются здесь: с момента разбора кого-то могли
         // заморозить или отозвать.
@@ -1244,7 +1250,17 @@ botApp.post('/webhook', async (c) => {
       if (updated) await renderDraft(c.env, updated, chat, tz);
       return c.json({ ok: true });
     }
-    await sendMessage(c.env, chat, 'Что с этим сделать? Напишите подпись — я заведу черновик и приложу файл.\n\nЕсли файл к уже созданной задаче — откройте приложение, задачу и нажмите «Прикрепить файл».');
+    // Черновика нет -- заводим его прямо сейчас, с файлом и пустой темой.
+    //
+    // Правило владельца: присланный после создания задачи файл -- это уже
+    // НОВАЯ задача. Раньше бот просил подпись и ничего не создавал, и файл
+    // висел в чате сам по себе; теперь он сразу лежит в черновике, который
+    // видно и в «Черновиках», а карточка спрашивает, чего он касается.
+    const row = await saveDraft(c.env, who, {
+      title: '', assigneeIds: [], deadline: null, priority: 'medium',
+      priorityExplicit: false, kind: 'single', source: 'pattern', ambiguous: [],
+    }, '', [media]);
+    await renderDraft(c.env, row, chat, tz, true);
     return c.json({ ok: true });
   }
 

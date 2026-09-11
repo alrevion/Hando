@@ -286,13 +286,17 @@ describe('бот: поручение из фразы, из фото и из кр
     expect(att).toMatchObject({ filename: 'photo.jpg', mime_type: 'image/jpeg' });
   });
 
-  it('файл без подписи: спрашиваем, а не выдумываем задачу', async () => {
+  it('файл без подписи заводит черновик и спрашивает, чего он касается', async () => {
+    // Правило владельца: файл, присланный после создания задачи, -- это уже
+    // НОВАЯ задача. Раньше бот просил подпись и не создавал ничего, и файл
+    // оставался висеть в чате сам по себе.
     const env = await world();
     const spy = tg();
-    await hook(env, { message: { chat: { id: 'tg-boss', type: 'private' }, from, document: { file_id: 'd1', file_size: 100, file_name: 'смета.xlsx' } } });
-    expect(sent(spy).join(' ')).toContain('Что с этим сделать');
-    const { n } = (await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM tasks').first<{ n: number }>())!;
-    expect(n).toBe(0);
+    await hook(env, { message: { chat: { id: 'tg-boss', type: 'private' }, from: { id: 'tg-boss', first_name: 'Д' }, photo: [{ file_id: 'ph1', file_size: 1000 }] } });
+    const row = await testEnv.DB.prepare('SELECT title, media FROM drafts').first<{ title: string; media: string }>();
+    expect(row!.title).toBe('');
+    expect(JSON.parse(row!.media)).toHaveLength(1);
+    expect(sent(spy).at(-1)).toContain('чего это касается');
   });
 
   it('кружочек больше 20 МБ: говорим прямо, а не молчим', async () => {

@@ -108,11 +108,22 @@ describe('помощник', () => {
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(1);
   });
 
-  it('руководство отвечает про файлы: до подтверждения -- к черновику, после -- в приложении', async () => {
+  it('без модели отвечает разделом по теме, а не всем руководством', async () => {
     const env = await world();
-    const a = await askAssistant(env, { userId: 'w1', orgId: ORG_A, role: 'member', name: 'Азиз' }, 'как прикрепить фото к задаче?');
-    expect(a).toContain('Прикрепить файл');
-    expect(a).toContain('черновик');
+    const me = { userId: 'w1', orgId: ORG_A, role: 'member' as const, name: 'Азиз' };
+    const files = await askAssistant(env, me, 'как прикрепить фото к задаче?');
+    expect(files).toContain('Прикрепить файл');
+    expect(files).not.toContain('Календарь.');   // чужие разделы в ответ не лезут
+
+    expect(await askAssistant(env, me, 'как отметить выполненную?')).toContain('«Готово»');
+    expect(await askAssistant(env, me, 'кто видит мои задачи?')).toContain('Владелец видит всё');
+    expect(await askAssistant(env, me, 'как пригласить сотрудника?')).toContain('ссылка-приглашение');
+    expect(await askAssistant(env, me, 'куда делась выполненная задача?')).toContain('Архив');
+    expect(await askAssistant(env, me, 'что если сотрудник ушёл в отпуск?')).toContain('заморажива');
+
+    // Непонятный вопрос -- список тем, а не молчание и не стена текста.
+    const unknown = await askAssistant(env, me, 'а что вообще умеет эта штука?');
+    expect(unknown).toContain('Могу рассказать про это');
   });
 
   it('намерение: вопрос, просьба к боту и поручение -- врозь', async () => {

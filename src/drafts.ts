@@ -181,7 +181,9 @@ export async function draftText(env: Env, row: DraftRow, timeZone: string): Prom
   const files = media.filter((m) => !m.hasAudio).length;
   const lines = [
     '📝 Черновик',
-    `Тема: ${row.title || '—'}`,
+    // Пустая тема бывает у черновика, рождённого из файла без подписи: спрашиваем
+    // прямо, а не показываем прочерк, который человек прочитает как поломку.
+    row.title.trim() ? `Тема: ${row.title}` : 'Тема: чего это касается? Напишите или наговорите',
     `Кому: ${self ? 'вам' : names.join(', ') || '—'}`,
     `Срок: ${row.deadline ? formatWhen(row.deadline, timeZone) : 'не указан'}`,
     `Важность: ${PRIORITY_RU[row.priority]}${row.priority_explicit ? '' : ' (не сказана)'}`,
