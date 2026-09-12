@@ -5,7 +5,13 @@ import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
 import { PRIORITY_LABEL } from '../lib/priority';
 
 /**
- * Признаки задачи одной строкой: срочность, срок, этап, доска, адресаты.
+ * Признаки задачи метками: кто и где -- первой строкой, важность и срок --
+ * второй.
+ *
+ * ДВЕ строки, а не одна: в одну они не влезают на телефоне и уезжают за край.
+ * Порядок продиктован тем, как человек читает карточку: «Подготовить отчёт» ->
+ * «отдел Задачи, делает Артур» -> «средняя, через два дня». Сначала кто и где,
+ * потом насколько срочно.
  *
  * Всё метками с иконкой слева, а не точками и текстом через точку-разделитель:
  * точка цветом кодирует смысл, и человек обязан помнить, что оранжевая --
@@ -62,27 +68,10 @@ export function TaskMeta({
   const stage = showStage ? STAGE[task.status] : undefined;
   const StageIcon = stage?.icon;
 
-  return (
-    <span className={line ? 'pills pills-line' : 'pills'}>
-      <span className={PRIORITY_TONE[task.priority]}>
-        <PriorityIcon aria-hidden="true" />
-        <span>{PRIORITY_LABEL[task.priority]}</span>
-      </span>
-
-      {task.deadline ? (
-        <span className={overdue ? 'pill pill-red' : 'pill'}>
-          <CalendarDays aria-hidden="true" />
-          <span>{formatDeadlineDays(task.deadline)}</span>
-        </span>
-      ) : null}
-
-      {stage && StageIcon ? (
-        <span className={stage.tone}>
-          <StageIcon aria-hidden="true" />
-          <span>{stage.label}</span>
-        </span>
-      ) : null}
-
+  // Первая строка -- «где и кто», вторая -- «насколько срочно». Пустая строка
+  // не рисуется вовсе: у задачи себе на личной доске первой строки нет.
+  const first = (
+    <>
       {showProject && projectName ? (
         <span className="pill">
           <LayoutGrid aria-hidden="true" />
@@ -97,7 +86,34 @@ export function TaskMeta({
         </span>
       ))}
 
-      {extra}
-    </span>
+      {stage && StageIcon ? (
+        <span className={stage.tone}>
+          <StageIcon aria-hidden="true" />
+          <span>{stage.label}</span>
+        </span>
+      ) : null}
+    </>
+  );
+  const hasFirst = (showProject && projectName) || (who ?? []).length > 0 || !!stage;
+
+  return (
+    <>
+      {hasFirst ? <span className={line ? 'pills pills-line' : 'pills'}>{first}</span> : null}
+      <span className={line ? 'pills pills-line' : 'pills'}>
+        <span className={PRIORITY_TONE[task.priority]}>
+          <PriorityIcon aria-hidden="true" />
+          <span>{PRIORITY_LABEL[task.priority]}</span>
+        </span>
+
+        {task.deadline ? (
+          <span className={overdue ? 'pill pill-red' : 'pill'}>
+            <CalendarDays aria-hidden="true" />
+            <span>{formatDeadlineDays(task.deadline)}</span>
+          </span>
+        ) : null}
+
+        {extra}
+      </span>
+    </>
   );
 }

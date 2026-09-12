@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ArrowRight, Check, Clock, Lock, XCircle } from 'lucide-react';
+import { ArrowRight, Clock, Lock, XCircle } from 'lucide-react';
 import type { Priority, Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
 import { PRIORITIES } from '../lib/priority';
@@ -26,7 +26,7 @@ type Section = { key: 'todo' | 'in_progress' | 'review'; title: string; rows: Re
  * действия, что кнопки под карточкой в боте, кроме «Готово»: сдают только тут.
  */
 export function MyTasksView({ user }: { user: User }) {
-  const { tasks, projects, loading, loadError } = useOrgTasks();
+  const { tasks, loading, loadError } = useOrgTasks();
   const { refresh } = useData();
   const [viewing, setViewing] = useState<Task | null>(null);
   const [asking, setAsking] = useState<{ task: Task; kind: 'late' | 'decline' } | null>(null);
@@ -111,20 +111,23 @@ export function MyTasksView({ user }: { user: User }) {
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
                   <button type="button" className="card-tap" style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }} onClick={() => setViewing(task)}>
                     <span className="t-title">{task.title}</span>
-                    <TaskMeta task={task} projectName={projectName} showProject={projects.length > 1} line showStage={false}
+                    <TaskMeta task={task} projectName={projectName} showProject line showStage={false}
                       extra={blockedBy ? <span className="pill pill-orange"><Lock aria-hidden="true" /><span>Ждёт «{blockedBy}»</span></span> : null} />
                   </button>
                   {current.key !== 'review' ? (
                     <div className="btn-row" style={{ marginTop: 10 }}>
-                      {state === 'pending' ? (
-                        <button type="button" className="btn btn-sm btn-primary" disabled={isBusy || !!blockedBy} onClick={() => act(task, () => moveTask(task.id, 'in_progress'), 'Взято в работу')}>
-                          <ArrowRight aria-hidden="true" style={{ width: 14, height: 14 }} />Взять в работу
-                        </button>
-                      ) : (
-                        <button type="button" className="btn btn-sm btn-primary" disabled={isBusy} onClick={() => act(task, () => moveTask(task.id, 'done'), 'Сдано на проверку')}>
-                          <Check aria-hidden="true" style={{ width: 14, height: 14 }} />Готово
-                        </button>
-                      )}
+                      {/* Движение по этапам -- КРУГЛАЯ стрелка, а не подпись во всю
+                          ширину: действие одно и то же на каждой карточке, и
+                          повторять его словами в каждой строке -- шум. Смысл
+                          читается из этапа, на котором стоит задача. */}
+                      <button type="button" className="btn-icon is-accent" disabled={isBusy || (state === 'pending' && !!blockedBy)}
+                        aria-label={state === 'pending' ? 'Взять в работу' : 'Сдать на проверку'}
+                        title={state === 'pending' ? 'Взять в работу' : 'Сдать на проверку'}
+                        onClick={() => (state === 'pending'
+                          ? act(task, () => moveTask(task.id, 'in_progress'), 'Взято в работу')
+                          : act(task, () => moveTask(task.id, 'done'), 'Сдано'))}>
+                        <ArrowRight aria-hidden="true" />
+                      </button>
                       <button type="button" className="btn btn-sm" disabled={isBusy} onClick={() => setAsking({ task, kind: 'late' })}>
                         <Clock aria-hidden="true" style={{ width: 14, height: 14 }} />Не успею
                       </button>

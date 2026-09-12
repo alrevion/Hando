@@ -100,7 +100,7 @@ export function confirmAssignees(env: Env, taskId: string): D1PreparedStatement 
  * оставались в 'done', события в журнале не было, а исполнитель не узнавал, что
  * работу приняли, -- сообщение «✔️ Подтверждено» рождается здесь.
  */
-export async function confirmWork(env: Env, task: Task, actorId: string): Promise<number | null> {
+export async function confirmWork(env: Env, task: Task, actorId: string, notify = true): Promise<number | null> {
   let overdueBy: number | null = null;
   if (task.deadline && task.done_at) {
     const late = Math.floor((Date.parse(task.done_at) - Date.parse(task.deadline)) / 1000);
@@ -112,7 +112,11 @@ export async function confirmWork(env: Env, task: Task, actorId: string): Promis
   await applyTransition(env, {
     task, to: task.status, actorId, action: 'confirmed', overdueBy,
     set: { confirmed_at: nowIso() },
-    notify: { emoji: '✔️', label: 'Подтверждено', extraLine: overdueBy == null ? undefined : describeOverdue(overdueBy) },
+    // Молча -- когда человек закрывает СВОЮ задачу: письмо самому себе о том,
+    // что ты только что сделал, -- шум.
+    notify: notify
+      ? { emoji: '✔️', label: 'Подтверждено', extraLine: overdueBy == null ? undefined : describeOverdue(overdueBy) }
+      : undefined,
   });
   return overdueBy;
 }

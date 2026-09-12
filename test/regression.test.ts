@@ -147,7 +147,9 @@ describe('регрессия шага -1: движение по доске', () 
     expect((await apiRoutes.request('/tasks/t1/move', json(c, { to: 'in_progress' }), env)).status).toBe(409);
 
     const { results } = await events('t1');
-    expect(results.map((e) => e.action)).toEqual(['moved_in_progress', 'moved_done']);
+    // Третьим -- 'confirmed': задача поручена самому себе, и проверять её не у
+    // кого. Спрашивать «примите работу» у того же человека было бы обрядом.
+    expect(results.map((e) => e.action)).toEqual(['moved_in_progress', 'moved_done', 'confirmed']);
   });
 
   it('4. снятие блокировки по зависимости не портит строку: предшественник в архиве тоже открывает путь', async () => {

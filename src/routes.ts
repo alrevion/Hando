@@ -1609,6 +1609,13 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
     }
   }
 
+  // ЗАДАЧА СЕБЕ проверки не требует. Человек поручил её сам себе, сам сделал --
+  // и отдельное «примите работу» у него же спрашивать незачем: очередь «сдано,
+  // на проверке» копилась бы из собственных дел, которые никто не проверит.
+  const live = await loadAssignees(c.env, task.id, orgId);
+  const selfTask = task.author_id === userId
+    && live.filter((a) => a.state !== 'declined').every((a) => a.user_id === userId);
+
   const notify = target === 'accepted'
     ? { emoji: '🚀', label: 'В работе', track: true }
     : { emoji: '✅', label: 'Готово', deletePrevious: true };
@@ -1623,6 +1630,10 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
       // Свёртка читает статус из объекта: после перехода он уже другой.
       task = (await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>()) ?? task;
     }
+  }
+  if (target === 'done' && selfTask) {
+    const fresh = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>();
+    if (fresh && fresh.status === 'done' && !fresh.confirmed_at) await confirmWork(c.env, fresh, userId, false);
   }
   await drainOutbox(c.env);
   return c.json({ success: true });

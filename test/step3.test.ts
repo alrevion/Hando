@@ -125,6 +125,30 @@ describe('шаг 3: рассылка на четырнадцать челове�
     expect(edited.some((m) => m.text.includes('Возвращено в TODO') && m.text.includes('в налоговую'))).toBe(true);
   });
 
+  it('задача себе закрывается без проверки: сам поручил -- сам и сдал', async () => {
+    const env = await world();
+    tg();
+    const res = await apiRoutes.request('/projects/p1/tasks',
+      json(await cookie('boss', 'creator', ORG_A), { title: 'Позвонить в банк', assignee_ids: ['boss'], deadline: '2030-01-01T00:00:00.000Z' }), env);
+    const { id } = await res.json<{ id: string }>();
+    await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'in_progress' }), env);
+    await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'done' }), env);
+    const t = (await testEnv.DB.prepare('SELECT status, confirmed_at FROM tasks WHERE id = ?').bind(id).first<{ status: string; confirmed_at: string | null }>())!;
+    // Ждать «примите работу» от самого себя незачем: задача закрыта сразу.
+    expect(t.status).toBe('done');
+    expect(t.confirmed_at).not.toBeNull();
+
+    // А чужое поручение по-прежнему ждёт проверки автора.
+    const other = await apiRoutes.request('/projects/p1/tasks',
+      json(await cookie('boss', 'creator', ORG_A), { title: 'Свозить документы', assignee_ids: ['u0'], deadline: '2030-01-01T00:00:00.000Z' }), env);
+    const o = await other.json<{ id: string }>();
+    await apiRoutes.request(`/tasks/${o.id}/move`, json(await cookie('u0', 'admin', ORG_A), { to: 'in_progress' }), env);
+    await apiRoutes.request(`/tasks/${o.id}/move`, json(await cookie('u0', 'admin', ORG_A), { to: 'done' }), env);
+    const t2 = (await testEnv.DB.prepare('SELECT status, confirmed_at FROM tasks WHERE id = ?').bind(o.id).first<{ status: string; confirmed_at: string | null }>())!;
+    expect(t2.status).toBe('done');
+    expect(t2.confirmed_at).toBeNull();
+  });
+
   it('исполнитель узнаёт, что автор подвинул его этап', async () => {
     const env = await world();
     const spy = tg();
