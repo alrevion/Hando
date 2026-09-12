@@ -7,6 +7,7 @@
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it } from 'vitest';
 import { botApp } from '../src/bot';
+import { createOrg } from '../src/signup';
 import { apiRoutes } from '../src/routes';
 import { drainOutbox } from '../src/outbox';
 import { mintSession } from '../src/auth';
@@ -71,6 +72,21 @@ describe('видимость по дереву', () => {
     const snap = await (await api(env, '/org/snapshot', 'GET', undefined, 'w2', 'member')).json<{ users: { id: string }[]; can_see_users: boolean }>();
     expect(snap.can_see_users).toBe(true);
     expect(snap.users.map((u) => u.id).sort()).toEqual(['a2', 'w2']);
+  });
+
+  it('создатель числится участником отделов, которые завёл вместе с организацией', async () => {
+    const env = await envWith({ users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }], memberships: [], tasks: [] });
+    tg();
+    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, telegram_user_id, onboarded_at) VALUES ('f1', '+7', 'Отец', 'tg-f1', datetime('now'))").run();
+    const { orgId } = await createOrg(env, 'f1', 'Семья', 'home_family');
+    // Отделы профиля -- доски, и владелец обязан быть НА КАЖДОЙ: видимость
+    // людей считается по участию, и без строки его не увидел бы никто из
+    // добавленных им же.
+    const boards = (await testEnv.DB.prepare('SELECT id FROM projects WHERE org_id = ?').bind(orgId).all<{ id: string }>()).results;
+    expect(boards.length).toBeGreaterThan(0);
+    const mine = (await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM project_memberships WHERE org_id = ? AND user_id = ?')
+      .bind(orgId, 'f1').first<{ n: number }>())!.n;
+    expect(mine).toBe(boards.length);
   });
 
   it('задача с ЧУЖОЙ доски видна исполнителю: иначе принятое поручение пропадает', async () => {

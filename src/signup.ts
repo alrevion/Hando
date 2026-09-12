@@ -92,9 +92,21 @@ export async function createOrg(
   // Отделы профиля -- сразу досками. Раз доска = отдел, набор досок и есть
   // структура организации, и заводить её вручную после каждого создания
   // значило бы просить человека повторить то, что он уже сказал выбором профиля.
-  await env.DB.batch(profile.departments.map((dept) =>
-    env.DB.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id) VALUES (?, ?, ?, ?, NULL)')
-      .bind(uuid(), orgId, dept, userId)));
+  //
+  // ВЛАДЕЛЕЦ САДИТСЯ НА КАЖДУЮ. Без этой строки он числился автором доски, но
+  // не её участником, а видимость людей считается именно по участию: человек,
+  // добавленный в «Дети», не находил в списке того, кто его туда и добавил.
+  // Ручное создание доски (POST /projects) строку ставит -- расходились только
+  // отделы из профиля.
+  await env.DB.batch(profile.departments.flatMap((dept) => {
+    const projectId = uuid();
+    return [
+      env.DB.prepare('INSERT INTO projects (id, org_id, name, created_by, telegram_chat_id) VALUES (?, ?, ?, ?, NULL)')
+        .bind(projectId, orgId, dept, userId),
+      env.DB.prepare('INSERT OR IGNORE INTO project_memberships (id, project_id, user_id, org_id) VALUES (?, ?, ?, ?)')
+        .bind(uuid(), projectId, userId, orgId),
+    ];
+  }));
   return { orgId, code, departments: profile.departments };
 }
 
