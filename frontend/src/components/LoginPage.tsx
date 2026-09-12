@@ -63,7 +63,7 @@ export function LoginPage() {
     <div className="app-frame" style={{ justifyContent: 'center', padding: '24px 20px' }}>
       <div style={{ marginBottom: 22 }}>
         <h1 className="h1" style={{ marginBottom: 6 }}>Вход в Hando</h1>
-        <p className="muted">Из Telegram вход происходит сам. Здесь -- для браузера.</p>
+        <p className="muted">Из Telegram вход происходит сам. Здесь — для браузера.</p>
       </div>
 
       {notRegistered ? (
@@ -113,7 +113,7 @@ export function LoginPage() {
               Открыть @{VERIFICATION_BOT}
             </a>
             <p className="hint" style={{ marginTop: 10 }}>
-              Впервые? Нажмите кнопку и поделитесь контактом, когда бот попросит -- так код придёт в Telegram.
+              Впервые? Нажмите кнопку и поделитесь контактом, когда бот попросит — так код придёт в Telegram.
               Уже подключены? Код уже в чате с ботом.
             </p>
           </div>

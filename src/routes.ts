@@ -404,7 +404,7 @@ apiRoutes.post('/memberships/:userId/approve', requireRole('admin', 'super_admin
   if (!ok) return c.json({ error: 'no pending request' }, 404);
   const tg = await c.env.DB.prepare('SELECT telegram_user_id FROM users WHERE id = ?')
     .bind(applicantId).first<{ telegram_user_id: string | null }>();
-  if (tg?.telegram_user_id) await sendMessage(c.env, tg.telegram_user_id, 'Вас приняли. Ваши задачи -- кнопка «Мои задачи».');
+  if (tg?.telegram_user_id) await sendMessage(c.env, tg.telegram_user_id, 'Вас приняли. Ваши задачи — кнопка «Мои задачи».');
   return c.json({ ok: true });
 });
 
@@ -1131,7 +1131,7 @@ apiRoutes.post('/projects', requireRole('admin', 'super_admin', 'creator'), asyn
     // group - prefix) so a wrong/not-yet-added-bot group fails loudly here, not
     // silently on every notification afterward.
     chatId = await resolveChatId(c.env, telegram_group_id);
-    if (!chatId) return c.json({ error: 'Telegram group not found -- make sure the bot has been added to it' }, 400);
+    if (!chatId) return c.json({ error: 'Telegram group not found — make sure the bot has been added to it' }, 400);
   }
   const id = uuid();
   await c.env.DB.batch([

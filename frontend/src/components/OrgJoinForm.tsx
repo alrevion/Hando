@@ -89,7 +89,10 @@ export function OrgJoinForm({ onDone, onCancel }: { onDone: (kind: 'created' | '
               <span className="lbl">Чем занимаетесь</span>
               {/* Список с прокруткой, а не строка чипов: категорий пятнадцать,
                   в одну строку помещались три первые, остальные терялись за
-                  краем экрана и выглядели так, будто их всего три. */}
+                  краем экрана и выглядели так, будто их всего три.
+                  Рамка выбранного -- INSET: внешняя рисуется за границами
+                  кнопки, и прокрутка срезала её слева, справа и по краям
+                  списка -- выделение выглядело обрубленным. */}
               <div className="stack" style={{ gap: 6, maxHeight: 260, overflowY: 'auto', marginBottom: 10 }}>
                 {cats.map((k) => (
                   <button
@@ -97,7 +100,7 @@ export function OrgJoinForm({ onDone, onCancel }: { onDone: (kind: 'created' | '
                     type="button"
                     className="card card-tap"
                     aria-pressed={chosenCat === k.id}
-                    style={{ display: 'flex', alignItems: 'center', gap: 10, ...(chosenCat === k.id ? { boxShadow: '0 0 0 1.5px var(--accent)' } : null) }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, ...(chosenCat === k.id ? { boxShadow: 'inset 0 0 0 1.5px var(--accent)' } : null) }}
                     onClick={() => {
                       setChosenCat(k.id);
                       const first = packs.find((p) => p.category === k.id);

@@ -206,7 +206,7 @@ export function categoryScreen(orgName: string): Screen {
   }
   return {
     text: [
-      `«${orgName}» -- чем занимаетесь?`,
+      `«${orgName}» — чем занимаетесь?`,
       '',
       'От этого зависят отделы и то, какие слова я буду понимать как срочные.',
     ].join('\n'),
@@ -224,7 +224,7 @@ export function industryScreen(orgName: string, categoryId: string): Screen {
   }
   rows.push([{ text: BTN.back }]);
   return {
-    text: 'Уточните -- от этого зависят отделы:',
+    text: 'Уточните — от этого зависят отделы:',
     keyboard: kb([...rows, exitRow]),
     state: { await: 'pack', draft: orgName, cat: categoryId },
   };

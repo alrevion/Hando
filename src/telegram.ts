@@ -34,12 +34,32 @@ export type Keyboard = InlineKeyboard | ReplyKeyboard;
 // replyMarkup -- инлайновые кнопки под сообщением или постоянная клавиатура
 // (см. Keyboard). Кнопки уходят только в ЛИЧКУ (ADR-4): в группе нажать мог бы
 // любой участник, а не адресат.
-export async function sendMessage(env: Env, chatId: string, text: string, replyMarkup?: Keyboard): Promise<string | null> {
+/**
+ * Экранирование для parse_mode: 'HTML'.
+ *
+ * Обязательно на КАЖДОЙ подстановке в размеченный текст. Тема задачи -- это то,
+ * что человек продиктовал, и «цена < 5 & срок» без экранирования сделает из
+ * сообщения нечитаемый HTML, а Telegram ответит 400 и не пришлёт НИЧЕГО.
+ */
+export function esc(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// html -- разметка <b>/<i> в тексте. Выключена по умолчанию намеренно: почти
+// весь текст бота собирается из того, что сказал человек, и включать разбор
+// разметки там, где её не ждут, значит ломать сообщение об угловую скобку.
+// Включаем точечно и только рядом с esc().
+export async function sendMessage(env: Env, chatId: string, text: string, replyMarkup?: Keyboard, html = false): Promise<string | null> {
   try {
     const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(replyMarkup ? { chat_id: chatId, text, reply_markup: replyMarkup } : { chat_id: chatId, text }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        ...(html ? { parse_mode: 'HTML' } : {}),
+      }),
     });
     if (!res.ok) {
       // Раньше отказ Telegram проглатывался молча, и заявка на вступление
@@ -110,12 +130,17 @@ export async function editMessageText(
   messageId: string,
   text: string,
   replyMarkup?: InlineKeyboard,
+  html = false,
 ): Promise<boolean> {
   try {
     const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, message_id: Number(messageId), text, reply_markup: replyMarkup ?? { inline_keyboard: [] } }),
+      body: JSON.stringify({
+        chat_id: chatId, message_id: Number(messageId), text,
+        reply_markup: replyMarkup ?? { inline_keyboard: [] },
+        ...(html ? { parse_mode: 'HTML' } : {}),
+      }),
     });
     return res.ok;
   } catch {

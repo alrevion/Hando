@@ -16,7 +16,7 @@ import type { Media } from './media';
 import { createFromDraft } from './intake';
 import { canAssign } from './hierarchy';
 import { membershipRole } from './auth';
-import { editMessageText, sendMessage, type InlineKeyboard } from './telegram';
+import { editMessageText, esc, sendMessage, type InlineKeyboard } from './telegram';
 import { openButton } from './transition';
 
 export type DraftRow = {
@@ -59,9 +59,9 @@ export async function saveDraft(
   const now = nowIso();
   await env.DB.prepare(
     `INSERT INTO drafts (id, org_id, author_id, title, description, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
-    id, who.orgId, who.userId, draft.title, JSON.stringify(draft.assigneeIds), draft.deadline,
+    id, who.orgId, who.userId, draft.title, draft.description ?? null, JSON.stringify(draft.assigneeIds), draft.deadline,
     draft.priority, draft.priorityExplicit ? 1 : 0, draft.kind, heard.slice(0, 1000),
     JSON.stringify(media), draft.source, now, now,
   ).run();
@@ -172,6 +172,21 @@ export async function confirmDraft(env: Env, row: DraftRow): Promise<string | nu
 // ------------------------------------------------------------ карточка
 
 
+/**
+ * Кружок важности. Цветом, а не только словом: в списке из пяти строк подписи
+ * «низкая/средняя/высокая» читаются одинаково быстро только по цвету.
+ */
+export const PRIORITY_DOT: Record<string, string> = { low: '⚪', medium: '🟡', urgent: '🔴' };
+
+/**
+ * Текст карточки. Размечен HTML: подписи полей ЖИРНЫЕ, значения обычные.
+ * Иначе карточка -- сплошной абзац, в котором «Кому» и имя весят одинаково,
+ * и глаз не находит строку, которую пришёл проверить.
+ *
+ * Всё, что пришло от человека (тема, содержание, имена, услышанное), проходит
+ * через esc(): это надиктованный текст, и угловая скобка в нём иначе свалит
+ * отправку целиком.
+ */
 export async function draftText(env: Env, row: DraftRow, timeZone: string): Promise<string> {
   const ids = assigneesOf(row);
   const names = ids.length === 0 ? [] : (await env.DB.prepare(
@@ -181,41 +196,72 @@ export async function draftText(env: Env, row: DraftRow, timeZone: string): Prom
   const media = mediaOf(row);
   const files = media.filter((m) => !m.hasAudio).length;
   const lines = [
-    '📝 Черновик',
+    '📝 <b>Черновик</b>',
+    '',
     // Пустая тема бывает у черновика, рождённого из файла без подписи: спрашиваем
     // прямо, а не показываем прочерк, который человек прочитает как поломку.
-    row.title.trim() ? `Тема: ${row.title}` : 'Тема: чего это касается? Напишите или наговорите',
-    `Кому: ${self ? 'вам' : names.join(', ') || '—'}`,
-    `Срок: ${row.deadline ? formatWhen(row.deadline, timeZone) : 'не указан'}`,
-    `Важность: ${PRIORITY_RU[row.priority]}${row.priority_explicit ? '' : ' (не сказана)'}`,
+    row.title.trim()
+      ? `📌 <b>Тема:</b> ${esc(row.title)}`
+      : '📌 <b>Тема:</b> чего это касается? Напишите или наговорите',
   ];
-  if (row.kind === 'ack') lines.push('Вид: ознакомиться -- «прочитал» и есть выполнение');
-  if (files > 0) lines.push(`Вложений: ${files}`);
+  // Подробности -- отдельной строкой, а не хвостом темы: тема должна читаться
+  // в списке из одной строки, а всё сказанное сверх неё живёт здесь.
+  if (row.description?.trim()) lines.push(`📄 <b>Содержание:</b> ${esc(row.description.trim())}`);
+  lines.push(
+    `👤 <b>Кому:</b> ${self ? 'вам' : esc(names.join(', ')) || '—'}`,
+    `📅 <b>Срок:</b> ${row.deadline ? formatWhen(row.deadline, timeZone) : 'не указан'}`,
+    `${PRIORITY_DOT[row.priority] ?? '🟡'} <b>Важность:</b> ${PRIORITY_RU[row.priority]}${row.priority_explicit ? '' : ' (не сказана)'}`,
+  );
+  if (row.kind === 'ack') lines.push('👁 <b>Вид:</b> ознакомиться — «прочитал» и есть выполнение');
+  if (files > 0) lines.push(`📎 <b>Вложений:</b> ${files}`);
   // Что именно услышано -- чтобы «Иве» вместо «Еве» было видно сразу.
-  if (row.heard) lines.push('', `Услышал: «${row.heard.length > 120 ? row.heard.slice(0, 117) + '…' : row.heard}»`);
-  lines.push('', 'Ответьте на это сообщение, чтобы поправить; пришлите файл -- приложу.');
+  if (row.heard) lines.push('', `🎧 <b>Услышал:</b> «${esc(row.heard.length > 120 ? row.heard.slice(0, 117) + '…' : row.heard)}»`);
+  lines.push('', 'Ответьте на это сообщение, чтобы поправить; пришлите файл — приложу.');
   return lines.join('\n');
 }
 
+/** Местный день ISO-даты -- чтобы понять, какая из кнопок срока сейчас выбрана. */
+function localDay(iso: string, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+}
+
 /**
- * Кнопки карточки. Срок и важность предлагаются ТОЛЬКО если не были сказаны:
- * иначе кнопки заслоняли бы главную -- «Создать».
+ * Кнопки карточки. Срок и важность стоят ВСЕГДА, а выбранное помечено
+ * галочкой.
+ *
+ * Прежде ряд исчезал, как только значение появлялось («кнопки заслоняют
+ * Создать»), и получалось, что передумать нельзя: выбрал важность -- ряд
+ * пропал. Он обязан жить, пока черновик не стал задачей. Галочка здесь
+ * единственный способ показать выбор: у инлайновых кнопок Telegram нет
+ * нажатого состояния, и без неё три одинаковые кнопки ни о чём не говорят.
  */
-export function draftKeyboard(row: DraftRow): InlineKeyboard {
+export function draftKeyboard(row: DraftRow, timeZone = 'Asia/Tashkent'): InlineKeyboard {
   const rows: { text: string; callback_data: string }[][] = [[{ text: '✅ Создать', callback_data: `dc:${row.id}` }]];
-  if (!row.deadline) {
-    rows.push(
-      [{ text: 'Сегодня', callback_data: `dd:${row.id}:t0` }, { text: 'Завтра', callback_data: `dd:${row.id}:t1` }],
-      [{ text: 'В конце недели', callback_data: `dd:${row.id}:we` }, { text: '📅 Дата', callback_data: `dcal:${row.id}:` }],
-    );
-  }
-  if (!row.priority_explicit) {
-    rows.push([
-      { text: '↓ Низкая', callback_data: `dp:${row.id}:l` },
-      { text: 'Средняя', callback_data: `dp:${row.id}:m` },
-      { text: '❗️ Высокая', callback_data: `dp:${row.id}:u` },
-    ]);
-  }
+
+  // Какая кнопка срока «горит»: сегодня и завтра узнаются по местному дню,
+  // всякая другая дата -- это «📅 Дата», как бы её ни поставили.
+  const day = row.deadline ? localDay(row.deadline, timeZone) : null;
+  const now = new Date();
+  const isToday = day !== null && day === localDay(now.toISOString(), timeZone);
+  const isTomorrow = day !== null && day === localDay(new Date(now.getTime() + 86400000).toISOString(), timeZone);
+  const mark = (on: boolean, text: string) => (on ? `✓ ${text}` : text);
+  rows.push(
+    [
+      { text: mark(isToday, 'Сегодня'), callback_data: `dd:${row.id}:t0` },
+      { text: mark(isTomorrow, 'Завтра'), callback_data: `dd:${row.id}:t1` },
+    ],
+    [
+      { text: 'В конце недели', callback_data: `dd:${row.id}:we` },
+      { text: mark(day !== null && !isToday && !isTomorrow, '📅 Дата'), callback_data: `dcal:${row.id}:` },
+    ],
+  );
+
+  // Важность: галочка только когда её ВЫБРАЛИ. Средняя по умолчанию -- догадка,
+  // и помечать её галочкой значит врать, что человек так решил.
+  const pick = (lvl: string, label: string) =>
+    ({ text: `${row.priority_explicit && row.priority === lvl ? '✓ ' : ''}${PRIORITY_DOT[lvl]} ${label}`, callback_data: `dp:${row.id}:${lvl[0]}` });
+  rows.push([pick('low', 'Низкая'), pick('medium', 'Средняя'), pick('urgent', 'Высокая')]);
+
   rows.push([{ text: '✏️ Изменить', callback_data: `de:${row.id}` }, { text: '✖ Отменить', callback_data: `dx:${row.id}` }]);
   return { inline_keyboard: rows };
 }
@@ -227,12 +273,12 @@ export function draftKeyboard(row: DraftRow): InlineKeyboard {
  */
 export async function renderDraft(env: Env, row: DraftRow, chatId: string, timeZone: string, fresh = false): Promise<void> {
   const text = await draftText(env, row, timeZone);
-  const kb = draftKeyboard(row);
+  const kb = draftKeyboard(row, timeZone);
   if (!fresh && row.telegram_chat_id === chatId && row.telegram_message_id) {
-    const ok = await editMessageText(env, chatId, row.telegram_message_id, text, kb);
+    const ok = await editMessageText(env, chatId, row.telegram_message_id, text, kb, true);
     if (ok) return;
   }
-  const messageId = await sendMessage(env, chatId, text, kb);
+  const messageId = await sendMessage(env, chatId, text, kb, true);
   if (messageId) await patchDraft(env, row.id, { telegramChatId: chatId, telegramMessageId: messageId });
 }
 
@@ -248,17 +294,20 @@ export async function renderCreated(env: Env, row: DraftRow, chatId: string, tim
   ).bind(...ids).all<{ name: string }>()).results.map((r) => r.name);
   const self = ids.length === 1 && ids[0] === row.author_id;
   const text = [
-    `✅ ${row.title}`,
-    `Кому: ${self ? 'вам' : names.join(', ') || '—'}`,
-    `Срок: ${row.deadline ? formatWhen(row.deadline, timeZone) : 'не указан'}`,
-    `Важность: ${PRIORITY_RU[row.priority]}`,
-    row.deadline ? 'Напомню заранее.' : 'Без срока напоминаний не будет -- его можно поставить в приложении.',
+    `✅ <b>${esc(row.title)}</b>`,
+    '',
+    ...(row.description?.trim() ? [`📄 <b>Содержание:</b> ${esc(row.description.trim())}`] : []),
+    `👤 <b>Кому:</b> ${self ? 'вам' : esc(names.join(', ')) || '—'}`,
+    `📅 <b>Срок:</b> ${row.deadline ? formatWhen(row.deadline, timeZone) : 'не указан'}`,
+    `${PRIORITY_DOT[row.priority] ?? '🟡'} <b>Важность:</b> ${PRIORITY_RU[row.priority]}`,
+    '',
+    row.deadline ? 'Напомню заранее.' : 'Без срока напоминаний не будет — его можно поставить в приложении.',
   ].join('\n');
   const kb: InlineKeyboard = { inline_keyboard: [[openButton(taskId)]] };
   if (row.telegram_chat_id === chatId && row.telegram_message_id) {
-    if (await editMessageText(env, chatId, row.telegram_message_id, text, kb)) return;
+    if (await editMessageText(env, chatId, row.telegram_message_id, text, kb, true)) return;
   }
-  await sendMessage(env, chatId, text, kb);
+  await sendMessage(env, chatId, text, kb, true);
 }
 
 /**

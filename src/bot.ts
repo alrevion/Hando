@@ -21,7 +21,7 @@ import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, sendTyping, t
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
 import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, hasPendingJoin, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
-import { setTaskDeadline } from './intake';
+import { editTaskByPhrase, setTaskDeadline } from './intake';
 import {
   assigneesOf, confirmDraft, draftAssignable, draftByMessage, getDraft, latestDraft, listDrafts, mediaOf,
   logMiss, patchDraft, removeDraft, renderCreated, renderDraft, saveDraft, type DraftPatch,
@@ -431,7 +431,7 @@ botApp.post('/webhook', async (c) => {
             `✅ ${applicant?.name ?? 'Сотрудник'} принят -- ${ROLE_TITLE[ROLE_CODE[roleCode] ?? 'member']}.`);
         }
         if (ok && applicant?.telegram_user_id) {
-          await sendMessage(c.env, applicant.telegram_user_id, 'Вас приняли. Ваши задачи -- кнопка «Мои задачи».');
+          await sendMessage(c.env, applicant.telegram_user_id, 'Вас приняли. Ваши задачи — кнопка «Мои задачи».');
         }
         return c.json({ ok: true });
       }
@@ -1119,7 +1119,7 @@ botApp.post('/webhook', async (c) => {
       if (!current) return c.json({ ok: true });
       const code = await inviteCodeFor(c.env, current.id, userId);
       await sendMessage(c.env, chatId, code
-        ? `Ваша ссылка-приглашение в «${current.name}»:\n${inviteLink(code)}\n\nКто перейдёт по ней, подаст заявку Вам -- Вы её подтверждаете и выбираете роль и отдел.`
+        ? `Ваша ссылка-приглашение в «${current.name}»:\n${inviteLink(code)}\n\nКто перейдёт по ней, подаст заявку Вам — Вы её подтверждаете и выбираете роль и отдел.`
         : 'Приглашать могут владелец и руководители отделов.');
       return c.json({ ok: true });
     }
@@ -1279,6 +1279,19 @@ botApp.post('/webhook', async (c) => {
   // Дальше может быть сеть: разбор намерения, ответ помощника, разбор фразы.
   // Человеку в чате видно, что бот занят, -- иначе тишина читается как «не дошло».
   await sendTyping(c.env, chat);
+
+  // ПРАВКА ДЕЙСТВУЮЩЕЙ ЗАДАЧИ идёт первой -- до разбора намерения. «Перенеси
+  // срок по «сдать отчёт» на пятницу» -- это не вопрос и не новое поручение, а
+  // распоряжение о том, что уже создано, и классификатор развёл бы его в одно
+  // из двух неверных русел. Срабатывает только при глаголе правки И дословно
+  // названной теме своего же поручения -- см. editTaskByPhrase.
+  const edited = await editTaskByPhrase(c.env, who, phrase, tz, org?.industry_pack, dayEnd(sched));
+  if (edited) {
+    await sendMessage(c.env, chat, edited.text, { inline_keyboard: [[openButton(edited.taskId)]] });
+    await drainOutbox(c.env);
+    return c.json({ ok: true });
+  }
+
   const named = matchPeople(phrase, roster).ids.length > 0;
   if (await classifyIntent(c.env, phrase, named) === 'ask') {
     const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
@@ -1308,6 +1321,7 @@ botApp.post('/webhook', async (c) => {
   if (waiting && !waiting.title.trim() && draft.ambiguous.length === 0) {
     const updated = await patchDraft(c.env, waiting.id, {
       title: draft.title,
+      description: draft.description ?? null,
       assigneeIds: draft.assigneeIds,
       deadline: draft.deadline,
       priority: draft.priority,

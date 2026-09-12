@@ -29,6 +29,8 @@ export type Person = { id: string; name: string; aliases?: string[] };
 
 export type Draft = {
   title: string;
+  /** Подробности сверх темы: их отделяет модель, см. splitTitle. */
+  description?: string | null;
   assigneeIds: string[];
   deadline: string | null;
   /** Важность из самой фразы; medium -- когда о ней не сказали. */
@@ -520,11 +522,11 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
 const GROQ = 'https://api.groq.com/openai/v1';
 
 /** Разбор моделью. null -- сеть не ответила; вызывающий отдаёт fallback. */
-export async function parseByLlm(env: Env, text: string, people: Person[], model: string, packId?: string | null): Promise<Draft | null> {
+export async function parseByLlm(env: Env, text: string, people: Person[], model: string, packId?: string | null, selfId?: string): Promise<Draft | null> {
   const roster = people.map((p) => `${p.id}=${p.name}`).join('; ');
   const prompt = [
     'Разбери поручение в JSON. Отвечай ТОЛЬКО JSON, без пояснений.',
-    'Поля: title (суть поручения: 2-6 слов, повелительная форма, без имён, дат и слов о важности -- «Подготовить отчёт», а не «Артуру нужно подготовить отчёт до пятницы»), assignee_ids (массив id из списка), deadline (ISO 8601 или null), kind ("single"|"each"|"ack").',
+    'Поля: title (суть поручения: 2-6 слов, повелительная форма, без имён, дат и слов о важности -- «Подготовить отчёт», а не «Артуру нужно подготовить отчёт до пятницы»), description (остальные подробности из фразы одной-двумя фразами, или пустая строка), assignee_ids (массив id из списка), deadline (ISO 8601 или null), kind ("single"|"each"|"ack").',
     'kind="ack" если это объявление/приказ «ознакомиться», а не задача.',
     `Люди: ${roster}`,
     `Фраза: ${text}`,
@@ -545,16 +547,21 @@ export async function parseByLlm(env: Env, text: string, people: Person[], model
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const raw = data.choices?.[0]?.message?.content;
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { title?: string; assignee_ids?: string[]; deadline?: string | null; kind?: string };
+    const parsed = JSON.parse(raw) as { title?: string; description?: string; assignee_ids?: string[]; deadline?: string | null; kind?: string };
 
     // Модель могла выдумать id -- сверяем со справочником. Без этой проверки
     // адресатом стал бы несуществующий человек, и задача упала бы на валидации
     // уже в маршруте, потеряв текст.
     const known = new Set(people.map((p) => p.id));
-    const ids = (parsed.assignee_ids ?? []).filter((id) => known.has(id));
+    const named = (parsed.assignee_ids ?? []).filter((id) => known.has(id));
+    // Адресата не назвали -- значит себе. Прежде такая фраза («нужно сходить в
+    // комитет») возвращала null и уезжала в запасной путь, а тот кладёт ВСЮ
+    // фразу в тему: ровно то, на что жаловались -- «всё уходит в тему».
+    const ids = named.length > 0 ? named : selfId ? [selfId] : [];
     if (!parsed.title || ids.length === 0) return null;
     return {
       title: parsed.title.trim(),
+      description: parsed.description?.trim() || null,
       assigneeIds: ids,
       deadline: parsed.deadline ?? null,
       // Модель о важности не спрашивается: словарь надёжнее и дешевле.
@@ -566,6 +573,50 @@ export async function parseByLlm(env: Env, text: string, people: Person[], model
     };
   } catch {
     return null;
+  }
+}
+
+/** Тема длиннее этого -- уже не тема, а пересказ фразы. Шесть слов. */
+const TITLE_WORDS = 6;
+
+/**
+ * Делит длинную тему на короткую тему и содержание.
+ *
+ * Паттерны и запасной путь собирают тему ВЫЧИТАНИЕМ: из фразы убираются имена,
+ * даты и служебные слова, а остаток целиком становится темой. На фразе в
+ * двадцать слов остаток -- те же двадцать слов минус пяток, и в списке такая
+ * задача нечитаема. Модель здесь делает единственное, чего вычитание не умеет:
+ * называет СУТЬ и отправляет подробности в отдельное поле.
+ *
+ * Не срабатывает -- возвращаем как было: длинная тема хуже короткой, но лучше
+ * отказа разобрать.
+ */
+export async function splitTitle(env: Env, title: string, model: string): Promise<{ title: string; description: string | null }> {
+  const words = title.trim().split(/\s+/);
+  if (words.length <= TITLE_WORDS || !env.GROQ_API_KEY) return { title, description: null };
+  const prompt = [
+    'Раздели поручение на тему и содержание. Отвечай ТОЛЬКО JSON, без пояснений.',
+    'title: суть, 2-5 слов, повелительная форма, без дат, имён и слов о важности.',
+    'description: остальные подробности из фразы, одной-двумя фразами; пустая строка, если сверх темы ничего нет.',
+    `Фраза: ${title}`,
+  ].join('\n');
+  try {
+    const res = await fetch(`${GROQ}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0, response_format: { type: 'json_object' } }),
+    });
+    if (!res.ok) return { title, description: null };
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw) return { title, description: null };
+    const parsed = JSON.parse(raw) as { title?: string; description?: string };
+    const short = parsed.title?.trim();
+    // Короче исходного и не пустая -- иначе модель просто вернула ту же фразу.
+    if (!short || short.length < 3 || short.split(/\s+/).length >= words.length) return { title, description: null };
+    return { title: short[0].toUpperCase() + short.slice(1), description: parsed.description?.trim() || null };
+  } catch {
+    return { title, description: null };
   }
 }
 
@@ -588,20 +639,21 @@ export async function parseTask(
   /** Конец дня из графика организации. */
   dayEnd?: string,
 ): Promise<Draft> {
+  const model = env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b';
   const byPattern = parseByPattern(text, people, selfId, now, timeZone, packId, dayEnd);
   if (byPattern && byPattern.ambiguous.length > 0) return byPattern;
-  if (byPattern) return byPattern;
+  if (byPattern) return { ...byPattern, ...(await splitTitle(env, byPattern.title, model)) };
 
-  const model = env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b';
-  const byLlm = env.GROQ_API_KEY ? await parseByLlm(env, text, people, model, packId) : null;
+  const byLlm = env.GROQ_API_KEY ? await parseByLlm(env, text, people, model, packId, selfId) : null;
   if (byLlm) return byLlm;
 
   // Даже на запасном пути слово про срочность не должно остаться в названии:
   // оно уже стало полем, и в списке читалось бы дважды.
   const { priority, usedWords: priorityWords } = matchPriority(text, packId);
   const bare = buildTitle(text.trim(), [priorityWords]);
+  const raw = (bare.length >= 3 ? bare[0].toUpperCase() + bare.slice(1) : text.trim()).slice(0, 200) || 'Без названия';
   return {
-    title: (bare.length >= 3 ? bare[0].toUpperCase() + bare.slice(1) : text.trim()).slice(0, 200) || 'Без названия',
+    ...(await splitTitle(env, raw, model)),
     assigneeIds: [selfId],
     deadline: null,
     priority,

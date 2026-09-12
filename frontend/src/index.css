@@ -216,6 +216,12 @@ body {
   gap: 7px;
 }
 .topbar-title {
+  display: inline-flex;
+  align-items: center;
+  /* 5px, а не 7: иконка отбирает ширину у боковых ячеек шапки, и на «Мои
+     поручения» подпись роли справа переставала помещаться -- «Владел…». */
+  gap: 5px;
+  justify-content: center;
   flex: 0 1 auto;
   min-width: 0;
   font-size: 16px;
@@ -226,6 +232,15 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Иконка экрана -- та же, что у вкладки внизу и у строки в «Ещё»: человек
+   попадает на экран по ней и должен увидеть её же в шапке. */
+.topbar-title svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  stroke-width: 2.25;
+  color: var(--label2);
 }
 .topbar-role {
   min-width: 0;
@@ -1168,7 +1183,12 @@ select.inp {
   background: var(--bg2);
   box-shadow: var(--card-ring);
   transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
-  will-change: transform;
+  /* will-change ЗДЕСЬ НЕТ намеренно. Он поднимал бегунок на свой слой
+     композитора, и пока шторка играла своё появление (transform + opacity на
+     предке), WebKit в Telegram рисовал этот слой ПОВЕРХ подписей: переключатель
+     открывался пустым, две безымянные половинки. z-index кнопок не помогает --
+     порядок слоёв считается отдельно от порядка потока. Подсказка тут и не
+     нужна: анимируется один маленький прямоугольник 220 мс. */
 }
 .segmented-btn {
   position: relative;

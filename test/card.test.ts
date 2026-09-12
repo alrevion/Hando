@@ -49,6 +49,48 @@ const row = async (userId: string) =>
   (await testEnv.DB.prepare("SELECT state, declined_reason FROM task_assignees WHERE task_id='t1' AND user_id=?").bind(userId).first<{ state: string; declined_reason: string | null }>());
 const status = async () => (await testEnv.DB.prepare("SELECT status FROM tasks WHERE id='t1'").first<{ status: string }>())!.status;
 
+describe('правка действующей задачи словами', () => {
+  it('«перенеси срок» по названной теме двигает срок уже созданной задачи', async () => {
+    const env = await world();
+    const spy = tg();
+    const before = (await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE id='t1'").first<{ deadline: string }>())!.deadline;
+    await say(env, 'tg-boss', 'перенеси срок по подготовить отчёт на завтра');
+    const after = (await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE id='t1'").first<{ deadline: string }>())!.deadline;
+    expect(after).not.toBe(before);
+    const reply = sent(spy).at(-1)!;
+    expect(reply.text).toContain('«Подготовить отчёт»');
+    expect(reply.text).toContain('срок');
+    // Кнопка ведёт в ту же задачу, а нового черновика не появилось.
+    expect(labels(reply)).toEqual(['📱 Открыть']);
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
+  });
+
+  it('«сделай срочной» меняет важность, а «переименуй в» -- тему', async () => {
+    const env = await world();
+    tg();
+    await say(env, 'tg-boss', 'сделай подготовить отчёт срочной');
+    expect((await testEnv.DB.prepare("SELECT priority FROM tasks WHERE id='t1'").first<{ priority: string }>())!.priority).toBe('urgent');
+    await say(env, 'tg-boss', 'переименуй подготовить отчёт в закрыть акты');
+    expect((await testEnv.DB.prepare("SELECT title FROM tasks WHERE id='t1'").first<{ title: string }>())!.title).toBe('Закрыть акты');
+  });
+
+  it('без глагола правки та же фраза заводит НОВЫЙ черновик, а не правит задачу', async () => {
+    const env = await world();
+    tg();
+    // Тема названа дословно, но это поручение, а не распоряжение о правке.
+    await say(env, 'tg-boss', 'Азизу подготовить отчёт');
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(1);
+  });
+
+  it('правит только АВТОР: исполнителю та же фраза задачу не трогает', async () => {
+    const env = await world();
+    tg();
+    const before = (await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE id='t1'").first<{ deadline: string }>())!.deadline;
+    await say(env, 'tg-w1', 'перенеси срок по подготовить отчёт на завтра');
+    expect((await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE id='t1'").first<{ deadline: string }>())!.deadline).toBe(before);
+  });
+});
+
 describe('карточка адресата', () => {
   it('задача из бота: адресату приходит карточка с кнопками и «Открыть» в приложение', async () => {
     const env = await world();

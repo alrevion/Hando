@@ -133,21 +133,39 @@ const draft = async () => (await testEnv.DB.prepare('SELECT * FROM drafts').firs
 const tasks = async () => (await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM tasks').first<{ n: number }>())!.n;
 
 describe('бот: черновик правится, подтверждается, отменяется', () => {
-  it('карточка показывает, что услышано, и предлагает срок и важность, раз их не сказали', async () => {
+  it('карточка показывает, что услышано; подписи полей жирные и с иконками', async () => {
     const env = await world();
     const spy = tg();
     await say(env, 'Азизу подготовить отчёт');
     const card = shown(spy).at(-1)!;
-    expect(card.text).toContain('Услышал: «Азизу подготовить отчёт»');
-    expect(card.text).toContain('не сказана');
+    expect(card.text).toContain('🎧 <b>Услышал:</b> «Азизу подготовить отчёт»');
+    expect(card.text).toContain('📌 <b>Тема:</b>');
+    expect(card.text).toContain('🟡 <b>Важность:</b> средняя (не сказана)');
+    // Два дефиса -- не тире: в карточке стоит настоящее длинное тире.
+    expect(card.text).toContain('пришлите файл — приложу');
+    expect(card.text).not.toContain('--');
     const buttons = card.reply_markup!.inline_keyboard!.flat().map((b) => b.text);
     expect(buttons[0]).toBe('✅ Создать');
-    expect(buttons).toEqual(expect.arrayContaining(['Сегодня', 'Завтра', 'В конце недели', '❗️ Высокая', '✏️ Изменить', '✖ Отменить']));
-    // Срок и важность сказаны -- их кнопок нет: они заслоняли бы «Создать».
-    await testEnv.DB.prepare('DELETE FROM drafts').run();
+    expect(buttons).toEqual(expect.arrayContaining(['Сегодня', 'Завтра', 'В конце недели', '🔴 Высокая', '✏️ Изменить', '✖ Отменить']));
+  });
+
+  it('выбранное помечено галочкой, и ряды НЕ исчезают после выбора', async () => {
+    const env = await world();
+    const spy = tg();
+    // Срок и важность сказаны прямо во фразе -- ряды всё равно на месте, иначе
+    // передумать было бы нельзя.
     await say(env, 'Азизу срочно подготовить отчёт завтра');
-    const b2 = shown(spy).at(-1)!.reply_markup!.inline_keyboard!.flat().map((b) => b.text);
-    expect(b2).toEqual(['✅ Создать', '✏️ Изменить', '✖ Отменить']);
+    const b = shown(spy).at(-1)!.reply_markup!.inline_keyboard!.flat().map((x) => x.text);
+    expect(b).toContain('✓ Завтра');
+    expect(b).toContain('✓ 🔴 Высокая');
+    expect(b).toContain('⚪ Низкая');
+    expect(b[0]).toBe('✅ Создать');
+    // Нажали «Низкая» -- галочка переехала, ряд остался.
+    await press(env, `dp:${(await draft()).id}:l`);
+    const after = shown(spy).at(-1)!.reply_markup!.inline_keyboard!.flat().map((x) => x.text);
+    expect(after).toContain('✓ ⚪ Низкая');
+    expect(after).toContain('🔴 Высокая');
+    expect(after).not.toContain('✓ 🔴 Высокая');
   });
 
   it('ответ на карточку -- поправка: адресат меняется, задачи по-прежнему нет', async () => {
@@ -204,7 +222,7 @@ describe('бот: черновик правится, подтверждаетс�
     await press(env, `dc:${(await draft()).id}`);
     // Карточка «создано» правит саму карточку черновика, а последним уходит
     // письмо адресату -- ищем по тексту, а не по порядку.
-    const created = shown(spy).find((m) => m.text.startsWith('✅ Подготовить отчёт'))!;
+    const created = shown(spy).find((m) => m.text.startsWith('✅ <b>Подготовить отчёт</b>'))!;
     expect(created).toBeTruthy();
     const btn = created.reply_markup!.inline_keyboard![0][0];
     const task = await testEnv.DB.prepare('SELECT id FROM tasks LIMIT 1').first<{ id: string }>();

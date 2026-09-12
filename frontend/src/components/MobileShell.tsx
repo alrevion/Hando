@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CalendarDays, ChevronLeft, ClipboardList, MoreHorizontal, Plus, Send } from 'lucide-react';
+import { Archive, Bell, Building2, CalendarDays, ChevronLeft, ClipboardList, FileText, HelpCircle, Layers, MoreHorizontal, Plus, Send, Users } from 'lucide-react';
 import type { Task, User } from '../types';
 import { BottomNav, type NavTab } from './BottomNav';
 import { pushBack } from '../lib/telegram';
@@ -26,6 +26,15 @@ function initials(name: string): string {
 
 const ROLE_LABEL: Record<string, string> = { creator: 'Владелец', super_admin: 'Руководитель', admin: 'Руководитель отдела', member: 'Участник' };
 const SUB_TITLE: Record<MoreSub, string> = { people: 'Люди', org: 'Организация', drafts: 'Черновики', all: 'Все задания', archive: 'Архив', notify: 'Уведомления', ask: 'Вопрос' };
+// Иконка экрана в шапке -- ТА ЖЕ, что у вкладки внизу и у строки в «Ещё».
+// Человек пришёл сюда по иконке и должен увидеть её же над содержимым:
+// заголовок словом отвечает «где я», иконка -- «как я сюда попал».
+const SUB_ICON: Record<MoreSub, typeof Users> = {
+  people: Users, org: Building2, drafts: FileText, all: Layers, archive: Archive, notify: Bell, ask: HelpCircle,
+};
+const TAB_ICON: Record<string, typeof Users> = {
+  tasks: ClipboardList, assigned: Send, calendar: CalendarDays, more: MoreHorizontal,
+};
 
 /**
  * Мобильная оболочка: четыре вкладки (раздел 22) -- Поручения · Задачи
@@ -94,6 +103,7 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
 
   const TITLE: Record<string, string> = { tasks: 'Мои задачи', assigned: 'Мои поручения', calendar: 'Календарь', more: 'Ещё' };
   const title = active === 'more' && sub ? SUB_TITLE[sub] : TITLE[active];
+  const TitleIcon = active === 'more' && sub ? SUB_ICON[sub] : TAB_ICON[active];
 
   return (
     <div className="app-frame">
@@ -103,7 +113,7 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
             <button type="button" className="btn-icon" aria-label="Назад" onClick={() => setSub(null)}><ChevronLeft aria-hidden="true" /></button>
           ) : null}
         </div>
-        <h1 className="topbar-title">{title}</h1>
+        <h1 className="topbar-title">{TitleIcon ? <TitleIcon aria-hidden="true" /> : null}<span>{title}</span></h1>
         <div className="topbar-r">
           <span className="topbar-role">{user.position || ROLE_LABEL[user.role] || ''}</span>
           <button type="button" className="avatar" style={{ border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}

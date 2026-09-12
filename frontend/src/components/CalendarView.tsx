@@ -171,7 +171,7 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
       <ShowMore total={selectedTasks.length} shown={shown} onMore={more} />
 
       {undated > 0 ? (
-        <p className="hint" style={{ marginTop: 14 }}>Без срока: {undated} -- такие задачи в сетку не попадают.</p>
+        <p className="hint" style={{ marginTop: 14 }}>Без срока: {undated} — такие задачи в сетку не попадают.</p>
       ) : null}
 
       {viewing ? (
