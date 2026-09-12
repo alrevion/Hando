@@ -28,7 +28,9 @@ export function useOrgTasks() {
     const nameById = new Map(projects.map((p) => [p.id, p.name]));
     return tasks
       .filter((task) => task.status !== 'archived')
-      .map((task) => ({ task, projectName: nameById.get(task.project_id) ?? '' }));
+      // Поручить могут с ЧУЖОЙ доски -- её нет в списке своих, и имя приезжает
+      // вместе с задачей. Без этого у такой задачи не было бы отдела в метках.
+      .map((task) => ({ task, projectName: nameById.get(task.project_id) ?? task.project_name ?? '' }));
   }, [tasks, projects]);
 
   return { tasks: rows, projects: projects as Project[], loading: !ready, loadError: error };

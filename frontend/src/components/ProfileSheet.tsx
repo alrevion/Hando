@@ -201,9 +201,12 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
             confirmLabel="Удалить"
             confirmWord={confirmDelete.name}
             onConfirm={async () => {
-              await deleteOrg(confirmDelete.id);
+              // Организаций может не остаться -- тогда обновлять склад нечем:
+              // снимок без организации отвечает 401, и экран «создайте или
+              // вступите» получил бы поверх себя ошибку.
+              const { org_id } = await deleteOrg(confirmDelete.id);
               setUser((await getMe()).user);
-              await refresh();
+              if (org_id) await refresh();
               load();
             }}
             onClose={() => setConfirmDelete(null)}

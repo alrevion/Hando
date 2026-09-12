@@ -8,8 +8,16 @@ export function MoreView({ user, onOpen, onProfile }: { user: User; onOpen: (sub
   const boss = user.role !== 'member';
   const rows: { key: MoreSub | 'profile'; title: string; hint: string; icon: typeof Users }[] = [
     { key: 'profile', title: 'Профиль', hint: `${user.name} · ${user.org_name ?? ''}`, icon: UserRound },
-    { key: 'people', title: 'Люди', hint: boss ? 'Кто на каком этапе, роли, заявки' : 'Коллеги по вашим доскам', icon: Users },
-    { key: 'org', title: 'Организация', hint: 'Название, график, сводка, ссылка-приглашение', icon: Building2 },
+    // «Люди» и «Организация» -- экраны РУКОВОДИТЕЛЯ: заявки, роли, заморозка,
+    // график, сводка, ссылка-приглашение, отделы. Участнику там нечего решать,
+    // а строка в меню обещает обратное. Своя организация и выход из неё
+    // остаются в «Профиле», он выше.
+    ...(boss
+      ? [
+          { key: 'people' as const, title: 'Люди', hint: 'Кто на каком этапе, роли, заявки', icon: Users },
+          { key: 'org' as const, title: 'Организация', hint: 'Название, график, сводка, ссылка-приглашение', icon: Building2 },
+        ]
+      : []),
     { key: 'drafts', title: 'Черновики', hint: 'Продиктовано, но не подтверждено', icon: FileText },
     ...(boss ? [{ key: 'all' as const, title: 'Все задания', hint: 'Обзор вашего поддерева', icon: Layers }] : []),
     { key: 'archive', title: 'Архив', hint: 'Сданное и закрытое, с журналом', icon: Archive },

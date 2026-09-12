@@ -859,14 +859,35 @@ apiRoutes.patch('/orgs/:orgId', async (c) => {
   return c.json({ ok: true });
 });
 
+/**
+ * Организация лежит В КЛЕЙМАХ куки, а не читается из базы на каждом запросе.
+ * Значит удаление или выход обязаны выпустить куку заново -- иначе следующий
+ * же запрос уходит со ссылкой на архивную организацию и получает 401. Ровно
+ * это и видел человек: «unauthorized» сразу после удаления, и только
+ * перезагрузка приложения (новый вход по initData) возвращала его в строй.
+ *
+ * Организаций не осталось -- кука выпускается БЕЗ организации, а не гасится:
+ * человек остаётся собой и попадает на экран «создайте или вступите».
+ */
+async function reissueAfterOrgChange(c: Context<AppEnv>, userId: string): Promise<string | null> {
+  const next = await resolveOrgId(c.env.DB, userId);
+  const role = next ? await membershipRole(c.env.DB, next, userId) : null;
+  const orgId = next && role ? next : null;
+  const token = await mintSession(c.env.SESSION_SECRET, { sub: userId, role: role ?? 'member', org_id: orgId });
+  setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
+  return orgId;
+}
+
 apiRoutes.delete('/orgs/:orgId', async (c) => {
   const ok = await deleteOrg(c.env, c.get('userId'), c.req.param('orgId'));
-  return ok ? c.json({ ok: true }) : c.json({ error: 'not allowed' }, 403);
+  if (!ok) return c.json({ error: 'not allowed' }, 403);
+  return c.json({ ok: true, org_id: await reissueAfterOrgChange(c, c.get('userId')) });
 });
 
 apiRoutes.post('/orgs/:orgId/leave', async (c) => {
   const ok = await leaveOrg(c.env, c.get('userId'), c.req.param('orgId'));
-  return ok ? c.json({ ok: true }) : c.json({ error: 'not allowed' }, 403);
+  if (!ok) return c.json({ error: 'not allowed' }, 403);
+  return c.json({ ok: true, org_id: await reissueAfterOrgChange(c, c.get('userId')) });
 });
 
 /** Своё имя -- то, которое видят коллеги в поручениях. В боте это «Профиль». */
@@ -1047,17 +1068,32 @@ apiRoutes.get('/org/snapshot', async (c) => {
   const projectIds = (projects as { id: string }[]).map((p) => p.id);
   const holes = projectIds.map(() => '?').join(',');
 
+  // ЧТО ВИДНО. Доска -- не единственное основание: поручить можно кому угодно
+  // (R1-1), а членом своего отдела адресата это не делает. Пока условие было
+  // только «задачи моих досок», человек получал карточку в Telegram, принимал
+  // её -- и в «Моих задачах» не находил НИЧЕГО: доска-то чужая. Поэтому три
+  // основания через ИЛИ: моя доска, я исполнитель, я автор.
+  //
+  // Имя доски едет вместе с задачей: у задачи с чужой доски его неоткуда взять
+  // -- в списке projects этой доски нет и быть не должно, иначе она попала бы в
+  // «Организацию» как «мой отдел».
+  const where = [
+    projectIds.length > 0 ? `t.project_id IN (${holes})` : null,
+    'a.user_id IS NOT NULL',
+    't.author_id = ?',
+  ].filter(Boolean).join(' OR ');
   // Полная загрузка отдаёт только живые задачи -- архив в планировщике не нужен.
   // Догрузка, наоборот, БЕЗ фильтра по статусу: ушедшая в архив задача обязана
   // доехать до клиента, иначе она навсегда останется висеть у него на экране.
   // Клиент выбрасывает её сам, увидев status = 'archived'.
-  const tasks = projectIds.length === 0 ? [] : (await c.env.DB.prepare(
-    since
-      ? `SELECT * FROM tasks WHERE org_id = ? AND project_id IN (${holes})
-           AND datetime(updated_at) >= datetime(?, '-2 seconds') ORDER BY created_at`
-      : `SELECT * FROM tasks WHERE org_id = ? AND project_id IN (${holes})
-           AND status IN ('todo','in_progress','done') ORDER BY created_at`,
-  ).bind(orgId, ...projectIds, ...(since ? [since] : [])).all<Record<string, unknown>>()).results;
+  const tasks = (await c.env.DB.prepare(
+    `SELECT DISTINCT t.*, p.name AS project_name FROM tasks t
+     JOIN projects p ON p.id = t.project_id AND p.archived_at IS NULL
+     LEFT JOIN task_assignees a ON a.task_id = t.id AND a.user_id = ?
+     WHERE t.org_id = ? AND (${where})
+       AND ${since ? "datetime(t.updated_at) >= datetime(?, '-2 seconds')" : "t.status IN ('todo','in_progress','done')"}
+     ORDER BY t.created_at`,
+  ).bind(userId, orgId, ...projectIds, userId, ...(since ? [since] : [])).all<Record<string, unknown>>()).results;
 
   // Справочник людей едет только с ПОЛНЫМ снимком: он меняется на порядки реже
   // задач, а опрос идёт каждые несколько секунд. Видимость -- по дереву

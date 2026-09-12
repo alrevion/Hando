@@ -73,6 +73,22 @@ describe('видимость по дереву', () => {
     expect(snap.users.map((u) => u.id).sort()).toEqual(['a2', 'w2']);
   });
 
+  it('задача с ЧУЖОЙ доски видна исполнителю: иначе принятое поручение пропадает', async () => {
+    const env = await world();
+    tg();
+    // Вика состоит только на p2. Владелец поручает ей задачу на p1 -- членом
+    // p1 она от этого не становится, но задача обязана быть в её снимке:
+    // карточку в Telegram она получила и приняла.
+    expect((await api(env, '/projects/p1/tasks', 'POST', { title: 'Собрать вещи', responsible_user_id: 'w2' }, 'boss', 'creator')).status).toBe(201);
+    const snap = await (await api(env, '/org/snapshot', 'GET', undefined, 'w2', 'member'))
+      .json<{ projects: { id: string }[]; tasks: { title: string; project_name: string }[] }>();
+    const seen = snap.tasks.find((t) => t.title === 'Собрать вещи')!;
+    expect(seen).toBeTruthy();
+    // Имя доски приезжает с задачей -- в списке своих досок чужой p1 нет и быть не должно.
+    expect(seen.project_name).toBeTruthy();
+    expect(snap.projects.map((p) => p.id)).toEqual(['p2']);
+  });
+
   it('поручать можно только видимым: чужой отдел -- отказ, у владельца -- нет границ', async () => {
     const env = await world();
     tg();
@@ -214,6 +230,36 @@ describe('заморозка и удаление', () => {
     const m = await testEnv.DB.prepare('SELECT left_at FROM org_memberships WHERE org_id = ? AND user_id = ?').bind(ORG_A, 'w1').first<{ left_at: string | null }>();
     expect(m!.left_at).not.toBeNull();
     expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM tasks WHERE id='t1'").first<{ n: number }>())!.n).toBe(1);
+  });
+});
+
+describe('удаление организации перевыпускает куку', () => {
+  it('единственная организация: кука без организации, а не 401 до перезагрузки', async () => {
+    const env = await world();
+    tg();
+    const res = await api(env, `/orgs/${ORG_A}`, 'DELETE');
+    expect(res.status).toBe(200);
+    expect(await res.json<{ org_id: string | null }>()).toMatchObject({ org_id: null });
+    // Кука пришла в ответе -- следующий запрос идёт уже с ней, и это НЕ 401.
+    const fresh = `session=${/session=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')![1]}`;
+    const me = await apiRoutes.request('/me', { headers: { Cookie: fresh } }, env);
+    expect(me.status).toBe(200);
+    expect((await me.json<{ user: { org_id: string | null } }>()).user.org_id).toBeNull();
+  });
+
+  it('осталась вторая организация -- кука выпускается на неё', async () => {
+    const env = await world();
+    tg();
+    await testEnv.DB.prepare("INSERT INTO orgs (id, name, timezone) VALUES ('org-2', 'Вторая', 'Asia/Tashkent')").run();
+    await testEnv.DB.prepare(
+      `INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at, created_at)
+       VALUES ('m-2', 'org-2', 'boss', 'creator', datetime('now'), datetime('now'))`,
+    ).run();
+    const res = await api(env, `/orgs/${ORG_A}`, 'DELETE');
+    expect(await res.json<{ org_id: string | null }>()).toMatchObject({ org_id: 'org-2' });
+    const fresh = `session=${/session=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')![1]}`;
+    const snap = await apiRoutes.request('/org/snapshot', { headers: { Cookie: fresh } }, env);
+    expect(snap.status).toBe(200);
   });
 });
 

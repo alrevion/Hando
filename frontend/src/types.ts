@@ -60,6 +60,8 @@ export interface Task {
   // список, а не колонка: tasks.responsible_user_id снята contract-релизом.
   assignees: Assignee[];
   author_id: string | null;
+  /** Имя доски: приезжает со снимком, потому что доска может быть чужой. */
+  project_name?: string | null;
   kind: 'single' | 'each' | 'any' | 'ack';
   status: TaskStatus;
   priority: Priority;

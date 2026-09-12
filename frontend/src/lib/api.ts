@@ -280,7 +280,7 @@ export const joinOrgByCode = (code: string) =>
 export const switchOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}/switch`, { method: 'POST' });
 export const renameOrg = (orgId: string, name: string) =>
   request<{ ok: true }>(`/orgs/${orgId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
-export const deleteOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}`, { method: 'DELETE' });
+export const deleteOrg = (orgId: string) => request<{ ok: true; org_id: string | null }>(`/orgs/${orgId}`, { method: 'DELETE' });
 export const leaveOrg = (orgId: string) => request<{ ok: true }>(`/orgs/${orgId}/leave`, { method: 'POST' });
 export const setMyName = (name: string) =>
   request<{ ok: true; name: string }>('/me', { method: 'PATCH', body: JSON.stringify({ name }) });
