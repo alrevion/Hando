@@ -1440,7 +1440,7 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
     ...(await Promise.all(assignees.map((uid) =>
       // Та же карточка, что у задач из бота: субъект -- автор, иначе «От кого»
       // печатало бы имя самого получателя.
-      buildNotification(c.env, created, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(created) },
+      buildNotification(c.env, created, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(created, uid) },
         b.deadline ?? null, uid, c.get('userId')),
     ))),
   ]);

@@ -160,7 +160,7 @@ export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
     if (working(r, now) && dueNow(log, r.id, 'not_accepted', dueToday ? HOURLY_MS : ONCE, now)) {
       writes.push(queueReminder(env, r,
         `⏳ Не принято: «${r.title}»${r.due_at ? `\nСрок: ${formatWhen(r.due_at, r.timezone)}` : ''}\nПримите или откажитесь — автор ждёт.`,
-        'not_accepted', { gated: true, buttons: assigneeButtons({ id: r.task_id, kind: r.kind }) }));
+        'not_accepted', { gated: true, buttons: assigneeButtons({ id: r.task_id, kind: r.kind, author_id: r.author_id }, r.user_id) }));
       writes.push(mark(env, r.id, 'not_accepted', now));
     }
     if (working(r, now) && age >= 3 * HOUR_MS && r.author_id && r.author_id !== r.user_id && dueNow(log, r.id, 'author_not_accepted', ONCE, now)) {

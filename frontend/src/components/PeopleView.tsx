@@ -356,7 +356,7 @@ export function PeopleView() {
                             >
                               <span className="grow">
                                 <span className="t-title" style={{ fontSize: 15, fontWeight: 500 }}>{task.title}</span>
-                                <TaskMeta task={task} projectName={projectName} showProject={projects.length > 1} line />
+                                <TaskMeta task={task} projectName={projectName} showProject={projects.length > 1} />
                               </span>
                             </button>
                           </li>

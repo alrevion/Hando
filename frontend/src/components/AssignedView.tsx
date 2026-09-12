@@ -95,7 +95,7 @@ export function AssignedView({ user }: { user: User }) {
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
                   <button type="button" style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }} onClick={() => setViewing(task)}>
                     <span className="t-title">{task.title}</span>
-                    <TaskMeta task={task} projectName={projectName} showProject line showStage={false}
+                    <TaskMeta task={task} projectName={projectName} showProject showStage={false}
                       who={(task.assignees ?? []).filter((a) => a.user_id !== user.id).map((a) => ({ name: a.user_name, state: a.state }))} />
                   </button>
                   <div className="btn-row" style={{ marginTop: 10 }}>

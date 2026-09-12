@@ -68,7 +68,11 @@
   --accent-fg: #ffffff;
   --glass-bg: rgba(242, 242, 247, 0.72);
   --r: 14px;
-  --r-sm: 10px;
+  /* Радиус ОРГАНОВ УПРАВЛЕНИЯ -- пилюля, как у панели навигации: там
+     прямоугольник скруглён до предела, и это единственная форма кнопки во всём
+     интерфейсе. 10px давали «почти прямоугольник», из-за чего кнопки внизу
+     экрана и кнопки в карточках выглядели из разных систем. */
+  --r-sm: 999px;
   --dock-h: 62px;
   --safe-t: env(safe-area-inset-top, 0px);
   /* Не голый env(): в WebView Telegram он отдаёт 0, и док прилипал к самому
@@ -418,6 +422,18 @@ body.kb-open .bottom-nav {
   box-shadow: var(--card-ring);
   font-family: inherit;
 }
+/* Заголовок слева, действие справа СВЕРХУ: кнопка движения по этапам стоит
+   там, куда смотрят после темы, а не под меткам. flex-start прижимает её к
+   верхней строке, а не к центру карточки. */
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.card-head > .card-tap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .card-tap {
   cursor: pointer;
   transition: transform 0.12s, background 0.15s;
@@ -433,13 +449,18 @@ body.kb-open .bottom-nav {
 }
 
 .t-title {
-  display: block;
+  /* Длинная тема переносится на ВТОРУЮ строку, а не обрывается многоточием на
+     первой: «Подготовить отчёт по продажам за…» не говорит, о чём задача.
+     Потолок -- две строки, дальше многоточие: карточка остаётся карточкой. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   font-size: 16px;
   font-weight: 600;
   line-height: 1.3;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .t-meta {
   display: flex;
@@ -475,15 +496,6 @@ body.kb-open .bottom-nav {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
-}
-/* Метки задачи одной строкой: перенос выключен, лишнее уезжает за край с
-   плавным затуханием -- три строки меток на карточке читаются хуже, чем
-   обрезанная четвёртая метка. */
-.pills-line {
-  flex-wrap: nowrap;
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(to right, #000 88%, transparent);
-  mask-image: linear-gradient(to right, #000 88%, transparent);
 }
 .num {
   flex-shrink: 0;
@@ -566,10 +578,9 @@ body.kb-open .bottom-nav {
      элементов управления, глаз не спотыкается о разнобой в ряд. */
   height: 36px;
   padding: 0 14px;
-  /* Скругление -- как у .btn-sm и .select-sm, а не пилюлей: чип здесь такая же
-     кнопка (фильтр этапа, выбор срока), и разные радиусы в одном ряду читаются
-     как разные по смыслу элементы. Пилюлей остаётся только .pill -- метка, а
-     не кнопка. */
+  /* Та же пилюля, что у .btn/.btn-sm/.select-sm: чип -- такая же кнопка
+     (фильтр этапа, выбор срока), и разные радиусы в одном ряду читаются как
+     разные по смыслу элементы. */
   border-radius: var(--r-sm);
   border: none;
   background: var(--fill2);
@@ -616,7 +627,7 @@ body.kb-open .bottom-nav {
   height: 48px;
   padding: 0 18px;
   border: none;
-  border-radius: var(--r);
+  border-radius: var(--r-sm);
   font-family: inherit;
   font-size: 15px;
   font-weight: 600;
@@ -648,9 +659,6 @@ body.kb-open .bottom-nav {
   width: auto;
   height: 36px;
   padding: 0 14px;
-  /* Пилюля 999px -- только у чипов (.chip): у малой кнопки те же радиусы,
-     что у основной (.r/.r-sm), иначе кнопка и чип в одном ряду читались как
-     один и тот же элемент управления. */
   border-radius: var(--r-sm);
   font-size: 13px;
 }
@@ -859,7 +867,7 @@ select.inp {
   justify-content: center;
   gap: 4px;
   border: none;
-  border-radius: 12px;
+  border-radius: 999px;
   background: none;
   color: var(--label);
   font-family: inherit;
@@ -1095,7 +1103,7 @@ select.inp {
 .more-ic {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
+  border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

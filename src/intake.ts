@@ -66,7 +66,7 @@ export async function createFromDraft(
   // продиктовал.
   for (const uid of draft.assigneeIds) {
     if (uid === who.userId) continue;
-    writes.push(await buildNotification(env, task, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(task) }, draft.deadline, uid, who.userId));
+    writes.push(await buildNotification(env, task, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(task, uid) }, draft.deadline, uid, who.userId));
   }
   await env.DB.batch(writes);
 

@@ -51,7 +51,7 @@ function Stage({
           <li key={task.id}>
             <button type="button" className={`card card-tap${isTaskOverdue(task) ? ' is-overdue' : ''}`} onClick={() => onOpen(task)}>
               <span className="t-title">{task.title}</span>
-              <TaskMeta task={task} projectName={nameById.get(task.project_id) ?? ''} showProject line />
+              <TaskMeta task={task} projectName={nameById.get(task.project_id) ?? ''} showProject />
             </button>
           </li>
         ))}

@@ -107,19 +107,22 @@ export function MyTasksView({ user }: { user: User }) {
               const blockedBy = dep && dep.status !== 'done' && dep.status !== 'archived' ? dep.title : undefined;
               const state = myRow(task, user.id)?.state;
               const isBusy = busy.has(task.id);
+              // Задача себе: «не успею» и «отказать» адресованы автору, а он
+              // здесь тот же человек -- отпрашиваться не у кого.
+              const selfTask = task.author_id === user.id;
               return (
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
-                  <button type="button" className="card-tap" style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }} onClick={() => setViewing(task)}>
-                    <span className="t-title">{task.title}</span>
-                    <TaskMeta task={task} projectName={projectName} showProject line showStage={false}
-                      extra={blockedBy ? <span className="pill pill-orange"><Lock aria-hidden="true" /><span>Ждёт «{blockedBy}»</span></span> : null} />
-                  </button>
-                  {current.key !== 'review' ? (
-                    <div className="btn-row" style={{ marginTop: 10 }}>
-                      {/* Движение по этапам -- КРУГЛАЯ стрелка, а не подпись во всю
-                          ширину: действие одно и то же на каждой карточке, и
-                          повторять его словами в каждой строке -- шум. Смысл
-                          читается из этапа, на котором стоит задача. */}
+                  <div className="card-head">
+                    <button type="button" className="card-tap" style={{ display: 'block', textAlign: 'left', background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }} onClick={() => setViewing(task)}>
+                      <span className="t-title">{task.title}</span>
+                      <TaskMeta task={task} projectName={projectName} showProject showStage={false}
+                        extra={blockedBy ? <span className="pill pill-orange"><Lock aria-hidden="true" /><span>Ждёт «{blockedBy}»</span></span> : null} />
+                    </button>
+                    {/* Движение по этапам -- КРУГЛАЯ стрелка в правом ВЕРХНЕМ
+                        углу, на одной строке с темой: действие одно и то же на
+                        каждой карточке, и повторять его словами в каждой строке
+                        -- шум. Смысл читается из этапа, на котором стоит задача. */}
+                    {current.key !== 'review' ? (
                       <button type="button" className="btn-icon is-accent" disabled={isBusy || (state === 'pending' && !!blockedBy)}
                         aria-label={state === 'pending' ? 'Взять в работу' : 'Сдать на проверку'}
                         title={state === 'pending' ? 'Взять в работу' : 'Сдать на проверку'}
@@ -128,6 +131,10 @@ export function MyTasksView({ user }: { user: User }) {
                           : act(task, () => moveTask(task.id, 'done'), 'Сдано'))}>
                         <ArrowRight aria-hidden="true" />
                       </button>
+                    ) : null}
+                  </div>
+                  {current.key !== 'review' && !selfTask ? (
+                    <div className="btn-row" style={{ marginTop: 10 }}>
                       <button type="button" className="btn btn-sm" disabled={isBusy} onClick={() => setAsking({ task, kind: 'late' })}>
                         <Clock aria-hidden="true" style={{ width: 14, height: 14 }} />Не успею
                       </button>

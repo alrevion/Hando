@@ -388,7 +388,7 @@ export async function reassignTask(env: Env, task: Task, toUserId: string, actor
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, 'task', ?, 'reassigned', ?, NULL, ?)`,
     ).bind(uuid(), actorId, task.org_id, task.id, toUserId, now),
-    await buildNotification(env, task, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(task) }, task.deadline ?? null, toUserId, actorId),
+    await buildNotification(env, task, 'created', { emoji: '📌', label: 'Вам поручено', buttons: assigneeButtons(task, toUserId) }, task.deadline ?? null, toUserId, actorId),
   ]);
   await recomputeTaskStatus(env, task, actorId);
 }

@@ -160,7 +160,6 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
                       projectName={projectName}
                       showProject={projects.length > 1}
                       who={who ? [{ name: who }] : undefined}
-                      line
                     />
                   </span>
                 </button>

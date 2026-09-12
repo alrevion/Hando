@@ -82,8 +82,14 @@ describe('карточка адресата', () => {
     expect(labels(card)).toEqual(['✅ Принять', '⏳ Не успею', '✖ Отказать', '📱 Открыть']);
   });
 
+  it('задаче себе -- только «Принять»: отпрашиваться не у кого', () => {
+    const own = { id: 'x', author_id: 'u1' };
+    expect(assigneeButtons(own, 'u1').flat().map((b) => b.text)).toEqual(['✅ Принять']);
+    expect(assigneeButtons(own, 'u2').flat().map((b) => b.text)).toEqual(['✅ Принять', '⏳ Не успею', '✖ Отказать']);
+  });
+
   it('рассылке «прочитать» -- одна кнопка «Ознакомился», и она закрывает задачу', async () => {
-    expect(assigneeButtons({ id: 'x', kind: 'ack' }).flat().map((b) => b.text)).toEqual(['👁 Ознакомился']);
+    expect(assigneeButtons({ id: 'x', kind: 'ack' }, 'u1').flat().map((b) => b.text)).toEqual(['👁 Ознакомился']);
     const env = await world();
     const spy = tg();
     await testEnv.DB.prepare("UPDATE tasks SET kind='ack' WHERE id='t1'").run();

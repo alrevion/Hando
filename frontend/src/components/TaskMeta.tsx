@@ -49,7 +49,7 @@ const STATE_TONE: Record<Assignee['state'], string> = {
 };
 
 export function TaskMeta({
-  task, projectName, showProject, showStage = true, who, extra, line,
+  task, projectName, showProject, showStage = true, who, extra,
 }: {
   task: Task;
   projectName?: string;
@@ -60,8 +60,6 @@ export function TaskMeta({
   who?: { name: string; state?: Assignee['state'] }[];
   /** Дополнительные метки экрана (например «Ждёт задачу»). */
   extra?: ReactNode;
-  /** Одной строкой без переноса -- для плотных списков. */
-  line?: boolean;
 }) {
   const overdue = isTaskOverdue(task);
   const PriorityIcon = PRIORITY_ICON[task.priority];
@@ -98,8 +96,8 @@ export function TaskMeta({
 
   return (
     <>
-      {hasFirst ? <span className={line ? 'pills pills-line' : 'pills'}>{first}</span> : null}
-      <span className={line ? 'pills pills-line' : 'pills'}>
+      {hasFirst ? <span className="pills">{first}</span> : null}
+      <span className="pills">
         <span className={PRIORITY_TONE[task.priority]}>
           <PriorityIcon aria-hidden="true" />
           <span>{PRIORITY_LABEL[task.priority]}</span>
