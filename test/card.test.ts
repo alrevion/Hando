@@ -225,11 +225,17 @@ describe('списки в боте: текущая организация, по 
     expect(first.text).toContain('10. «Задача 10»');
     expect(first.text).not.toContain('Задача 11');
     expect(first.text).not.toContain('Чужая');
-    expect(labels(first)).toEqual(['Далее ›', '📱 Открыть приложение']);
+    // Номер строки -- кнопка в саму задачу, пятёрками; текст и ссылка должны
+    // совпадать по номеру, иначе «3» открывала бы не третью строку.
+    expect(labels(first)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Далее ›', '📱 Открыть приложение']);
+    expect(first.reply_markup!.inline_keyboard![0]).toHaveLength(5);
+    expect(first.reply_markup!.inline_keyboard![0][0]).toMatchObject({ text: '1', web_app: { url: expect.stringContaining('?task=a0') } });
     await press(env, 'tg-w1', 'pg:m:1');
     const edited = calls(spy).filter(([u]) => u.includes('/editMessageText')).map(([, i]) => JSON.parse(String(i.body)) as Sent).at(-1)!;
     expect(edited.text).toContain('стр. 2/2');
     expect(edited.text).toContain('11. «Задача 11»');
-    expect(labels(edited)).toEqual(['‹ Назад', '📱 Открыть приложение']);
+    // Вторая страница: нумерация продолжается, а не начинается с единицы.
+    expect(labels(edited)).toEqual(['11', '12', '‹ Назад', '📱 Открыть приложение']);
+    expect(edited.reply_markup!.inline_keyboard![0][0]).toMatchObject({ text: '11', web_app: { url: expect.stringContaining('?task=a10') } });
   });
 });

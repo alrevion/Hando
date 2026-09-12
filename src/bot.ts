@@ -336,6 +336,12 @@ async function taskPage(env: Env, userId: string, orgId: string, kind: 'm' | 'a'
   if (p > 0) nav.push({ text: '‹ Назад', callback_data: `pg:${kind}:${p - 1}` });
   if (p + 1 < pages) nav.push({ text: 'Далее ›', callback_data: `pg:${kind}:${p + 1}` });
   const rows: InlineButton[][] = [];
+  // Номер строки -- кнопка в САМУ задачу. Без них список только называет
+  // задачи, а чтобы открыть одну, человек идёт в приложение и ищет её там
+  // заново. Пятёрками: больше в ряд Telegram сжимает до нечитаемого.
+  for (let i = 0; i < slice.length; i += 5) {
+    rows.push(slice.slice(i, i + 5).map((r, j) => openButton(r.id, String(p * PAGE + i + j + 1))));
+  }
   if (nav.length) rows.push(nav);
   rows.push([{ text: '📱 Открыть приложение', web_app: { url: `${APP_URL}/` } }]);
   return { text: lines.join('\n'), kb: { inline_keyboard: rows } };
@@ -510,7 +516,7 @@ botApp.post('/webhook', async (c) => {
         const taskId = await confirmDraft(c.env, row);
         await answerCallbackQuery(c.env, cq.id, taskId ? 'Создано' : 'Некуда положить');
         if (chat) {
-          if (taskId) await renderCreated(c.env, row, chat, tz);
+          if (taskId) await renderCreated(c.env, row, chat, tz, taskId);
           else await sendMessage(c.env, chat, 'Вас пока не добавили ни на одну доску — попросите руководителя.');
         }
         await drainOutbox(c.env);
@@ -698,7 +704,7 @@ botApp.post('/webhook', async (c) => {
           `✅ ${task.title}`,
           `Срок: ${formatWhen(iso, tz)}`,
           'Напомню за день до срока.',
-        ].join('\n'));
+        ].join('\n'), { inline_keyboard: [[openButton(task.id)]] });
       }
       await drainOutbox(c.env);
       return c.json({ ok: true });
@@ -765,7 +771,8 @@ botApp.post('/webhook', async (c) => {
       await reassignTask(c.env, task, chosen.id, who.userId);
       await answerCallbackQuery(c.env, cq.id, `Переназначено: ${chosen.name}`);
       if (chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
-      await sendMessage(c.env, String(cq.from.id), `↪ «${task.title}» — теперь у ${chosen.name}. Карточка ушла.`);
+      await sendMessage(c.env, String(cq.from.id), `↪ «${task.title}» — теперь у ${chosen.name}. Карточка ушла.`,
+        { inline_keyboard: [[openButton(task.id)]] });
       await drainOutbox(c.env);
       return c.json({ ok: true });
     }
@@ -795,7 +802,8 @@ botApp.post('/webhook', async (c) => {
       // группу, а заголовок туда уходить не должен (ADR-4).
       await sendMessage(c.env, String(cq.from.id), action === 'late'
         ? `Почему не успеваете «${task.title}»? Напишите или наговорите одной фразой — передам автору.`
-        : `Почему отказываетесь от «${task.title}»? Напишите или наговорите причину — передам автору.`);
+        : `Почему отказываетесь от «${task.title}»? Напишите или наговорите причину — передам автору.`,
+        { inline_keyboard: [[openButton(task.id)]] });
       return c.json({ ok: true });
     }
 
@@ -1200,7 +1208,8 @@ botApp.post('/webhook', async (c) => {
     const ok = st.await === 'late'
       ? await lateAssignee(c.env, task, mine, userId, phrase)
       : (await declineAssignee(c.env, task, mine, userId, phrase)).ok;
-    await sendMessage(c.env, chat, ok ? 'Передал автору.' : 'Уже нельзя: задача изменилась.');
+    await sendMessage(c.env, chat, ok ? 'Передал автору.' : 'Уже нельзя: задача изменилась.',
+      { inline_keyboard: [[openButton(task.id)]] });
     await drainOutbox(c.env);
     return c.json({ ok: true });
   }

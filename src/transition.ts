@@ -68,9 +68,13 @@ export function describeOverdue(seconds: number): string {
 
 export const APP_URL = 'https://hando.alrevion.com';
 
-/** «Открыть» -- прямо в задачу в мини-приложении. web_app работает в личке, а уведомления по ADR-4 идут только туда. */
-export function openButton(taskId: string): InlineButton {
-  return { text: '📱 Открыть', web_app: { url: `${APP_URL}/?task=${taskId}` } };
+/**
+ * «Открыть» -- прямо в ЭТУ задачу в мини-приложении. web_app работает в личке,
+ * а уведомления по ADR-4 идут только туда. Подпись меняется там, где кнопок
+ * несколько: в списке её место занимает номер строки.
+ */
+export function openButton(taskId: string, label = '📱 Открыть'): InlineButton {
+  return { text: label, web_app: { url: `${APP_URL}/?task=${taskId}` } };
 }
 
 /**

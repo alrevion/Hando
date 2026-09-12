@@ -17,6 +17,7 @@ import { createFromDraft } from './intake';
 import { canAssign } from './hierarchy';
 import { membershipRole } from './auth';
 import { editMessageText, sendMessage, type InlineKeyboard } from './telegram';
+import { openButton } from './transition';
 
 export type DraftRow = {
   id: string;
@@ -235,8 +236,12 @@ export async function renderDraft(env: Env, row: DraftRow, chatId: string, timeZ
   if (messageId) await patchDraft(env, row.id, { telegramChatId: chatId, telegramMessageId: messageId });
 }
 
-/** Карточка после подтверждения: та же, но уже без кнопок и с галочкой. */
-export async function renderCreated(env: Env, row: DraftRow, chatId: string, timeZone: string): Promise<void> {
+/**
+ * Карточка после подтверждения: та же, но уже с галочкой и ОДНОЙ кнопкой --
+ * в саму задачу. Текст про созданную задачу без ссылки на неё заставляет
+ * искать её руками: открыть приложение, найти список, найти строку.
+ */
+export async function renderCreated(env: Env, row: DraftRow, chatId: string, timeZone: string, taskId: string): Promise<void> {
   const ids = assigneesOf(row);
   const names = ids.length === 0 ? [] : (await env.DB.prepare(
     `SELECT name FROM users WHERE id IN (${ids.map(() => '?').join(',')})`,
@@ -249,10 +254,11 @@ export async function renderCreated(env: Env, row: DraftRow, chatId: string, tim
     `Важность: ${PRIORITY_RU[row.priority]}`,
     row.deadline ? 'Напомню заранее.' : 'Без срока напоминаний не будет -- его можно поставить в приложении.',
   ].join('\n');
+  const kb: InlineKeyboard = { inline_keyboard: [[openButton(taskId)]] };
   if (row.telegram_chat_id === chatId && row.telegram_message_id) {
-    if (await editMessageText(env, chatId, row.telegram_message_id, text)) return;
+    if (await editMessageText(env, chatId, row.telegram_message_id, text, kb)) return;
   }
-  await sendMessage(env, chatId, text);
+  await sendMessage(env, chatId, text, kb);
 }
 
 /**

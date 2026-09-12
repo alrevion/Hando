@@ -625,7 +625,7 @@ apiRoutes.post('/drafts/:id/confirm', async (c) => {
   if (!(await draftAssignable(c.env, row))) return c.json({ error: 'Кому-то из адресатов сейчас поручать нельзя', code: 'NOT_ASSIGNABLE' }, 409);
   const taskId = await confirmDraft(c.env, row);
   if (!taskId) return c.json({ error: 'Вас не добавили ни на одну доску', code: 'NO_BOARD' }, 409);
-  if (row.telegram_chat_id) await renderCreated(c.env, row, row.telegram_chat_id, await orgTz(c.env, c.get('orgId')));
+  if (row.telegram_chat_id) await renderCreated(c.env, row, row.telegram_chat_id, await orgTz(c.env, c.get('orgId')), taskId);
   await drainOutbox(c.env);
   return c.json({ id: taskId }, 201);
 });

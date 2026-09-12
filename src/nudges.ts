@@ -8,6 +8,7 @@
 //   -- каждый повод пишется в nudges, иначе три из пяти принятых метрик не
 //      имеют знаменателя: они считаются по строкам, а не по сообщениям.
 import type { Env } from './types';
+import { openButton } from './transition';
 import type { InlineButton } from './telegram';
 import { nowIso, uuid } from './db';
 import { localParts } from './quiet';
@@ -110,7 +111,9 @@ export async function enqueueNudges(env: Env): Promise<number> {
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).bind(uuid(), c.taskId, c.userId, c.orgId, `nudge_${c.kind}`, JSON.stringify({
         recipient_user_id: c.userId, text: c.text, delete_message_id: null, track: false,
-        keyboard: c.buttons ?? null,
+        // Кнопка в саму задачу -- к каждому поводу: повод называет задачу, и
+        // открыть её надо отсюда, а не поиском в приложении.
+        keyboard: [...(c.buttons ?? []), [openButton(c.taskId)]],
       }), now),
       env.DB.prepare(
         'INSERT INTO nudges (id, org_id, user_id, kind, actionable, task_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?)',

@@ -16,7 +16,7 @@ import type { Env } from '../src/types';
 let restore: { mockRestore(): void } | null = null;
 afterEach(() => { restore?.mockRestore(); restore = null; });
 const tg = () => (restore = stubTelegram()) as ReturnType<typeof stubTelegram>;
-type Sent = { chat_id: string; text: string; reply_markup?: { inline_keyboard?: { text: string; callback_data: string }[][] } };
+type Sent = { chat_id: string; text: string; reply_markup?: { inline_keyboard?: { text: string; callback_data?: string; web_app?: { url: string } }[][] } };
 /** Все отправки и правки карточек, по порядку: и sendMessage, и editMessageText. */
 const shown = (spy: ReturnType<typeof stubTelegram>) =>
   (spy.mock.calls as unknown as [string, { body?: string }][])
@@ -195,6 +195,21 @@ describe('бот: черновик правится, подтверждаетс�
     await press(env, `dc:${(await draft()).id}`);
     const att = await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM attachments').first<{ n: number }>();
     expect(att!.n).toBe(1);
+  });
+
+  it('карточка «создано» ведёт В САМУ задачу, а не в приложение вообще', async () => {
+    const env = await world();
+    const spy = tg();
+    await say(env, 'Азизу подготовить отчёт');
+    await press(env, `dc:${(await draft()).id}`);
+    // Карточка «создано» правит саму карточку черновика, а последним уходит
+    // письмо адресату -- ищем по тексту, а не по порядку.
+    const created = shown(spy).find((m) => m.text.startsWith('✅ Подготовить отчёт'))!;
+    expect(created).toBeTruthy();
+    const btn = created.reply_markup!.inline_keyboard![0][0];
+    const task = await testEnv.DB.prepare('SELECT id FROM tasks LIMIT 1').first<{ id: string }>();
+    expect(btn.text).toBe('📱 Открыть');
+    expect(btn.web_app!.url).toContain(`?task=${task!.id}`);
   });
 
   it('«Отменить» удаляет черновик; чужая кнопка не работает', async () => {
