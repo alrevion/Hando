@@ -74,6 +74,20 @@ export function dayEnd(s: OrgSchedule): string {
   return s.always_on ? '23:59' : s.work_end;
 }
 
+/**
+ * Последний рабочий день недели (1=пн..7=вс) -- это и есть «конец недели».
+ *
+ * Берётся из графика, а не из константы: у конторы неделя кончается в пятницу,
+ * у магазина в субботу, у семьи в воскресенье. Отдельной настройки для этого
+ * НЕТ намеренно -- она противоречила бы рабочим дням, которые уже выбраны в
+ * «Организации», и пришлось бы решать, какая из двух главнее.
+ */
+export function weekEndDay(s: OrgSchedule): number {
+  if (s.always_on) return 7;
+  const days = s.work_days.split(',').map(Number).filter((d) => d >= 1 && d <= 7);
+  return days.length ? Math.max(...days) : 5;
+}
+
 /** Час сводки: свой или начало рабочего дня. */
 export function digestAt(s: OrgSchedule): string {
   return s.digest_time ?? (s.always_on ? '09:00' : s.work_start);

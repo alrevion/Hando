@@ -3,6 +3,7 @@ import { CalendarDays, Check, ChevronsDown, ChevronsUp, Equal, LayoutGrid, Play,
 import type { Assignee, Priority, Task } from '../types';
 import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
 import { PRIORITY_LABEL } from '../lib/priority';
+import { anyStarted } from '../lib/tasks';
 
 /**
  * Признаки задачи метками: кто и где -- первой строкой, важность и срок --
@@ -37,6 +38,8 @@ const STAGE: Partial<Record<Task['status'], { label: string; tone: string; icon:
   in_progress: { label: 'Принято', tone: 'pill pill-blue', icon: Play },
   done: { label: 'На проверке', tone: 'pill pill-green', icon: Check },
 };
+/** «Принято» становится «В работе», когда кто-то из адресатов за неё сел. */
+const STARTED = { label: 'В работе', tone: 'pill pill-blue', icon: Play };
 
 /** Тон метки по состоянию адресата -- тот же словарь, что в поручениях. */
 const STATE_TONE: Record<Assignee['state'], string> = {
@@ -63,7 +66,8 @@ export function TaskMeta({
 }) {
   const overdue = isTaskOverdue(task);
   const PriorityIcon = PRIORITY_ICON[task.priority];
-  const stage = showStage ? STAGE[task.status] : undefined;
+  const base = showStage ? STAGE[task.status] : undefined;
+  const stage = base && task.status === 'in_progress' && anyStarted(task) ? STARTED : base;
   const StageIcon = stage?.icon;
 
   // Первая строка -- «где и кто», вторая -- «насколько срочно». Пустая строка

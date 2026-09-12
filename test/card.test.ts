@@ -242,7 +242,7 @@ describe('карточка адресата', () => {
     expect(sent(spy).find((m) => m.chat_id === 'tg-boss')!.text).toContain('👁 Ознакомился');
   });
 
-  it('«Принять»: автору «принято в работу», у адресата остаётся только «Открыть»', async () => {
+  it('«Принять»: автору «принято», у адресата остаётся следующий шаг -- «Начал»', async () => {
     const env = await world();
     const spy = tg();
     await press(env, 'tg-w1', 'accept:t1');
@@ -251,7 +251,27 @@ describe('карточка адресата', () => {
     expect(toBoss.text).toContain('🚀 Принято');
     expect(toBoss.text).toContain('Кто: Азиз Каримов');
     expect(edits(spy)).toHaveLength(1);
-    expect(labels(edits(spy)[0])).toEqual(['📱 Открыть']);
+    expect(labels(edits(spy)[0])).toEqual(['🚀 Начал', '📱 Открыть']);
+  });
+
+  it('«Начал»: состояние то же, появляется отметка времени и весть автору', async () => {
+    const env = await world();
+    await press(env, 'tg-w1', 'accept:t1');
+    const spy = tg();
+    await press(env, 'tg-w1', 'start:t1');
+    const r = (await testEnv.DB.prepare("SELECT state, started_at FROM task_assignees WHERE task_id='t1' AND user_id='w1'")
+      .first<{ state: string; started_at: string | null }>())!;
+    // Состояние НЕ менялось -- «в работе» это отметка поверх accepted.
+    expect(r.state).toBe('accepted');
+    expect(r.started_at).not.toBeNull();
+    expect(await status()).toBe('in_progress');
+    // Очередь могла довезти «Принято» тем же проходом -- ищем нужное письмо, а
+    // не первое подряд.
+    expect(sent(spy).some((m) => m.chat_id === 'tg-boss' && m.text.includes('🚀 В работе'))).toBe(true);
+    // Второе нажатие ничего не меняет.
+    await press(env, 'tg-w1', 'start:t1');
+    expect((await testEnv.DB.prepare("SELECT started_at FROM task_assignees WHERE task_id='t1' AND user_id='w1'")
+      .first<{ started_at: string }>())!.started_at).toBe(r.started_at);
   });
 
   it('«Не успею»: бот спрашивает причину, автор получает её с кнопками, строка не меняется', async () => {

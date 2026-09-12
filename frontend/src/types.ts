@@ -38,6 +38,8 @@ export interface Assignee {
   user_id: string;
   user_name: string;
   state: 'pending' | 'accepted' | 'done' | 'confirmed' | 'rejected' | 'declined';
+  /** Когда человек сел за работу. NULL при accepted -- «принято», дата -- «в работе». */
+  started_at: string | null;
   due_at: string | null;
 }
 

@@ -23,6 +23,13 @@ export type Assignee = {
   org_id: string;
   state: AssigneeState;
   accepted_at: string | null;
+  /**
+   * Когда человек СЕЛ ЗА РАБОТУ. Отдельно от accepted_at: «принял» -- это
+   * согласие, а не начало, и автор про разницу спрашивал прямо. Отметкой
+   * времени, а не состоянием: state закрыт CHECK'ом, и его правка в SQLite --
+   * пересборка таблицы. NULL при accepted -- «принято»; дата -- «в работе».
+   */
+  started_at: string | null;
   acknowledged_at: string | null;
   done_at: string | null;
   due_at: string | null;
@@ -183,6 +190,32 @@ export function rollup(kind: TaskKind, states: AssigneeState[]): TaskStatus {
 }
 
 /**
+ * «Сел за работу»: состояние остаётся accepted, появляется started_at.
+ *
+ * Отдельной функцией, а не флагом в transitionAssignee: перехода состояния тут
+ * нет, а значит нет ни проверки автомата, ни пересчёта статуса задачи --
+ * свёртка и до, и после даёт in_progress. Всё, что нужно, -- отметка времени,
+ * событие в журнал и весть автору.
+ */
+export async function startWork(env: Env, task: Task, mine: Assignee, actorId: string): Promise<boolean> {
+  if (mine.state !== 'accepted' || mine.started_at) return false;
+  const now = nowIso();
+  await env.DB.batch([
+    env.DB.prepare('UPDATE task_assignees SET started_at = ? WHERE id = ? AND started_at IS NULL').bind(now, mine.id),
+    env.DB.prepare(
+      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
+       VALUES (?, ?, ?, 'assignee', ?, 'started', NULL, NULL, ?)`,
+    ).bind(uuid(), actorId, task.org_id, mine.id, now),
+  ]);
+  if (task.author_id && task.author_id !== actorId) {
+    await env.DB.batch([await buildNotification(
+      env, task, 'started', { emoji: '🚀', label: 'В работе' }, task.deadline ?? null, task.author_id, actorId,
+    )]);
+  }
+  return true;
+}
+
+/**
  * Переводит строку адресата и пересчитывает статус задачи одним проходом.
  * Уведомление -- следствие перехода, идёт в outbox через applyTransition.
  */
@@ -214,7 +247,9 @@ export async function transitionAssignee(
   if (to === 'done') { sets.push('done_at = ?'); vals.push(now); }
   if (to === 'declined') { sets.push('declined_reason = ?'); vals.push(reason ?? null); }
   if (to === 'rejected') {
-    sets.push('done_at = NULL', 'last_escalated_at = NULL', 'reminder_sent_at = NULL', 'review_reminded_at = NULL');
+    // started_at тоже гасится: работа возвращена, и «в работе» она станет
+    // снова только когда человек за неё сядет.
+    sets.push('done_at = NULL', 'started_at = NULL', 'last_escalated_at = NULL', 'reminder_sent_at = NULL', 'review_reminded_at = NULL');
     if (dueAt !== undefined) { sets.push('due_at = ?'); vals.push(dueAt); }
   }
   // ОДИН batch, а не два .run(): ADR-1 требует этого именно потому, что

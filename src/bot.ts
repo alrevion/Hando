@@ -16,7 +16,7 @@
 import { Hono } from 'hono';
 import type { Env, Role, Task } from './types';
 import { nowIso } from './db';
-import { confirmWork, myAssignee, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
+import { confirmWork, myAssignee, startWork, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
 import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, sendTyping, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
@@ -32,7 +32,7 @@ import {
   setState, switchOrg, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner, START_TIPS } from './menu';
 import { download, extractMedia } from './media';
 import { formatWhen, learnAlias, parseTask, refineDraft, transcribe, localIso, localToday, matchPeople } from './parse';
-import { dayEnd, hm, loadSchedule, localHm, type OrgSchedule } from './schedule';
+import { dayEnd, hm, loadSchedule, localHm, weekEndDay, type OrgSchedule } from './schedule';
 import { askAssistant, classifyIntent } from './assistant';
 import { assignableMembers } from './hierarchy';
 import { APP_URL } from './transition';
@@ -181,8 +181,11 @@ function resolveDue(arg: string, today: { y: number; m: number; d: number }, s: 
   if (arg === 't0') return day(0);
   if (arg === 't1') return day(1);
   if (arg === 'we') {
+    // Конец недели -- ПОСЛЕДНИЙ РАБОЧИЙ день организации: у конторы пятница, у
+    // магазина суббота, у семьи с графиком 24/7 воскресенье. Прежняя формула
+    // всегда давала субботу -- и выходной конторе, и не-конец недели семье.
     const base = new Date(Date.UTC(today.y, today.m - 1, today.d));
-    return day((5 - ((base.getUTCDay() + 6) % 7) + 7) % 7);
+    return day((weekEndDay(s) - 1 - ((base.getUTCDay() + 6) % 7) + 7) % 7);
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(arg)) {
     const [y, m, d] = arg.split('-').map(Number);
@@ -467,7 +470,7 @@ botApp.post('/webhook', async (c) => {
       const org = await c.env.DB.prepare('SELECT industry_pack FROM orgs WHERE id = ?').bind(who.orgId).first<{ industry_pack: string }>();
       const people = await assignableMembers(c.env, who.orgId, who.userId, who.role);
       const roster = people.map((p) => ({ id: p.id, name: p.name, aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined }));
-      const draft = await parseTask(c.env, said, roster, who.userId, sched.timezone, new Date(), org?.industry_pack, dayEnd(sched));
+      const draft = await parseTask(c.env, said, roster, who.userId, sched.timezone, new Date(), org?.industry_pack, dayEnd(sched), weekEndDay(sched));
       const row = await saveDraft(c.env, who, draft, said, []);
       await setState(c.env, who.userId, { ...st, said: undefined });
       await answerCallbackQuery(c.env, cq.id, 'Завёл черновик');
@@ -807,6 +810,18 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
 
+    // «Начал» -- не переход состояния, а отметка времени: строка остаётся
+    // accepted, и автор узнаёт, что человек сел за работу, а не просто
+    // согласился.
+    if (action === 'start') {
+      const ok = await startWork(c.env, task, mine, who.userId);
+      await answerCallbackQuery(c.env, cq.id, ok ? 'В работе' : 'Уже отмечено');
+      if (ok && chat && msgId) {
+        await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
+      }
+      await drainOutbox(c.env);
+      return c.json({ ok: true });
+    }
     if (action !== 'accept' && action !== 'ack') {
       await answerCallbackQuery(c.env, cq.id);
       return c.json({ ok: true });
@@ -825,7 +840,13 @@ botApp.post('/webhook', async (c) => {
     // Иначе ту же кнопку можно нажать второй раз и увидеть «уже нельзя» на
     // собственное действие.
     if (res.ok && chat && msgId) {
-      await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
+      // После «Принять» на карточке остаётся следующий шаг -- «Начал». Для
+      // рассылки «ознакомиться» его нет: там принятие и есть выполнение.
+      await editMessageReplyMarkup(c.env, chat, msgId, {
+        inline_keyboard: [action === 'ack'
+          ? [openButton(task.id)]
+          : [{ text: '🚀 Начал', callback_data: `start:${task.id}` }, openButton(task.id)]],
+      });
     }
     await drainOutbox(c.env);
     return c.json({ ok: true });
@@ -1230,7 +1251,7 @@ botApp.post('/webhook', async (c) => {
       Object.assign(patch, await refineDraft(c.env, {
         title: target.title, assigneeIds: before, deadline: target.deadline,
         priority: target.priority, priorityExplicit: target.priority_explicit === 1,
-      }, phrase, roster, tz, org?.industry_pack, new Date(), dayEnd(sched)));
+      }, phrase, roster, tz, org?.industry_pack, new Date(), dayEnd(sched), weekEndDay(sched)));
       // Адресата сменили -- значит человека назвали словом, которого правила не
       // знают. Запоминаем его: следующая такая фраза разберётся без модели.
       const now = patch.assigneeIds;
@@ -1286,7 +1307,7 @@ botApp.post('/webhook', async (c) => {
   // и классификатор развёл бы их в одно из двух неверных русел. Срабатывает
   // только при глаголе команды И дословно названной теме -- см.
   // commandTaskByPhrase; иначе фраза идёт дальше и становится черновиком.
-  const edited = await commandTaskByPhrase(c.env, who, phrase, tz, org?.industry_pack, dayEnd(sched));
+  const edited = await commandTaskByPhrase(c.env, who, phrase, tz, org?.industry_pack, dayEnd(sched), weekEndDay(sched));
   if (edited) {
     await sendMessage(c.env, chat, edited.text, { inline_keyboard: [[openButton(edited.taskId)]] });
     await drainOutbox(c.env);
@@ -1311,7 +1332,7 @@ botApp.post('/webhook', async (c) => {
   }
 
   // ------------------------------------------------ новый черновик
-  const draft = await parseTask(c.env, phrase, roster, who.userId, tz, new Date(), org?.industry_pack, dayEnd(sched));
+  const draft = await parseTask(c.env, phrase, roster, who.userId, tz, new Date(), org?.industry_pack, dayEnd(sched), weekEndDay(sched));
 
   // Черновик БЕЗ ТЕМЫ ждёт ответа на свой же вопрос «чего это касается?».
   //

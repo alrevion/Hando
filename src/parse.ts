@@ -233,6 +233,8 @@ export function matchDeadline(
   text: string, now: Date, timeZone: string,
   /** Конец дня для «до завтра»/«в пятницу»: конец рабочего дня организации, у 24/7 -- 23:59. */
   dayEnd = '18:00',
+  /** Последний рабочий день недели (1=пн..7=вс): «в конце недели» -- это он. */
+  weekEnd = 5,
 ): { iso: string | null; usedWords: Set<string> } {
   const used = new Set<string>();
   const lower = text.toLowerCase();
@@ -267,6 +269,49 @@ export function matchDeadline(
     base = midnight; hardEnd = '23:59'; mark('до', 'завтра');
   }
   else if (word('завтра').test(lower)) { base = new Date(midnight.getTime() + 864e5); mark('завтра'); }
+
+  // СРОК-ОКОШКО: «в течение недели», «до конца месяца», «на этой неделе».
+  //
+  // Раньше такая фраза не совпадала ни с чем, и задача рождалась БЕЗ срока --
+  // то есть без единого напоминания, хотя человек срок назвал. «В течение
+  // недели» -- это обещание успеть до её конца, поэтому берётся последний
+  // момент окна, а не середина: раньше напомнить можно, позже -- уже поздно.
+  if (!base) {
+    // Два оборота, а не один: «в течение/до конца/за» принимают и дни, и
+    // недели, и месяцы, а голое «на» -- только недели и месяцы. «На день» в
+    // речи почти всегда не срок («на день рождения»), а «на неделе» -- срок.
+    const win = lower.match(
+      /(?:в\s+течени[ея]|до\s+конца|за)\s+(?:(\d+|дв[ае]|двух|тр[иёе]х?|четыр[её]х?|пят[иь]|пар[ыу])\s+)?(дня|дней|день|недел[а-яё]*|месяц[а-яё]*)/i,
+    ) ?? lower.match(
+      /на\s+(?:эт[а-яё]+\s+)?()(недел[а-яё]*|месяц[а-яё]*)/i,
+    );
+    if (win) {
+      const WORDS: Record<string, number> = {
+        два: 2, две: 2, двух: 2, три: 3, трёх: 3, трех: 3, трие: 3,
+        четыре: 4, четырёх: 4, четырех: 4, пять: 5, пяти: 5, пары: 2, пару: 2,
+      };
+      const count = WORDS[win[1] ?? ''] ?? (win[1] ? Number(win[1]) : 1);
+      const unit = win[2].toLowerCase();
+      if (unit.startsWith('месяц')) {
+        // Конец месяца -- нулевой день следующего, то есть его последний день.
+        const d = new Date(Date.UTC(today.y, today.m - 1 + count, 0));
+        base = d;
+      } else if (unit.startsWith('недел')) {
+        // Одна неделя без числа -- ближайшая пятница, как кнопка «В конце
+        // недели». Две и больше -- ровно столько недель вперёд.
+        // Конец недели -- последний РАБОЧИЙ день организации, а не всегда
+        // пятница: у семьи с графиком 24/7 это воскресенье, у магазина
+        // суббота. weekEnd приходит 1..7, индекс от понедельника -- на единицу
+        // меньше.
+        base = count > 1
+          ? new Date(midnight.getTime() + count * 7 * 864e5)
+          : new Date(midnight.getTime() + ((weekEnd - 1 - ((midnight.getUTCDay() + 6) % 7) + 7) % 7) * 864e5);
+      } else {
+        base = new Date(midnight.getTime() + (count - 1) * 864e5);
+      }
+      mark(...win[0].split(/\s+/));
+    }
+  }
 
   if (!base) {
     const days = lower.match(/через\s+(\d+)\s*(дн|день|дня|недел)[а-яё]*/i);
@@ -475,10 +520,10 @@ function buildTitle(text: string, used: Set<string>[]): string {
  * Уверенность требуется в АДРЕСАТЕ: задача без исполнителя бессмысленна, а
  * угадывать его нельзя. Срок необязателен -- поручения без срока нормальны.
  */
-export function parseByPattern(text: string, people: Person[], selfId: string, now: Date, timeZone: string, packId?: string | null, dayEnd?: string): Draft | null {
+export function parseByPattern(text: string, people: Person[], selfId: string, now: Date, timeZone: string, packId?: string | null, dayEnd?: string, weekEnd?: number): Draft | null {
   const clean = text.replace(LEAD_NOISE, '').trim();
   const { ids, ambiguous, usedWords } = matchPeople(clean, people);
-  const { iso, usedWords: dateWords } = matchDeadline(clean, now, timeZone, dayEnd);
+  const { iso, usedWords: dateWords } = matchDeadline(clean, now, timeZone, dayEnd, weekEnd);
   const { priority, usedWords: priorityWords } = matchPriority(clean, packId);
 
   // «напомни мне завтра...» -- поручение себе. Оно же личный слой: адресат
@@ -638,9 +683,11 @@ export async function parseTask(
   packId?: string | null,
   /** Конец дня из графика организации. */
   dayEnd?: string,
+  /** Последний рабочий день недели организации (1=пн..7=вс). */
+  weekEnd?: number,
 ): Promise<Draft> {
   const model = env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b';
-  const byPattern = parseByPattern(text, people, selfId, now, timeZone, packId, dayEnd);
+  const byPattern = parseByPattern(text, people, selfId, now, timeZone, packId, dayEnd, weekEnd);
   if (byPattern && byPattern.ambiguous.length > 0) return byPattern;
   if (byPattern) return { ...byPattern, ...(await splitTitle(env, byPattern.title, model)) };
 
@@ -723,12 +770,13 @@ export async function refineDraft(
   packId?: string | null,
   now: Date = new Date(),
   dayEnd?: string,
+  weekEnd?: number,
 ): Promise<Partial<DraftFields>> {
   const clean = correction.replace(LEAD_NOISE, '').trim();
   // «не Азизу, а Беку»: тот, кто после «не», -- прежний адресат, его ищем
   // НЕ надо, иначе черновик получил бы обоих.
   const who = matchPeople(clean.replace(/(?:^|\s)не\s+\S+,?(?=\s+а\s)/i, ' '), people);
-  const when = matchDeadline(clean, now, timeZone, dayEnd);
+  const when = matchDeadline(clean, now, timeZone, dayEnd, weekEnd);
   const pri = matchPriority(clean, packId);
 
   const patch: Partial<DraftFields> = {};

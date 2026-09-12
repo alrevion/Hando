@@ -8,7 +8,7 @@ import type { Env, Task } from './types';
 import { nowIso, uuid } from './db';
 import { logEvent } from './db';
 import { formatWhen, matchDeadline, matchPriority, type Draft } from './parse';
-import { buildAssignees, clearReminders, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, transitionAssignee, type Assignee } from './assignees';
+import { buildAssignees, clearReminders, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, startWork, transitionAssignee, type Assignee } from './assignees';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
 import { storeByFileId, type Media } from './media';
 import { ensureDefaultProject } from './signup';
@@ -136,8 +136,10 @@ export async function setTaskDeadline(env: Env, taskId: string, orgId: string, i
  */
 const startOfWord = (body: string) => new RegExp(`(?<![а-яёa-zA-Z])(?:${body})`, 'i');
 
-/** Взять в работу. */
-const V_START = startOfWord(String.raw`в\s+работу|беру|взял|возьму|начал|начинаю|приступил|принима[ею]|принял`);
+/** Согласиться взять поручение. «Принял» -- это ещё не «делаю». */
+const V_ACCEPT = startOfWord(String.raw`принима[ею]|принял|согласен|берусь|возьму`);
+/** Сесть за работу: следующий шаг после согласия. */
+const V_START = startOfWord(String.raw`в\s+работу|начал|начина[ею]|приступил|приступа[ею]|беру|взял|занялся|делаю`);
 /** Сдать на проверку. */
 const V_DONE = startOfWord(String.raw`готов[оа]?|сдела[нл]|выполн[иел]|законч|заверш|сда[лю]|отправил\s+на\s+проверку`);
 /** Принять работу -- это делает автор. */
@@ -212,9 +214,11 @@ export async function commandTaskByPhrase(
   timeZone: string,
   packId?: string | null,
   dayEndHm?: string,
+  /** Последний рабочий день недели организации (1=пн..7=вс). */
+  weekEnd?: number,
   now: Date = new Date(),
 ): Promise<{ taskId: string; text: string } | null> {
-  const anyVerb = V_START.test(phrase) || V_DONE.test(phrase) || V_CONFIRM.test(phrase)
+  const anyVerb = V_ACCEPT.test(phrase) || V_START.test(phrase) || V_DONE.test(phrase) || V_CONFIRM.test(phrase)
     || V_RETURN.test(phrase) || V_DECLINE.test(phrase) || V_LATE.test(phrase) || EDIT_VERB.test(phrase);
   if (!anyVerb) return null;
   const task = await taskInPhrase(env, who.orgId, who.userId, phrase);
@@ -238,7 +242,7 @@ export async function commandTaskByPhrase(
     // Новый срок: названный во фразе, иначе завтрашний день. Молча оставлять
     // прежний нельзя -- он уже прошёл, раз работу сдавали, и задача вернулась бы
     // просроченной в ту же секунду.
-    const when = matchDeadline(phrase, now, timeZone, dayEndHm);
+    const when = matchDeadline(phrase, now, timeZone, dayEndHm, weekEnd);
     const newDeadline = when.iso ?? new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
     const comment = phrase.trim().slice(0, 500);
     for (const a of submitted) {
@@ -273,7 +277,12 @@ export async function commandTaskByPhrase(
     if (!(await lateAssignee(env, task, mine, who.userId, phrase))) return null;
     return { taskId: task.id, text: `⏳ Передал автору: не успеваете по «${task.title}».` };
   }
-  if (mine && (V_START.test(phrase) || V_DONE.test(phrase))) {
+  // «Начал» по уже принятой задаче -- отметка времени, а не переход.
+  if (mine && V_START.test(phrase) && !V_DONE.test(phrase) && mine.state === 'accepted' && !mine.started_at) {
+    await startWork(env, task, mine, who.userId);
+    return { taskId: task.id, text: `🚀 «${task.title}» — в работе.` };
+  }
+  if (mine && (V_ACCEPT.test(phrase) || V_START.test(phrase) || V_DONE.test(phrase))) {
     const to = V_DONE.test(phrase) ? 'done' : 'accepted';
     // Зависимость держит старт так же, как в приложении: «проверить договор»
     // нельзя начать раньше «составить договор».
@@ -306,16 +315,24 @@ export async function commandTaskByPhrase(
         await confirmWork(env, fresh, who.userId, false);
       }
     }
+    // «Взял в работу» на непринятой задаче делает оба шага сразу: согласие и
+    // начало. Отдельного «примите сначала» человек не поймёт -- он уже сказал,
+    // что делает.
+    if (to === 'accepted' && V_START.test(phrase)) {
+      const fresh = await myAssignee(env, task.id, who.userId, who.orgId);
+      if (fresh) await startWork(env, task, fresh, who.userId);
+      return { taskId: task.id, text: `🚀 «${task.title}» — в работе.` };
+    }
     return {
       taskId: task.id,
-      text: to === 'accepted' ? `🚀 «${task.title}» — в работе.` : `✅ «${task.title}» сдана на проверку.`,
+      text: to === 'accepted' ? `👌 «${task.title}» принята.` : `✅ «${task.title}» сдана на проверку.`,
     };
   }
 
   // ---- правка полей. Только АВТОР: срок и важность -- его решения, а
   // исполнителю для «не успеваю» есть ветка выше.
   if (!author || !EDIT_VERB.test(phrase)) return null;
-  const when = matchDeadline(phrase, now, timeZone, dayEndHm);
+  const when = matchDeadline(phrase, now, timeZone, dayEndHm, weekEnd);
   const pri = matchPriority(phrase, packId);
   const rename = RENAME.reduce<RegExpMatchArray | null>((hit, re) => hit ?? phrase.match(re), null);
   const newTitle = rename ? rename[1].trim().replace(/^[«"']|[»"'.]$/g, '') : null;

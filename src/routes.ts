@@ -8,7 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
-import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, reassignTask, resetAssignees, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
+import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, reassignTask, resetAssignees, startWork, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { commandTaskByPhrase, setTaskDeadline } from './intake';
 import {
@@ -21,7 +21,7 @@ import { approveJoin, canCreateOrg, createOrg, inviteCodeFor, inviteLink, joinBy
 import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers, visibleUserIds } from './hierarchy';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
 import { askAssistant, type AskTurn } from './assistant';
-import { dayEnd, hm, loadSchedule } from './schedule';
+import { dayEnd, hm, loadSchedule, weekEndDay } from './schedule';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
 // larger, but would then be permanently unretrievable). Enforce the download cap
@@ -462,7 +462,8 @@ apiRoutes.post('/tasks/dictate', async (c) => {
 
   const org = await c.env.DB.prepare('SELECT timezone, industry_pack FROM orgs WHERE id = ?').bind(orgId)
     .first<{ timezone: string; industry_pack: string }>();
-  const draft = await parseTask(c.env, phrase, roster, userId, org?.timezone ?? 'Asia/Tashkent', new Date(), org?.industry_pack, dayEnd(await loadSchedule(c.env, orgId)));
+  const sched0 = await loadSchedule(c.env, orgId);
+  const draft = await parseTask(c.env, phrase, roster, userId, org?.timezone ?? 'Asia/Tashkent', new Date(), org?.industry_pack, dayEnd(sched0), weekEndDay(sched0));
   if (draft.ambiguous.length > 0) {
     return c.json({ error: 'Уточните, кого вы имели в виду', code: 'AMBIGUOUS', ambiguous: draft.ambiguous }, 409);
   }
@@ -685,7 +686,7 @@ apiRoutes.post('/drafts/:id/refine', async (c) => {
   const roster = people.map((p) => ({ id: p.id, name: p.name, aliases: p.aliases ? (JSON.parse(p.aliases) as string[]) : undefined }));
   const org = await c.env.DB.prepare('SELECT industry_pack FROM orgs WHERE id = ?').bind(c.get('orgId')).first<{ industry_pack: string }>();
   const sched = await loadSchedule(c.env, c.get('orgId'));
-  const patch = await refineDraft(c.env, current, phrase, roster, sched.timezone, org?.industry_pack, new Date(), dayEnd(sched));
+  const patch = await refineDraft(c.env, current, phrase, roster, sched.timezone, org?.industry_pack, new Date(), dayEnd(sched), weekEndDay(sched));
 
   // Поправка = разобрали неверно; отмечаем промах так же, как бот.
   if (Object.keys(patch).length > 0) await logMiss(c.env, c.get('userId'), c.get('orgId'));
@@ -976,7 +977,7 @@ async function taskCommand(c: Context<AppEnv>, question: string): Promise<string
     .bind(c.get('orgId')).first<{ industry_pack: string | null }>();
   const done = await commandTaskByPhrase(
     c.env, { userId: c.get('userId'), orgId: c.get('orgId') }, question,
-    sched.timezone, org?.industry_pack, dayEnd(sched),
+    sched.timezone, org?.industry_pack, dayEnd(sched), weekEndDay(sched),
   );
   if (!done) return null;
   await drainOutbox(c.env);
@@ -1115,14 +1116,14 @@ apiRoutes.get('/org/snapshot', async (c) => {
 async function attachAssignees(env: Env, orgId: string, tasks: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
   const taskIds = (tasks as { id: string }[]).map((t) => t.id);
   if (taskIds.length === 0) return [];
-  const rows: { task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }[] = [];
+  const rows: { task_id: string; user_id: string; state: string; started_at: string | null; due_at: string | null; user_name: string }[] = [];
   // Кусками: предел D1 -- 100 параметров на запрос.
   for (const part of chunks(taskIds)) {
     const { results } = await env.DB.prepare(
-      `SELECT a.task_id, a.user_id, a.state, a.due_at, u.name AS user_name
+      `SELECT a.task_id, a.user_id, a.state, a.started_at, a.due_at, u.name AS user_name
        FROM task_assignees a JOIN users u ON u.id = a.user_id
        WHERE a.org_id = ? AND a.task_id IN (${part.map(() => '?').join(',')}) ORDER BY a.created_at`,
-    ).bind(orgId, ...part).all<{ task_id: string; user_id: string; state: string; due_at: string | null; user_name: string }>();
+    ).bind(orgId, ...part).all<{ task_id: string; user_id: string; state: string; started_at: string | null; due_at: string | null; user_name: string }>();
     rows.push(...results);
   }
   const byTask = new Map<string, unknown[]>();
@@ -1639,8 +1640,20 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
   let task = c.get('task')!;
   const orgId = c.get('orgId');
   const userId = c.get('userId');
-  const { to } = await c.req.json<{ to?: TaskStatus }>().catch(() => ({ to: undefined }));
+  const { to } = await c.req.json<{ to?: TaskStatus | 'started' }>().catch(() => ({ to: undefined }));
   if (!to) return c.json({ error: 'to required' }, 400);
+
+  // «Сел за работу» -- не переход состояния, а отметка времени поверх
+  // accepted, поэтому ветка своя и короткая. Двигает ТОЛЬКО сам исполнитель:
+  // за человека решить, что он начал, нельзя -- это он знает, а не автор.
+  if (to === 'started') {
+    const mine = await myAssignee(c.env, task.id, userId, orgId);
+    if (!mine) return c.json({ error: 'only an assignee can start this task' }, 403);
+    if (!(await startWork(c.env, task, mine, userId))) return c.json({ error: 'task is not accepted' }, 409);
+    await drainOutbox(c.env);
+    return c.json({ success: true });
+  }
+
   // Словарь фронта -- в состояния адресата: доска говорит статусами задачи,
   // а движется теперь строка человека.
   const target = to === 'in_progress' ? 'accepted' : to === 'done' ? 'done' : null;

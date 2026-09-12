@@ -28,6 +28,26 @@ export function assigneeKey(task: Task): string {
   return task.assignees?.[0]?.user_id ?? task.id;
 }
 
+/**
+ * Этап строки: «принято» и «в работе» -- это одно состояние accepted, их
+ * разделяет started_at. Здесь единственное место перевода, чтобы девять
+ * экранов не считали его каждый по-своему.
+ */
+export type Stage = 'pending' | 'accepted' | 'started' | 'done' | 'other';
+
+export function stageOf(a: Assignee | undefined): Stage {
+  if (!a) return 'other';
+  if (a.state === 'pending') return 'pending';
+  if (a.state === 'accepted' || a.state === 'rejected') return a.started_at ? 'started' : 'accepted';
+  if (a.state === 'done') return 'done';
+  return 'other';
+}
+
+/** Начал ли кто-то из адресатов -- для этапа глазами автора. */
+export function anyStarted(task: Task): boolean {
+  return (task.assignees ?? []).some((a) => (a.state === 'accepted' || a.state === 'rejected') && !!a.started_at);
+}
+
 const STATE_LABEL: Record<Assignee['state'], string> = {
   pending: 'не принял',
   accepted: 'в работе',

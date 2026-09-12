@@ -10,7 +10,7 @@ import { toast } from '../lib/toast';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
 import { AskText } from './AskText';
-import { isMine, myRow } from '../lib/tasks';
+import { isMine, myRow, stageOf } from '../lib/tasks';
 
 const PRIORITY_RANK: Record<Priority, number> = Object.fromEntries(
   PRIORITIES.map((p, index) => [p.value, index]),
@@ -18,7 +18,7 @@ const PRIORITY_RANK: Record<Priority, number> = Object.fromEntries(
 
 const PAGE = 10;
 
-type Section = { key: 'todo' | 'in_progress' | 'review'; title: string; rows: ReturnType<typeof useOrgTasks>['tasks'] };
+type Section = { key: 'todo' | 'accepted' | 'started' | 'review'; title: string; rows: ReturnType<typeof useOrgTasks>['tasks'] };
 
 /**
  * «Задачи»: что поручили мне -- этапы прямо в списке (раздел 22). Здесь и
@@ -43,10 +43,15 @@ export function MyTasksView({ user }: { user: User }) {
   });
 
   const mine = tasks.filter(({ task }) => isMine(task, user.id));
+  // ЧЕТЫРЕ этапа, а не три: «принял» -- это согласие, «в работе» -- что человек
+  // за неё сел. Разные вещи, и владелец попросил их развести, согласившись на
+  // лишнее нажатие.
+  const at = (stage: string) => sort(mine.filter(({ task }) => stageOf(myRow(task, user.id)) === stage));
   const sections: Section[] = [
-    { key: 'todo', title: 'К выполнению', rows: sort(mine.filter(({ task }) => task.status === 'todo' && myRow(task, user.id)?.state === 'pending')) },
-    { key: 'in_progress', title: 'Принято', rows: sort(mine.filter(({ task }) => { const s = myRow(task, user.id)?.state; return s === 'accepted' || s === 'rejected'; })) },
-    { key: 'review', title: 'Сдано, на проверке', rows: sort(mine.filter(({ task }) => myRow(task, user.id)?.state === 'done' && !task.confirmed_at)) },
+    { key: 'todo', title: 'К выполнению', rows: at('pending') },
+    { key: 'accepted', title: 'Принято', rows: at('accepted') },
+    { key: 'started', title: 'В работе', rows: at('started') },
+    { key: 'review', title: 'Сдано', rows: sort(mine.filter(({ task }) => myRow(task, user.id)?.state === 'done' && !task.confirmed_at)) },
   ];
   const total = sections.reduce((n, s) => n + s.rows.length, 0);
   // Этапы сегментами -- те же колонки доски, только внутри «Задач»: один этап
@@ -95,7 +100,7 @@ export function MyTasksView({ user }: { user: User }) {
               <button key={sec.key} type="button" aria-pressed={i === stage}
                 className={i === stage ? 'chip on' : 'chip'}
                 onClick={() => { setStage(i); setShown(PAGE); }}>
-                {sec.key === 'review' ? 'Сдано' : sec.title}{sec.rows.length > 0 ? ` · ${sec.rows.length}` : ''}
+                {sec.title}{sec.rows.length > 0 ? ` · ${sec.rows.length}` : ''}
               </button>
             ))}
           </div>
@@ -105,7 +110,13 @@ export function MyTasksView({ user }: { user: User }) {
             {visible.map(({ task, projectName }) => {
               const dep = task.depends_on_task_id ? byId.get(task.depends_on_task_id) : undefined;
               const blockedBy = dep && dep.status !== 'done' && dep.status !== 'archived' ? dep.title : undefined;
-              const state = myRow(task, user.id)?.state;
+              const stage = stageOf(myRow(task, user.id));
+              // Стрелка ведёт по цепочке: принять -> начал -> сдать.
+              const next = stage === 'pending'
+                ? { to: 'in_progress' as const, label: 'Принять', done: 'Принято' }
+                : stage === 'accepted'
+                  ? { to: 'started' as const, label: 'Взять в работу', done: 'В работе' }
+                  : { to: 'done' as const, label: 'Сдать на проверку', done: 'Сдано' };
               const isBusy = busy.has(task.id);
               // Задача себе: «не успею» и «отказать» адресованы автору, а он
               // здесь тот же человек -- отпрашиваться не у кого.
@@ -123,12 +134,9 @@ export function MyTasksView({ user }: { user: User }) {
                         каждой карточке, и повторять его словами в каждой строке
                         -- шум. Смысл читается из этапа, на котором стоит задача. */}
                     {current.key !== 'review' ? (
-                      <button type="button" className="btn-icon is-accent" disabled={isBusy || (state === 'pending' && !!blockedBy)}
-                        aria-label={state === 'pending' ? 'Принять' : 'Сдать на проверку'}
-                        title={state === 'pending' ? 'Принять' : 'Сдать на проверку'}
-                        onClick={() => (state === 'pending'
-                          ? act(task, () => moveTask(task.id, 'in_progress'), 'Принято')
-                          : act(task, () => moveTask(task.id, 'done'), 'Сдано'))}>
+                      <button type="button" className="btn-icon is-accent" disabled={isBusy || (stage === 'pending' && !!blockedBy)}
+                        aria-label={next.label} title={next.label}
+                        onClick={() => act(task, () => moveTask(task.id, next.to), next.done)}>
                         <ArrowRight aria-hidden="true" />
                       </button>
                     ) : null}

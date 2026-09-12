@@ -131,7 +131,8 @@ export const createTask = (projectId: string, input: TaskInput) =>
 // full TaskInput up front.
 export const updateTask = (taskId: string, input: Partial<TaskInput> & { content_blocks?: string }) =>
   patch<Task>(`/tasks/${taskId}`, input);
-export const moveTask = (taskId: string, status: TaskStatus) =>
+/** 'started' -- не статус задачи, а отметка «сел за работу» на своей строке. */
+export const moveTask = (taskId: string, status: TaskStatus | 'started') =>
   post<Task>(`/tasks/${taskId}/move`, { to: status });
 export const confirmTask = (taskId: string) =>
   post<{ success: true; overdue_by: number | null }>(`/tasks/${taskId}/confirm`);
