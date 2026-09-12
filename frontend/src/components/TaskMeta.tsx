@@ -34,7 +34,7 @@ const PRIORITY_TONE: Record<Priority, string> = {
 };
 
 const STAGE: Partial<Record<Task['status'], { label: string; tone: string; icon: typeof Play }>> = {
-  in_progress: { label: 'В работе', tone: 'pill pill-blue', icon: Play },
+  in_progress: { label: 'Принято', tone: 'pill pill-blue', icon: Play },
   done: { label: 'На проверке', tone: 'pill pill-green', icon: Check },
 };
 

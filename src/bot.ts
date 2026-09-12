@@ -817,7 +817,7 @@ botApp.post('/webhook', async (c) => {
       task, assignee: mine, to: 'accepted', actorId: who.userId,
       notify: action === 'ack'
         ? { emoji: '👁', label: 'Ознакомился' }
-        : { emoji: '🚀', label: 'Принято в работу', track: true },
+        : { emoji: '🚀', label: 'Принято', track: true },
     });
     await answerCallbackQuery(c.env, cq.id, res.ok ? (action === 'ack' ? 'Отмечено' : 'Принято') : 'Уже нельзя');
 

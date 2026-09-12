@@ -1678,7 +1678,7 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
     && live.filter((a) => a.state !== 'declined').every((a) => a.user_id === userId);
 
   const notify = target === 'accepted'
-    ? { emoji: '🚀', label: 'В работе', track: true }
+    ? { emoji: '🚀', label: 'Принято', track: true }
     : { emoji: '✅', label: 'Готово', deletePrevious: true };
   for (const row of rows) {
     // Цепочка -- только за исполнителя: сам он идёт по этапам, как и в боте.

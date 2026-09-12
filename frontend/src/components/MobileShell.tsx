@@ -3,6 +3,7 @@ import { Archive, Bell, Building2, CalendarDays, ChevronLeft, ClipboardList, Fil
 import type { Task, User } from '../types';
 import { BottomNav, type NavTab } from './BottomNav';
 import { pushBack } from '../lib/telegram';
+import { getMyOrgs } from '../lib/api';
 import { ProfileSheet } from './ProfileSheet';
 import { CreateSheet } from './CreateSheet';
 import { MyTasksView } from './MyTasksView';
@@ -100,6 +101,11 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
       document.body.classList.remove('kb-open');
     };
   }, []);
+
+  // Список организаций греется ЗАРАНЕЕ, один раз за сессию: он нужен только
+  // шторке профиля, но нужен ей мгновенно -- открывать её на пустое место и
+  // дорисовывать через четверть секунды выглядит как подтормаживание.
+  useEffect(() => { void getMyOrgs().catch(() => undefined); }, []);
 
   const TITLE: Record<string, string> = { tasks: 'Мои задачи', assigned: 'Мои поручения', calendar: 'Календарь', more: 'Ещё' };
   const title = active === 'more' && sub ? SUB_TITLE[sub] : TITLE[active];

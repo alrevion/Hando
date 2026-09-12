@@ -3,7 +3,7 @@ import { Sheet } from './Sheet';
 import { LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { User } from '../types';
 import {
-  ApiError, deleteOrg, getMe, getMyOrgs, leaveOrg,
+  ApiError, cachedMyOrgs, deleteOrg, getMe, getMyOrgs, leaveOrg,
   renameOrg, setMyName, switchOrg, type MyOrg,
 } from '../lib/api';
 import { OrgJoinForm } from './OrgJoinForm';
@@ -40,7 +40,10 @@ const JOIN_ERROR: Record<string, string> = {
 export function ProfileSheet({ user, onClose }: { user: User; onClose: () => void }) {
   const { setUser } = useAuth();
   const { refresh } = useData();
-  const [orgs, setOrgs] = useState<MyOrg[]>([]);
+  // Прошлый ответ рисуется сразу, свежий приезжает следом: шторка открывается
+  // со списком, а не с пустотой на его месте.
+  const [orgs, setOrgs] = useState<MyOrg[]>(() => cachedMyOrgs() ?? []);
+  const [firstLoad, setFirstLoad] = useState(cachedMyOrgs() === null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -50,7 +53,9 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
   // Имя нужно самому Confirm -- строгий режим сверяет набранное со словом.
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
 
-  const load = () => { getMyOrgs().then(setOrgs).catch(() => setOrgs([])); };
+  const load = () => {
+    getMyOrgs().then(setOrgs).catch(() => setOrgs([])).finally(() => setFirstLoad(false));
+  };
   useEffect(load, []);
 
   /** Общая обёртка: одна кнопка -- одно действие -- один разбор ошибки. */
@@ -131,12 +136,13 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
 
         {/* ---- организации ---- */}
         <h3 className="sec-title">Организации</h3>
+        {firstLoad && orgs.length === 0 ? <p className="muted">Загрузка…</p> : null}
         <ul className="stack">
           {orgs.map((org) => {
             const owner = org.owner_user_id === user.id || org.role === 'creator';
             const current = org.is_current === 1;
             return (
-              <li key={org.id} className="card" style={current ? { boxShadow: '0 0 0 1.5px var(--accent)' } : undefined}>
+              <li key={org.id} className="card" style={current ? { boxShadow: 'inset 0 0 0 1.5px var(--accent)' } : undefined}>
                 {edit?.kind === 'rename' && edit.orgId === org.id ? (
                   field('Новое название', org.name, () => run(() => renameOrg(org.id, draft.trim()), 'reload'))
                 ) : (

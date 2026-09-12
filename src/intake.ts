@@ -292,7 +292,7 @@ export async function commandTaskByPhrase(
       const res = await transitionAssignee(env, {
         task, assignee: row, to: step, actorId: who.userId,
         notify: step === to
-          ? (to === 'accepted' ? { emoji: '🚀', label: 'В работе', track: true } : { emoji: '✅', label: 'Готово', deletePrevious: true })
+          ? (to === 'accepted' ? { emoji: '🚀', label: 'Принято', track: true } : { emoji: '✅', label: 'Готово', deletePrevious: true })
           : undefined,
       });
       if (!res.ok) return null; // переход не разрешён -- значит это была не команда

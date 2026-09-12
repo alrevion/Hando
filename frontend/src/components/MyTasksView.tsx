@@ -45,7 +45,7 @@ export function MyTasksView({ user }: { user: User }) {
   const mine = tasks.filter(({ task }) => isMine(task, user.id));
   const sections: Section[] = [
     { key: 'todo', title: 'К выполнению', rows: sort(mine.filter(({ task }) => task.status === 'todo' && myRow(task, user.id)?.state === 'pending')) },
-    { key: 'in_progress', title: 'В работе', rows: sort(mine.filter(({ task }) => { const s = myRow(task, user.id)?.state; return s === 'accepted' || s === 'rejected'; })) },
+    { key: 'in_progress', title: 'Принято', rows: sort(mine.filter(({ task }) => { const s = myRow(task, user.id)?.state; return s === 'accepted' || s === 'rejected'; })) },
     { key: 'review', title: 'Сдано, на проверке', rows: sort(mine.filter(({ task }) => myRow(task, user.id)?.state === 'done' && !task.confirmed_at)) },
   ];
   const total = sections.reduce((n, s) => n + s.rows.length, 0);
@@ -124,10 +124,10 @@ export function MyTasksView({ user }: { user: User }) {
                         -- шум. Смысл читается из этапа, на котором стоит задача. */}
                     {current.key !== 'review' ? (
                       <button type="button" className="btn-icon is-accent" disabled={isBusy || (state === 'pending' && !!blockedBy)}
-                        aria-label={state === 'pending' ? 'Взять в работу' : 'Сдать на проверку'}
-                        title={state === 'pending' ? 'Взять в работу' : 'Сдать на проверку'}
+                        aria-label={state === 'pending' ? 'Принять' : 'Сдать на проверку'}
+                        title={state === 'pending' ? 'Принять' : 'Сдать на проверку'}
                         onClick={() => (state === 'pending'
-                          ? act(task, () => moveTask(task.id, 'in_progress'), 'Взято в работу')
+                          ? act(task, () => moveTask(task.id, 'in_progress'), 'Принято')
                           : act(task, () => moveTask(task.id, 'done'), 'Сдано'))}>
                         <ArrowRight aria-hidden="true" />
                       </button>

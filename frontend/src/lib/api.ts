@@ -253,7 +253,25 @@ export const updateOrgSettings = (orgId: string, patchBody: OrgSettingsPatch) =>
 export const updateMe = (patchBody: { notify_mode?: 'all' | 'schedule'; remind_before_min?: number }) =>
   request<{ ok: true }>('/me', { method: 'PATCH', body: JSON.stringify(patchBody) });
 
-export const getMyOrgs = () => request<MyOrg[]>('/orgs/mine');
+/**
+ * Список организаций живёт в модуле между открытиями шторки.
+ *
+ * Шторка профиля открывалась ПУСТОЙ и дорисовывалась после ответа сервера --
+ * четверть секунды пустого места на месте списка читается как подтормаживание,
+ * хотя запрос ровно один. Кэш отдаёт прошлый ответ сразу, а свежий приезжает
+ * следом и молча заменяет его. Список меняется раз в месяц, поэтому устаревшие
+ * полсекунды здесь дешевле, чем пустой экран каждое открытие.
+ */
+let orgsCache: MyOrg[] | null = null;
+
+/** Что показать немедленно: прошлый ответ или ничего, если его ещё не было. */
+export const cachedMyOrgs = (): MyOrg[] | null => orgsCache;
+
+export const getMyOrgs = async (): Promise<MyOrg[]> => {
+  const orgs = await request<MyOrg[]>('/orgs/mine');
+  orgsCache = orgs;
+  return orgs;
+};
 /** Профиль отрасли: от него зависят отделы организации и словарь разбора. */
 export interface OrgPack {
   id: string;

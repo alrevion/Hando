@@ -42,7 +42,7 @@ export function AssignedView({ user }: { user: User }) {
   // осталось здесь.
   const sections = [
     { key: 'todo', title: 'К выполнению', rows: mine.filter(({ task }) => task.status === 'todo') },
-    { key: 'in_progress', title: 'В работе', rows: mine.filter(({ task }) => task.status === 'in_progress') },
+    { key: 'in_progress', title: 'Принято', rows: mine.filter(({ task }) => task.status === 'in_progress') },
     { key: 'done', title: 'Сдано', rows: mine.filter(({ task }) => task.status === 'done') },
   ];
   const [stage, setStage] = useState(0);

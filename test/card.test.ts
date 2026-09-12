@@ -248,7 +248,7 @@ describe('карточка адресата', () => {
     await press(env, 'tg-w1', 'accept:t1');
     expect((await row('w1'))!.state).toBe('accepted');
     const toBoss = sent(spy).find((m) => m.chat_id === 'tg-boss')!;
-    expect(toBoss.text).toContain('🚀 Принято в работу');
+    expect(toBoss.text).toContain('🚀 Принято');
     expect(toBoss.text).toContain('Кто: Азиз Каримов');
     expect(edits(spy)).toHaveLength(1);
     expect(labels(edits(spy)[0])).toEqual(['📱 Открыть']);

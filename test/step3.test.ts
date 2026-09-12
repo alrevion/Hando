@@ -158,7 +158,7 @@ describe('шаг 3: рассылка на четырнадцать челове�
     spy.mockClear();
     await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('boss', 'creator', ORG_A), { to: 'in_progress' }), env);
     const texts = sends(spy).map(([, init]) => JSON.parse(init!.body as string) as { chat_id: string; text: string });
-    expect(texts.some((m) => m.text.includes('В работе') && m.text.includes('Занести бумаги'))).toBe(true);
+    expect(texts.some((m) => m.text.includes('Принято') && m.text.includes('Занести бумаги'))).toBe(true);
   });
 
   it('у каждого адресата СВОЙ таймер: cron предупреждает всех, а не одного', async () => {
