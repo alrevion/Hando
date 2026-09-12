@@ -8,7 +8,7 @@ import type { Env, Task } from './types';
 import { nowIso, uuid } from './db';
 import { logEvent } from './db';
 import { formatWhen, matchDeadline, matchPriority, type Draft } from './parse';
-import { buildAssignees, clearReminders } from './assignees';
+import { buildAssignees, clearReminders, confirmWork, lateAssignee, loadAssignees, myAssignee, transitionAssignee } from './assignees';
 import { assigneeButtons, buildNotification } from './transition';
 import { storeByFileId, type Media } from './media';
 import { ensureDefaultProject } from './signup';
@@ -109,17 +109,46 @@ export async function setTaskDeadline(env: Env, taskId: string, orgId: string, i
   ]);
 }
 
-// --------------------------------------------- правка ДЕЙСТВУЮЩЕЙ задачи словами
+
+// ------------------------------------- ГОЛОСОМ И ТЕКСТОМ по действующей задаче
+//
+// Одна фраза -- одно действие над УЖЕ созданной задачей: двинуть по этапам,
+// принять работу, отпроситься, перенести срок, сменить важность, переименовать.
+// До сих пор словами правился только черновик: стоило нажать «Создать», и всё
+// остальное делалось руками в приложении. Диктовка ради этого и существует.
+//
+// ОБЩИЙ ПРЕДИКАТ у всех команд один и тот же и состоит из трёх условий:
+//   (1) во фразе есть глагол команды;
+//   (2) в ней ДОСЛОВНО названа тема задачи, к которой человек причастен;
+//   (3) команда реально что-то меняет.
+// Любое несовпадение -- и фраза идёт обычным путём, то есть становится новым
+// черновиком. Так «Азизу подготовить отчёт» при существующей задаче
+// «Подготовить отчёт» остаётся новым поручением, а не командой.
 
 /**
- * Глаголы правки. Признак срабатывания -- ТРИ условия сразу: глагол, дословно
- * названная тема своего поручения и хотя бы одно поле, которое реально
- * меняется. Одного глагола мало («сделай отчёт» -- это новая задача), одной
- * темы тоже: «Азизу подготовить отчёт» при существующем «Подготовить отчёт» --
- * новое поручение. Третье условие ловит остаток: глагол и тема совпали, а
- * менять нечего -- значит это не правка, и фраза идёт обычным путём.
+ * Глагол ищется ТОЛЬКО с начала слова.
+ *
+ * \b для этого не годится: в JS граница слова считается по ASCII, и рядом с
+ * кириллицей её просто нет. А без границы «готов» находится внутри
+ * «подготовить» -- и фраза «взял в работу подготовить отчёт» читалась бы как
+ * «готово», то есть задача прыгала бы сразу на проверку. Отрицательный
+ * ретроспективный просмотр даёт ровно нужное: перед глаголом не буква.
  */
-const EDIT_VERB = /(перенес|перенёс|перенеси|подвин|сдвин|поменя|измени|исправ|переименуй|обнови|продли|отлож|сдела[йи])/i;
+const startOfWord = (body: string) => new RegExp(`(?<![а-яёa-zA-Z])(?:${body})`, 'i');
+
+/** Взять в работу. */
+const V_START = startOfWord(String.raw`в\s+работу|беру|взял|возьму|начал|начинаю|приступил|принима[ею]|принял`);
+/** Сдать на проверку. */
+const V_DONE = startOfWord(String.raw`готов[оа]?|сдела[нл]|выполн[иел]|законч|заверш|сда[лю]|отправил\s+на\s+проверку`);
+/** Принять работу -- это делает автор. */
+const V_CONFIRM = startOfWord(String.raw`принима[ею]\s+работу|принял\s+работу|подтвержда[ею]|зач[её]т|проверил\s+и\s+принял`);
+/** Не успеваю: причина -- сама фраза. */
+const V_LATE = startOfWord(String.raw`не\s+успева[ею]|не\s+успе[юл]|опазд|задержива[ею]сь`);
+/**
+ * Правка полей. «сделай» тут намеренно шире остальных: он же начинает
+ * «сделай срочной», а пустая правка отсекается условием (3).
+ */
+const EDIT_VERB = startOfWord(String.raw`перенес|перенёс|перенеси|подвин|сдвин|поменя|измени|исправ|переименуй|обнови|продли|отлож|сдела[йи]`);
 
 /**
  * Переименование -- ТОЛЬКО с явным указателем: «переименуй «X» в «Y»»,
@@ -128,31 +157,44 @@ const EDIT_VERB = /(перенес|перенёс|перенеси|подвин|
  * Предлог обязателен, и берётся ПОСЛЕДНИЙ: во фразе «переименуй подготовить
  * отчёт в закрыть акты» первое «в» стоит внутри старой темы, и жадная звёздочка
  * нужна ровно затем, чтобы новой темой стало «закрыть акты», а не вся фраза.
+ *
+ * \b здесь НЕТ намеренно: в JS граница слова считается по ASCII, и после «й»
+ * её не существует -- регулярка с \b не срабатывала ни на одной русской фразе.
  */
-// \b здесь НЕТ намеренно: в JS граница слова считается по ASCII, и после «й»
-// её не существует -- регулярка с \b не срабатывала ни на одной русской фразе.
 const RENAME = [
   /(?:переименуй|тем[ауы]|назван[а-яё]+|заголов[а-яё]+)[^:]*:\s*(.{3,200})$/i,
   /(?:переименуй|тем[ауы]|назван[а-яё]+|заголов[а-яё]+).*\s(?:в|на)\s+(.{3,200})$/i,
 ];
 
 /**
- * Правка уже созданной задачи одной фразой: «перенеси срок по «сдать отчёт» на
- * пятницу», «сделай «закрыть акты» срочной».
+ * Задача, названная во фразе дословно. Берётся САМАЯ ДЛИННАЯ совпавшая тема:
+ * «отчёт» подойдёт трём задачам, «подготовить отчёт по продажам» -- одной.
  *
- * Зачем: до сих пор словами правился ТОЛЬКО черновик, а стоило нажать
- * «Создать» -- и менять приходилось руками в приложении. Диктовка ради этого и
- * существует, поэтому она обязана доставать и до начатой задачи.
- *
- * Правит АВТОР и только свои поручения: срок и важность -- его решения.
- * Исполнителю для «не успеваю» есть своя кнопка с причиной.
- *
- * Модель здесь НЕ зовётся: срок и важность узнаются теми же словарями, что при
- * разборе, а переименование требует явного указателя. Гадать на действующей
- * задаче дороже, чем на черновике: черновик человек видит перед собой, а
- * задача уже ушла исполнителю.
+ * Ищем среди тех, к которым человек причастен -- свои поручения и то, что
+ * поручили ему: команда этапа принадлежит исполнителю, команда правки -- автору,
+ * и разделяет их уже вызывающий.
  */
-export async function editTaskByPhrase(
+async function taskInPhrase(env: Env, orgId: string, userId: string, phrase: string): Promise<Task | null> {
+  const q = phrase.toLowerCase();
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT t.* FROM tasks t
+     LEFT JOIN task_assignees a ON a.task_id = t.id AND a.user_id = ?
+     WHERE t.org_id = ? AND t.status IN ('todo','in_progress','done')
+       AND (t.author_id = ? OR a.user_id IS NOT NULL)
+     ORDER BY t.updated_at DESC LIMIT 40`,
+  ).bind(userId, orgId, userId).all<Task>();
+  return results
+    .filter((t) => t.title.trim().length >= 4 && q.includes(t.title.toLowerCase()))
+    .sort((a, b) => b.title.length - a.title.length)[0] ?? null;
+}
+
+const PRI_RU: Record<string, string> = { urgent: 'высокая', medium: 'средняя', low: 'низкая' };
+
+/**
+ * Команда по действующей задаче. Возвращает, что сделано, -- или null, если
+ * фраза командой не оказалась и должна идти дальше обычным путём.
+ */
+export async function commandTaskByPhrase(
   env: Env,
   who: { userId: string; orgId: string },
   phrase: string,
@@ -161,21 +203,70 @@ export async function editTaskByPhrase(
   dayEndHm?: string,
   now: Date = new Date(),
 ): Promise<{ taskId: string; text: string } | null> {
-  if (!EDIT_VERB.test(phrase)) return null;
-  const q = phrase.toLowerCase();
-  const { results } = await env.DB.prepare(
-    `SELECT id, title, deadline, priority FROM tasks
-     WHERE org_id = ? AND author_id = ? AND status IN ('todo','in_progress','done')
-     ORDER BY updated_at DESC LIMIT 40`,
-  ).bind(who.orgId, who.userId).all<{ id: string; title: string; deadline: string | null; priority: string }>();
+  const anyVerb = V_START.test(phrase) || V_DONE.test(phrase) || V_CONFIRM.test(phrase)
+    || V_LATE.test(phrase) || EDIT_VERB.test(phrase);
+  if (!anyVerb) return null;
+  const task = await taskInPhrase(env, who.orgId, who.userId, phrase);
+  if (!task) return null;
 
-  // Самая ДЛИННАЯ совпавшая тема: «отчёт» подойдёт трём задачам, «подготовить
-  // отчёт по продажам» -- одной. Берём ту, о которой сказали подробнее.
-  const hit = results
-    .filter((t) => t.title.trim().length >= 4 && q.includes(t.title.toLowerCase()))
-    .sort((a, b) => b.title.length - a.title.length)[0];
-  if (!hit) return null;
+  const mine = await myAssignee(env, task.id, who.userId, who.orgId);
+  const author = task.author_id === who.userId;
 
+  // ---- этапы. Порядок веток важен: «принял работу» -- это приёмка автора, а
+  // просто «принял» у исполнителя -- взятие в работу. Проверяем длинное первым.
+  if (V_CONFIRM.test(phrase) && author) {
+    if (task.status !== 'done' || task.confirmed_at) return null;
+    await confirmWork(env, task, who.userId);
+    return { taskId: task.id, text: `✅ «${task.title}» принята. Задача закрыта.` };
+  }
+  if (mine && (V_START.test(phrase) || V_DONE.test(phrase))) {
+    const to = V_DONE.test(phrase) ? 'done' : 'accepted';
+    // Зависимость держит старт так же, как в приложении: «проверить договор»
+    // нельзя начать раньше «составить договор».
+    if (to === 'accepted' && task.depends_on_task_id) {
+      const dep = await env.DB.prepare('SELECT title, status FROM tasks WHERE id = ? AND org_id = ?')
+        .bind(task.depends_on_task_id, who.orgId).first<{ title: string; status: string }>();
+      if (dep && dep.status !== 'done' && dep.status !== 'archived') {
+        return { taskId: task.id, text: `⛔️ Сначала «${dep.title}» — «${task.title}» ждёт её.` };
+      }
+    }
+    // «Готово» из «не принял» -- две ступени сразу: человек не обязан сперва
+    // нажимать «в работу», если он уже всё сделал.
+    const steps = to === 'done' && mine.state === 'pending' ? (['accepted', 'done'] as const) : ([to] as const);
+    let row = mine;
+    for (const step of steps) {
+      const res = await transitionAssignee(env, {
+        task, assignee: row, to: step, actorId: who.userId,
+        notify: step === to
+          ? (to === 'accepted' ? { emoji: '🚀', label: 'В работе', track: true } : { emoji: '✅', label: 'Готово', deletePrevious: true })
+          : undefined,
+      });
+      if (!res.ok) return null; // переход не разрешён -- значит это была не команда
+      row = { ...row, state: step, accepted_at: row.accepted_at ?? nowIso() };
+    }
+    // ЗАДАЧА СЕБЕ закрывается сразу: спрашивать у себя же «примите работу» не у кого.
+    const fresh = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>();
+    if (to === 'done' && author && fresh && fresh.status === 'done' && !fresh.confirmed_at) {
+      const live = await loadAssignees(env, task.id, who.orgId);
+      if (live.filter((a) => a.state !== 'declined').every((a) => a.user_id === who.userId)) {
+        await confirmWork(env, fresh, who.userId, false);
+      }
+    }
+    return {
+      taskId: task.id,
+      text: to === 'accepted' ? `🚀 «${task.title}» — в работе.` : `✅ «${task.title}» сдана на проверку.`,
+    };
+  }
+  if (mine && V_LATE.test(phrase)) {
+    // Причина -- сама фраза: человек уже всё объяснил, второй раз спрашивать
+    // незачем. Автор получит её вместе с кнопками «перенести срок» и прочими.
+    if (!(await lateAssignee(env, task, mine, who.userId, phrase))) return null;
+    return { taskId: task.id, text: `⏳ Передал автору: не успеваете по «${task.title}».` };
+  }
+
+  // ---- правка полей. Только АВТОР: срок и важность -- его решения, а
+  // исполнителю для «не успеваю» есть ветка выше.
+  if (!author || !EDIT_VERB.test(phrase)) return null;
   const when = matchDeadline(phrase, now, timeZone, dayEndHm);
   const pri = matchPriority(phrase, packId);
   const rename = RENAME.reduce<RegExpMatchArray | null>((hit, re) => hit ?? phrase.match(re), null);
@@ -183,23 +274,22 @@ export async function editTaskByPhrase(
 
   const said: string[] = [];
   if (when.iso) {
-    await setTaskDeadline(env, hit.id, who.orgId, when.iso);
+    await setTaskDeadline(env, task.id, who.orgId, when.iso);
     said.push(`срок — ${formatWhen(when.iso, timeZone)}`);
   }
-  if (pri.usedWords.size > 0 && pri.priority !== hit.priority) {
+  if (pri.usedWords.size > 0 && pri.priority !== task.priority) {
     await env.DB.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ? AND org_id = ?')
-      .bind(pri.priority, nowIso(), hit.id, who.orgId).run();
-    said.push(`важность — ${pri.priority === 'urgent' ? 'высокая' : pri.priority === 'low' ? 'низкая' : 'средняя'}`);
+      .bind(pri.priority, nowIso(), task.id, who.orgId).run();
+    said.push(`важность — ${PRI_RU[pri.priority]}`);
   }
-  if (newTitle && newTitle.length >= 3 && newTitle.toLowerCase() !== hit.title.toLowerCase()) {
+  if (newTitle && newTitle.length >= 3 && newTitle.toLowerCase() !== task.title.toLowerCase()) {
     await env.DB.prepare('UPDATE tasks SET title = ?, updated_at = ? WHERE id = ? AND org_id = ?')
-      .bind(newTitle[0].toUpperCase() + newTitle.slice(1), nowIso(), hit.id, who.orgId).run();
+      .bind(newTitle[0].toUpperCase() + newTitle.slice(1), nowIso(), task.id, who.orgId).run();
     said.push(`тема — «${newTitle}»`);
   }
-  // Глагол был, задача нашлась, а менять нечего: молчим и пропускаем фразу
-  // дальше по обычному пути. Иначе «поменяй отчёт местами» съедалось бы здесь.
+  // Условие (3): глагол был, задача нашлась, а менять нечего -- не команда.
   if (said.length === 0) return null;
 
-  await logEvent(env.DB, { actorId: who.userId, orgId: who.orgId, targetType: 'task', targetId: hit.id, action: 'edited' });
-  return { taskId: hit.id, text: `✏️ «${hit.title}»: ${said.join(', ')}.` };
+  await logEvent(env.DB, { actorId: who.userId, orgId: who.orgId, targetType: 'task', targetId: task.id, action: 'edited' });
+  return { taskId: task.id, text: `✏️ «${task.title}»: ${said.join(', ')}.` };
 }

@@ -10,7 +10,7 @@ import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
 import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, reassignTask, resetAssignees, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
-import { setTaskDeadline } from './intake';
+import { commandTaskByPhrase, setTaskDeadline } from './intake';
 import {
   assigneesOf, confirmDraft, draftAssignable, getDraft, listDrafts, logMiss, mediaOf, patchDraft, removeDraft, renderCreated, renderDraft,
   saveDraft, type DraftPatch, type DraftRow,
@@ -941,6 +941,27 @@ apiRoutes.post('/users/:id/unfreeze', requireRole('admin', 'super_admin', 'creat
  * уехал бы в черновик поручения. Тот же whisper, тот же помощник, просто
  * вход -- файл.
  */
+/**
+ * Команда по действующей задаче из приложения -- тот же путь, что в боте.
+ *
+ * Экран «Вопрос» принимает и голос, и текст, и человек, сказавший туда «взял в
+ * работу отчёт», ждёт действия, а не рассказа о кнопках. Разошлись бы две
+ * ветки -- в боте команда работала бы, в приложении нет, и объяснить это было
+ * бы нечем.
+ */
+async function taskCommand(c: Context<AppEnv>, question: string): Promise<string | null> {
+  const sched = await loadSchedule(c.env, c.get('orgId'));
+  const org = await c.env.DB.prepare('SELECT industry_pack FROM orgs WHERE id = ?')
+    .bind(c.get('orgId')).first<{ industry_pack: string | null }>();
+  const done = await commandTaskByPhrase(
+    c.env, { userId: c.get('userId'), orgId: c.get('orgId') }, question,
+    sched.timezone, org?.industry_pack, dayEnd(sched),
+  );
+  if (!done) return null;
+  await drainOutbox(c.env);
+  return done.text;
+}
+
 apiRoutes.post('/ask/dictate', async (c) => {
   const form = await c.req.parseBody();
   const audio = form.audio;
@@ -948,6 +969,8 @@ apiRoutes.post('/ask/dictate', async (c) => {
   if (audio.size > MAX_ATTACHMENT_BYTES) return c.json({ error: 'Запись слишком длинная' }, 413);
   const question = (await transcribe(c.env, audio, audio.name || 'voice.webm'))?.trim();
   if (!question) return c.json({ error: 'Не удалось разобрать запись. Напишите текстом.' }, 422);
+  const command = await taskCommand(c, question);
+  if (command) return c.json({ question, answer: command });
   const me = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(c.get('userId')).first<{ name: string }>();
   const answer = await askAssistant(c.env, { userId: c.get('userId'), orgId: c.get('orgId'), role: c.get('role'), name: me?.name ?? '' }, question, []);
   // Вопрос возвращается тоже: человек должен видеть, что именно услышано.
@@ -962,6 +985,8 @@ apiRoutes.post('/ask', async (c) => {
     ? b.history.filter((h) => (h.role === 'user' || h.role === 'assistant') && typeof h.text === 'string').slice(-6)
         .map((h) => ({ role: h.role, text: h.text.slice(0, 2000) }))
     : [];
+  const command = await taskCommand(c, question);
+  if (command) return c.json({ answer: command });
   const me = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(c.get('userId')).first<{ name: string }>();
   const answer = await askAssistant(c.env, { userId: c.get('userId'), orgId: c.get('orgId'), role: c.get('role'), name: me?.name ?? '' }, question, history);
   return c.json({ answer });

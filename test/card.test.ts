@@ -49,6 +49,61 @@ const row = async (userId: string) =>
   (await testEnv.DB.prepare("SELECT state, declined_reason FROM task_assignees WHERE task_id='t1' AND user_id=?").bind(userId).first<{ state: string; declined_reason: string | null }>());
 const status = async () => (await testEnv.DB.prepare("SELECT status FROM tasks WHERE id='t1'").first<{ status: string }>())!.status;
 
+describe('этапы голосом и текстом', () => {
+  const state = async (u = 'w1') =>
+    (await testEnv.DB.prepare("SELECT state FROM task_assignees WHERE task_id='t1' AND user_id=?").bind(u).first<{ state: string }>())!.state;
+
+  it('«взял в работу» двигает СВОЮ строку, а не сдаёт задачу', async () => {
+    const env = await world();
+    const spy = tg();
+    // Ловушка: «готов» лежит внутри «подготовить». Без границы слова фраза
+    // читалась бы как «готово», и задача прыгнула бы сразу на проверку.
+    await say(env, 'tg-w1', 'взял в работу подготовить отчёт');
+    expect(await state()).toBe('accepted');
+    expect(await status()).toBe('in_progress');
+    const reply = sent(spy).find((m) => m.chat_id === 'tg-w1' && m.text.includes('в работе'))!;
+    expect(labels(reply)).toEqual(['📱 Открыть']);
+  });
+
+  it('«готово» из «не принял» проходит обе ступени разом', async () => {
+    const env = await world();
+    tg();
+    await say(env, 'tg-w1', 'подготовить отчёт готово');
+    expect(await state()).toBe('done');
+    expect(await status()).toBe('done');
+  });
+
+  it('автор принимает работу словами; исполнитель тем же словом -- не может', async () => {
+    const env = await world();
+    tg();
+    await say(env, 'tg-w1', 'подготовить отчёт сделано');
+    expect(await status()).toBe('done');
+    // Исполнитель «подтверждаю» не закрывает: приёмка -- дело автора.
+    await say(env, 'tg-w1', 'подтверждаю подготовить отчёт');
+    expect((await testEnv.DB.prepare("SELECT confirmed_at FROM tasks WHERE id='t1'").first<{ confirmed_at: string | null }>())!.confirmed_at).toBeNull();
+    await say(env, 'tg-boss', 'принимаю работу подготовить отчёт');
+    expect((await testEnv.DB.prepare("SELECT confirmed_at FROM tasks WHERE id='t1'").first<{ confirmed_at: string | null }>())!.confirmed_at).not.toBeNull();
+  });
+
+  it('«не успеваю» уходит автору причиной, а строка остаётся на месте', async () => {
+    const env = await world();
+    const spy = tg();
+    await say(env, 'tg-w1', 'не успеваю подготовить отчёт, жду документы от бухгалтерии');
+    expect(await state()).toBe('pending');
+    const toAuthor = sent(spy).find((m) => m.chat_id === 'tg-boss' && m.text.includes('Не успевает'))!;
+    expect(toAuthor.text).toContain('жду документы от бухгалтерии');
+  });
+
+  it('чужая задача командой не двигается: нет ни строки, ни авторства', async () => {
+    const env = await world();
+    tg();
+    await say(env, 'tg-w2', 'взял в работу подготовить отчёт');
+    expect(await state()).toBe('pending');
+    // Фраза не проглочена -- она ушла обычным путём и стала черновиком.
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(1);
+  });
+});
+
 describe('правка действующей задачи словами', () => {
   it('«перенеси срок» по названной теме двигает срок уже созданной задачи', async () => {
     const env = await world();

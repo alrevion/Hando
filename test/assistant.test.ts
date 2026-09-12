@@ -44,7 +44,9 @@ describe('помощник', () => {
     expect(a).toContain('2. «Купить бумагу»');
     expect(a).toContain('Сколько времени займёт');
     const how = await askAssistant(env, { userId: 'w1', orgId: ORG_A, role: 'member', name: 'Азиз' }, 'как отметить выполненную?');
-    expect(how).toContain('«Готово»');
+    // Не «нажмите Готово»: такой кнопки в приложении больше нет -- есть круглая
+    // стрелка и та же команда словами.
+    expect(how).toContain('уйдёт на проверку');
   });
 
   it('с моделью: задачи человека и история уходят в запрос, ответ возвращается', async () => {
@@ -115,7 +117,7 @@ describe('помощник', () => {
     expect(files).toContain('Прикрепить файл');
     expect(files).not.toContain('Календарь.');   // чужие разделы в ответ не лезут
 
-    expect(await askAssistant(env, me, 'как отметить выполненную?')).toContain('«Готово»');
+    expect(await askAssistant(env, me, 'как отметить выполненную?')).toContain('уйдёт на проверку');
     expect(await askAssistant(env, me, 'кто видит мои задачи?')).toContain('Владелец видит всё');
     expect(await askAssistant(env, me, 'как пригласить сотрудника?')).toContain('ссылка-приглашение');
     expect(await askAssistant(env, me, 'куда делась выполненная задача?')).toContain('Архив');

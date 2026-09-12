@@ -21,7 +21,7 @@ import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, sendTyping, t
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
 import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, hasPendingJoin, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
-import { editTaskByPhrase, setTaskDeadline } from './intake';
+import { commandTaskByPhrase, setTaskDeadline } from './intake';
 import {
   assigneesOf, confirmDraft, draftAssignable, draftByMessage, getDraft, latestDraft, listDrafts, mediaOf,
   logMiss, patchDraft, removeDraft, renderCreated, renderDraft, saveDraft, type DraftPatch,
@@ -1280,12 +1280,13 @@ botApp.post('/webhook', async (c) => {
   // Человеку в чате видно, что бот занят, -- иначе тишина читается как «не дошло».
   await sendTyping(c.env, chat);
 
-  // ПРАВКА ДЕЙСТВУЮЩЕЙ ЗАДАЧИ идёт первой -- до разбора намерения. «Перенеси
-  // срок по «сдать отчёт» на пятницу» -- это не вопрос и не новое поручение, а
-  // распоряжение о том, что уже создано, и классификатор развёл бы его в одно
-  // из двух неверных русел. Срабатывает только при глаголе правки И дословно
-  // названной теме своего же поручения -- см. editTaskByPhrase.
-  const edited = await editTaskByPhrase(c.env, who, phrase, tz, org?.industry_pack, dayEnd(sched));
+  // КОМАНДА ПО ДЕЙСТВУЮЩЕЙ ЗАДАЧЕ идёт первой -- до разбора намерения. «Взял в
+  // работу подготовить отчёт», «перенеси срок по «сдать отчёт» на пятницу» --
+  // это не вопрос и не новое поручение, а распоряжение о том, что уже создано,
+  // и классификатор развёл бы их в одно из двух неверных русел. Срабатывает
+  // только при глаголе команды И дословно названной теме -- см.
+  // commandTaskByPhrase; иначе фраза идёт дальше и становится черновиком.
+  const edited = await commandTaskByPhrase(c.env, who, phrase, tz, org?.industry_pack, dayEnd(sched));
   if (edited) {
     await sendMessage(c.env, chat, edited.text, { inline_keyboard: [[openButton(edited.taskId)]] });
     await drainOutbox(c.env);
