@@ -41,7 +41,19 @@ function localDayKey(date: Date): string {
  * под сеткой.
  */
 export function CalendarView({ currentUser }: { currentUser: User }) {
-  const { tasks, projects, loading, loadError } = useOrgTasks();
+  const { tasks: allTasks, projects, loading, loadError } = useOrgTasks();
+  // МОИ по умолчанию. Календарь -- личный планировщик, и чем больше у человека
+  // людей, тем бесполезнее он становится, если показывает сроки всего отдела
+  // вперемешку со своими. «Все» остаётся рядом переключателем: обзор нужен, но
+  // по требованию, а не постоянно.
+  const [scope, setScope] = useState<'mine' | 'all'>('mine');
+  const tasks = useMemo(
+    () => (scope === 'all'
+      ? allTasks
+      : allTasks.filter(({ task }) => task.author_id === currentUser.id
+          || (task.assignees ?? []).some((a) => a.user_id === currentUser.id))),
+    [allTasks, scope, currentUser.id],
+  );
   const { users } = useOrgUsers();
   const [cursor, setCursor] = useState(() => new Date());
   const [viewing, setViewing] = useState<Task | null>(null);
@@ -92,6 +104,16 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
       <h1 className="h1">Календарь</h1>
 
       {loadError ? <div role="alert" className="alert alert-err">{loadError}</div> : null}
+
+      {/* Чьи сроки в сетке. Показывается всем: у участника «все» -- это его
+          отдел, у руководителя -- его поддерево, у владельца -- организация.
+          Кому что видно, решает сервер одним правилом (hierarchy.visibleTasks). */}
+      <div className="chips" aria-label="Чьи задачи">
+        <button type="button" aria-pressed={scope === 'mine'} className={scope === 'mine' ? 'chip on' : 'chip'}
+          onClick={() => setScope('mine')}>Мои</button>
+        <button type="button" aria-pressed={scope === 'all'} className={scope === 'all' ? 'chip on' : 'chip'}
+          onClick={() => setScope('all')}>Все</button>
+      </div>
 
       <div className="card" style={{ padding: '12px 10px 10px' }}>
         <div className="t-row" style={{ alignItems: 'center', marginBottom: 6, padding: '0 4px' }}>

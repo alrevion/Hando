@@ -18,7 +18,7 @@ import {
 import { CATEGORIES, PACKS, pack } from './packs';
 import { learnAlias, localIso, parseTask, refineDraft, transcribe } from './parse';
 import { approveJoin, canCreateOrg, createOrg, inviteCodeFor, inviteLink, joinByCode, notifyApprover, pendingRequests, rejectJoin } from './signup';
-import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers, visibleUserIds } from './hierarchy';
+import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers, visibleTasks, visibleUserIds } from './hierarchy';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
 import { askAssistant, type AskTurn } from './assistant';
 import { dayEnd, hm, loadSchedule, weekEndDay } from './schedule';
@@ -904,24 +904,11 @@ apiRoutes.get('/orgs/:orgId/invite', requireRole('admin', 'super_admin', 'creato
 // бухгалтерию. Владелец видит всё.
 apiRoutes.get('/org/subtree-tasks', requireRole('admin', 'super_admin', 'creator'), async (c) => {
   const orgId = c.get('orgId');
-  const role = c.get('role');
-  let rows: Record<string, unknown>[];
-  if (role === 'creator' || role === 'super_admin') {
-    rows = (await c.env.DB.prepare("SELECT * FROM tasks WHERE org_id = ? AND status IN ('todo','in_progress','done') ORDER BY created_at").bind(orgId).all<Record<string, unknown>>()).results;
-  } else {
-    const ids = [...(await subtreeOf(c.env, orgId, c.get('userId'))), c.get('userId')];
-    // Кусками (предел D1 -- 100 параметров), с объединением по id.
-    const seen = new Map<string, Record<string, unknown>>();
-    for (const part of chunks(ids, 45)) {
-      const holes = part.map(() => '?').join(',');
-      const { results } = await c.env.DB.prepare(
-        `SELECT * FROM tasks t WHERE t.org_id = ? AND t.status IN ('todo','in_progress','done')
-           AND (t.author_id IN (${holes}) OR EXISTS (SELECT 1 FROM task_assignees a WHERE a.task_id = t.id AND a.user_id IN (${holes})))`,
-      ).bind(orgId, ...part, ...part).all<Record<string, unknown>>();
-      for (const r of results) seen.set(r.id as string, r);
-    }
-    rows = [...seen.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-  }
+  // ТО ЖЕ правило, что у снимка: руководитель отдела видит свой отдел и своё
+  // поддерево, а не всю компанию. Прежде здесь была вторая реализация, и она
+  // отдавала «Руководителю» всю организацию, хотя снимок отдавал ему только
+  // его доски -- один человек видел разный объём на двух экранах.
+  const rows = await visibleTasks(c.env, orgId, c.get('userId'), c.get('role'));
   return c.json({ tasks: await attachAssignees(c.env, orgId, rows) });
 });
 
@@ -1066,35 +1053,11 @@ apiRoutes.get('/org/snapshot', async (c) => {
          ORDER BY p.created_at DESC`,
       ).bind(userId, orgId, userId).all();
 
-  const projectIds = (projects as { id: string }[]).map((p) => p.id);
-  const holes = projectIds.map(() => '?').join(',');
-
-  // ЧТО ВИДНО. Доска -- не единственное основание: поручить можно кому угодно
-  // (R1-1), а членом своего отдела адресата это не делает. Пока условие было
-  // только «задачи моих досок», человек получал карточку в Telegram, принимал
-  // её -- и в «Моих задачах» не находил НИЧЕГО: доска-то чужая. Поэтому три
-  // основания через ИЛИ: моя доска, я исполнитель, я автор.
-  //
-  // Имя доски едет вместе с задачей: у задачи с чужой доски его неоткуда взять
-  // -- в списке projects этой доски нет и быть не должно, иначе она попала бы в
-  // «Организацию» как «мой отдел».
-  const where = [
-    projectIds.length > 0 ? `t.project_id IN (${holes})` : null,
-    'a.user_id IS NOT NULL',
-    't.author_id = ?',
-  ].filter(Boolean).join(' OR ');
-  // Полная загрузка отдаёт только живые задачи -- архив в планировщике не нужен.
-  // Догрузка, наоборот, БЕЗ фильтра по статусу: ушедшая в архив задача обязана
-  // доехать до клиента, иначе она навсегда останется висеть у него на экране.
-  // Клиент выбрасывает её сам, увидев status = 'archived'.
-  const tasks = (await c.env.DB.prepare(
-    `SELECT DISTINCT t.*, p.name AS project_name FROM tasks t
-     JOIN projects p ON p.id = t.project_id AND p.archived_at IS NULL
-     LEFT JOIN task_assignees a ON a.task_id = t.id AND a.user_id = ?
-     WHERE t.org_id = ? AND (${where})
-       AND ${since ? "datetime(t.updated_at) >= datetime(?, '-2 seconds')" : "t.status IN ('todo','in_progress','done')"}
-     ORDER BY t.created_at`,
-  ).bind(userId, orgId, ...projectIds, userId, ...(since ? [since] : [])).all<Record<string, unknown>>()).results;
+  // Задачи -- по ОБЩЕМУ правилу видимости (hierarchy.visibleTasks), тому же,
+  // что у «Всех заданий». Списки досок и задач считаются отдельно намеренно:
+  // доска, на которой человек не состоит, не должна попадать в «Организацию»
+  // как его отдел, а задача с неё -- обязана быть видна, если она его.
+  const tasks = await visibleTasks(c.env, orgId, userId, role, since);
 
   // Справочник людей едет только с ПОЛНЫМ снимком: он меняется на порядки реже
   // задач, а опрос идёт каждые несколько секунд. Видимость -- по дереву

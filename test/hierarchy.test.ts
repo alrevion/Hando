@@ -134,17 +134,39 @@ describe('видимость по дереву', () => {
     expect((await api(env, `/drafts/${d1.id}/confirm`, 'POST', {}, 'a1', 'admin')).status).toBe(409);
   });
 
-  it('«Все задания» -- поддерево, не вся организация', async () => {
+  it('«Все задания» -- отдел и поддерево, не вся компания; участнику вовсе закрыто', async () => {
     const env = await world();
     const titles = async (who: string, role: string) => {
       const r = await api(env, '/org/subtree-tasks', 'GET', undefined, who, role);
       if (r.status !== 200) return r.status;
-      return (await r.json<{ tasks: { title: string }[] }>()).tasks.map((t) => t.title);
+      return (await r.json<{ tasks: { title: string }[] }>()).tasks.map((t) => t.title).sort();
     };
-    expect(await titles('a1', 'admin')).toEqual(['Отчёт по рекламе']); // адресат w1 в поддереве a1
+    // Задача лежит на p1 и поручена w1 -- это отдел и поддерево a1.
+    expect(await titles('a1', 'admin')).toEqual(['Отчёт по рекламе']);
+    // У бухгалтера ни доски p1, ни w1 в поддереве -- чужого он не видит.
     expect(await titles('a2', 'admin')).toEqual([]);
     expect(await titles('boss', 'creator')).toEqual(['Отчёт по рекламе']);
     expect(await titles('w1', 'member')).toBe(403);
+  });
+
+  it('снимок и «Все задания» дают ОДИН И ТОТ ЖЕ объём: правило одно', async () => {
+    const env = await world();
+    tg();
+    // Задача в чужом для a1 отделе: ни на его доске, ни у его подчинённых.
+    expect((await api(env, '/projects/p2/tasks', 'POST', { title: 'Сверка касс', responsible_user_id: 'w2' }, 'a2', 'admin')).status).toBe(201);
+    const snapshot = async (who: string, role: string) =>
+      (await (await api(env, '/org/snapshot', 'GET', undefined, who, role)).json<{ tasks: { title: string }[] }>())
+        .tasks.map((t) => t.title).sort();
+    const overview = async (who: string, role: string) =>
+      (await (await api(env, '/org/subtree-tasks', 'GET', undefined, who, role)).json<{ tasks: { title: string }[] }>())
+        .tasks.map((t) => t.title).sort();
+    for (const [who, role] of [['boss', 'creator'], ['a1', 'admin'], ['a2', 'admin']] as const) {
+      expect(await snapshot(who, role), who).toEqual(await overview(who, role));
+    }
+    // И по существу: чужой отдел в объём a1 не входит, а к a2 входит.
+    expect(await snapshot('a1', 'admin')).not.toContain('Сверка касс');
+    expect(await snapshot('a2', 'admin')).toContain('Сверка касс');
+    expect(await snapshot('boss', 'creator')).toContain('Сверка касс');
   });
 });
 

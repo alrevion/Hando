@@ -19,7 +19,14 @@ export function MoreView({ user, onOpen, onProfile }: { user: User; onOpen: (sub
       ? [{ key: 'org' as const, title: 'Организация', hint: 'Название, график, сводка, ссылка-приглашение', icon: Building2 }]
       : []),
     { key: 'drafts', title: 'Черновики', hint: 'Продиктовано, но не подтверждено', icon: FileText },
-    ...(boss ? [{ key: 'all' as const, title: 'Все задания', hint: 'Обзор вашего поддерева', icon: Layers }] : []),
+    // «Все задания» -- единственный экран, где видно чужую работу целиком, и
+    // открывают его намеренно. Объём разный по роли: владельцу вся
+    // организация, руководителю отдела его отдел и подчинённые.
+    ...(boss ? [{
+      key: 'all' as const, title: 'Все задания',
+      hint: user.role === 'admin' ? 'Ваш отдел и ваши подчинённые' : 'Вся организация',
+      icon: Layers,
+    }] : []),
     { key: 'archive', title: 'Архив', hint: 'Сданное и закрытое, с журналом', icon: Archive },
     { key: 'notify', title: 'Уведомления', hint: 'Режим и «за сколько минут»', icon: Bell },
     { key: 'ask', title: 'Вопрос', hint: 'Спросить, попросить удалить или напомнить', icon: HelpCircle },

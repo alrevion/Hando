@@ -5,7 +5,7 @@
 // они делают, но не видит бухгалтерию. Владелец видит всё. Участник -- людей
 // своих досок. Роли три: creator, admin (руководитель отдела), member.
 import type { Env, Role, Task } from './types';
-import { nowIso, uuid } from './db';
+import { chunks, nowIso, uuid } from './db';
 import { buildNotification } from './transition';
 import type { InlineButton } from './telegram';
 
@@ -128,4 +128,74 @@ export async function returnOpenTasks(env: Env, orgId: string, userId: string, a
 export async function setFrozen(env: Env, orgId: string, userId: string, frozen: boolean): Promise<void> {
   await env.DB.prepare('UPDATE org_memberships SET frozen_at = ? WHERE org_id = ? AND user_id = ? AND left_at IS NULL')
     .bind(frozen ? nowIso() : null, orgId, userId).run();
+}
+
+// ------------------------------------------------ ЧТО ЧЕЛОВЕК ВИДИТ ИЗ ЗАДАЧ
+//
+// ОДНО ПРАВИЛО НА ВСЁ ПРИЛОЖЕНИЕ. Раньше их было два и они расходились:
+// снимок организации отдавал владельцу все доски, а руководителю только его
+// собственные, зато «Все задания» отдавали обоим вообще всё. Один и тот же
+// человек видел разный объём на двух экранах, и объяснить это было нечем.
+//
+//   владелец и руководитель организации -- вся организация;
+//   руководитель отдела -- свои доски и своё поддерево по дереву приглашений;
+//   участник -- свои доски и то, где он автор или исполнитель.
+//
+// Это же правило отвечает на вопрос «зачем владельцу видеть задания
+// подчинённых Азиза»: видеть он их может, но только на экране «Все задания»,
+// который открывают намеренно. В личные списки и календарь они не попадают --
+// там фильтр по себе, а уведомления о чужих задачах не приходят вовсе.
+
+export type TaskScope = 'all' | { projectIds: string[]; userIds: string[] };
+
+export async function visibleTaskScope(env: Env, orgId: string, userId: string, role: Role): Promise<TaskScope> {
+  if (BOSS.includes(role)) return 'all';
+  const { results: boards } = await env.DB.prepare(
+    `SELECT DISTINCT p.id FROM projects p
+     LEFT JOIN project_memberships m ON m.project_id = p.id AND m.user_id = ?
+     WHERE p.org_id = ? AND p.archived_at IS NULL AND (m.user_id IS NOT NULL OR p.created_by = ?)`,
+  ).bind(userId, orgId, userId).all<{ id: string }>();
+  const userIds = [userId, ...(role === 'admin' ? await subtreeOf(env, orgId, userId) : [])];
+  return { projectIds: boards.map((b) => b.id), userIds };
+}
+
+/**
+ * Видимые задачи организации. Единственное место, где живёт правило выше.
+ *
+ * since -- догрузка: БЕЗ фильтра по статусу, потому что ушедшая в архив задача
+ * обязана доехать до клиента, иначе она навсегда останется у него на экране.
+ * Имя доски едет вместе с задачей: доска может быть чужой, и в списке своих
+ * досок её нет и быть не должно.
+ */
+export async function visibleTasks(
+  env: Env, orgId: string, userId: string, role: Role, since?: string | null,
+): Promise<Record<string, unknown>[]> {
+  const scope = await visibleTaskScope(env, orgId, userId, role);
+  const head = `SELECT DISTINCT t.*, p.name AS project_name FROM tasks t
+     JOIN projects p ON p.id = t.project_id AND p.archived_at IS NULL
+     WHERE t.org_id = ? AND `;
+  const tail = ` AND ${since ? "datetime(t.updated_at) >= datetime(?, '-2 seconds')" : "t.status IN ('todo','in_progress','done')"}
+     ORDER BY t.created_at`;
+  const sinceBind = since ? [since] : [];
+
+  if (scope === 'all') {
+    return (await env.DB.prepare(head + '1 = 1' + tail).bind(orgId, ...sinceBind).all<Record<string, unknown>>()).results;
+  }
+  // Кусками по людям: предел D1 -- 100 параметров на запрос, а список
+  // подчинённых сам по себе не ограничен. Куски объединяются по id.
+  const ph = scope.projectIds.map(() => '?').join(',');
+  const seen = new Map<string, Record<string, unknown>>();
+  for (const part of chunks(scope.userIds, 35)) {
+    const uh = part.map(() => '?').join(',');
+    const where = [
+      scope.projectIds.length > 0 ? `t.project_id IN (${ph})` : null,
+      `t.author_id IN (${uh})`,
+      `EXISTS (SELECT 1 FROM task_assignees a WHERE a.task_id = t.id AND a.user_id IN (${uh}))`,
+    ].filter(Boolean).join(' OR ');
+    const { results } = await env.DB.prepare(head + `(${where})` + tail)
+      .bind(orgId, ...scope.projectIds, ...part, ...part, ...sinceBind)
+      .all<Record<string, unknown>>();
+    for (const r of results) seen.set(r.id as string, r);
+  }
+  return [...seen.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 }
