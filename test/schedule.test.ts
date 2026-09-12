@@ -93,6 +93,19 @@ describe('матрица напоминаний: дозировка', () => {
     expect(q.find((n) => n.kind === 'author_not_accepted')!.p.keyboard.flat().map((b) => b.text)).toEqual(['👤 Переназначить', '📱 Открыть']);
   });
 
+  it('«не принято» по задаче СЕБЕ -- другой текст и одна кнопка', async () => {
+    const env = await world(at('17:00').toISOString());
+    // Автор и исполнитель -- один человек: отпрашиваться не у кого.
+    await testEnv.DB.prepare("UPDATE tasks SET author_id = 'w1' WHERE id = 't1'").run();
+    await createdAgo(120);
+    await remindNotAccepted(env, NOW);
+    const n = (await queued()).find((x) => x.kind === 'not_accepted')!;
+    expect(n.p.text).toContain('Ещё не начато: «Подготовить отчёт»');
+    expect(n.p.text).toContain('Возьмите в работу, когда начнёте.');
+    expect(n.p.text).not.toContain('автор ждёт');
+    expect(n.p.keyboard.flat().map((b) => b.text)).toEqual(['✅ Принять', '📱 Открыть']);
+  });
+
   it('«не принято» без срока сегодня -- один раз', async () => {
     const env = await world(null);
     await createdAgo(120);

@@ -158,8 +158,12 @@ export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
     if (age < HOUR_MS) continue;
     const dueToday = r.due_at !== null && sameLocalDay(r.due_at, now, r.timezone);
     if (working(r, now) && dueNow(log, r.id, 'not_accepted', dueToday ? HOURLY_MS : ONCE, now)) {
+      // Задача себе: «примите или откажитесь -- автор ждёт» здесь ложь, автор
+      // и есть получатель. Повод остаётся тот же -- час прошёл, а работа не
+      // начата, -- но называется своим именем.
+      const own = r.author_id === r.user_id;
       writes.push(queueReminder(env, r,
-        `⏳ Не принято: «${r.title}»${r.due_at ? `\nСрок: ${formatWhen(r.due_at, r.timezone)}` : ''}\nПримите или откажитесь — автор ждёт.`,
+        `⏳ ${own ? 'Ещё не начато' : 'Не принято'}: «${r.title}»${r.due_at ? `\nСрок: ${formatWhen(r.due_at, r.timezone)}` : ''}\n${own ? 'Возьмите в работу, когда начнёте.' : 'Примите или откажитесь — автор ждёт.'}`,
         'not_accepted', { gated: true, buttons: assigneeButtons({ id: r.task_id, kind: r.kind, author_id: r.author_id }, r.user_id) }));
       writes.push(mark(env, r.id, 'not_accepted', now));
     }
