@@ -8,8 +8,8 @@ import type { Env, Task } from './types';
 import { nowIso, uuid } from './db';
 import { logEvent } from './db';
 import { formatWhen, matchDeadline, matchPriority, type Draft } from './parse';
-import { buildAssignees, clearReminders, confirmWork, lateAssignee, loadAssignees, myAssignee, transitionAssignee } from './assignees';
-import { assigneeButtons, buildNotification } from './transition';
+import { buildAssignees, clearReminders, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, transitionAssignee, type Assignee } from './assignees';
+import { applyTransition, assigneeButtons, buildNotification } from './transition';
 import { storeByFileId, type Media } from './media';
 import { ensureDefaultProject } from './signup';
 
@@ -142,6 +142,17 @@ const V_START = startOfWord(String.raw`в\s+работу|беру|взял|во�
 const V_DONE = startOfWord(String.raw`готов[оа]?|сдела[нл]|выполн[иел]|законч|заверш|сда[лю]|отправил\s+на\s+проверку`);
 /** Принять работу -- это делает автор. */
 const V_CONFIRM = startOfWord(String.raw`принима[ею]\s+работу|принял\s+работу|подтвержда[ею]|зач[её]т|проверил\s+и\s+принял`);
+/**
+ * Вернуть на доработку -- тоже автор. Проверяется РАНЬШЕ приёмки: «не принимаю
+ * работу» содержит «принимаю работу», и при обратном порядке возврат читался бы
+ * как приёмка, то есть задача закрывалась бы вместо возврата.
+ */
+const V_RETURN = startOfWord(String.raw`верн[уи]|возвраща|на\s+доработку|передела|не\s+принима[ею]|не\s+принял|отклоня[ею]|отклонил`);
+/**
+ * Отказаться от поручения -- исполнитель. Проверяется РАНЬШЕ «взять в работу»:
+ * «не возьму» содержит «возьму».
+ */
+const V_DECLINE = startOfWord(String.raw`отказ|откаж|не\s+буду|не\s+возьму|не\s+мо[её]|снима[ею]\s+с\s+себя`);
 /** Не успеваю: причина -- сама фраза. */
 const V_LATE = startOfWord(String.raw`не\s+успева[ею]|не\s+успе[юл]|опазд|задержива[ею]сь`);
 /**
@@ -204,7 +215,7 @@ export async function commandTaskByPhrase(
   now: Date = new Date(),
 ): Promise<{ taskId: string; text: string } | null> {
   const anyVerb = V_START.test(phrase) || V_DONE.test(phrase) || V_CONFIRM.test(phrase)
-    || V_LATE.test(phrase) || EDIT_VERB.test(phrase);
+    || V_RETURN.test(phrase) || V_DECLINE.test(phrase) || V_LATE.test(phrase) || EDIT_VERB.test(phrase);
   if (!anyVerb) return null;
   const task = await taskInPhrase(env, who.orgId, who.userId, phrase);
   if (!task) return null;
@@ -212,12 +223,55 @@ export async function commandTaskByPhrase(
   const mine = await myAssignee(env, task.id, who.userId, who.orgId);
   const author = task.author_id === who.userId;
 
-  // ---- этапы. Порядок веток важен: «принял работу» -- это приёмка автора, а
-  // просто «принял» у исполнителя -- взятие в работу. Проверяем длинное первым.
+  // ---- этапы. ПОРЯДОК ВЕТОК -- часть смысла, а не стиль: длинная формулировка
+  // содержит короткую, и первой обязана идти длинная.
+  //   «не принимаю работу» содержит «принимаю работу» -> возврат перед приёмкой;
+  //   «не возьму»          содержит «возьму»          -> отказ перед началом;
+  //   «принял работу»      содержит «принял»          -> приёмка перед началом.
+  if (V_RETURN.test(phrase) && author) {
+    if (task.status !== 'done') return null;
+    // Кому вернуть: всем, кто сдал. У рассылки сдавших может быть несколько.
+    const { results: submitted } = await env.DB.prepare(
+      "SELECT * FROM task_assignees WHERE task_id = ? AND org_id = ? AND state = 'done'",
+    ).bind(task.id, who.orgId).all<Assignee>();
+    if (submitted.length === 0) return null;
+    // Новый срок: названный во фразе, иначе завтрашний день. Молча оставлять
+    // прежний нельзя -- он уже прошёл, раз работу сдавали, и задача вернулась бы
+    // просроченной в ту же секунду.
+    const when = matchDeadline(phrase, now, timeZone, dayEndHm);
+    const newDeadline = when.iso ?? new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const comment = phrase.trim().slice(0, 500);
+    for (const a of submitted) {
+      await transitionAssignee(env, {
+        task, assignee: a, to: 'rejected', actorId: who.userId, reason: comment, dueAt: newDeadline,
+        notify: { emoji: '❌', label: 'Отклонено, возвращено в работу', extraLine: `Причина: ${comment}` },
+      });
+    }
+    // Срок самой задачи тоже сдвигается: списки показывают его, а не персональные.
+    await applyTransition(env, {
+      task, to: 'in_progress', actorId: who.userId, action: 'rejected', comment,
+      set: { done_at: null, confirmed_at: null, deadline: newDeadline },
+    });
+    return { taskId: task.id, text: `❌ «${task.title}» вернул в работу. Новый срок — ${formatWhen(newDeadline, timeZone)}.` };
+  }
   if (V_CONFIRM.test(phrase) && author) {
     if (task.status !== 'done' || task.confirmed_at) return null;
     await confirmWork(env, task, who.userId);
     return { taskId: task.id, text: `✅ «${task.title}» принята. Задача закрыта.` };
+  }
+  if (mine && V_DECLINE.test(phrase)) {
+    // Причина -- сама фраза, как и у «не успеваю». Автору уходит карточка с
+    // кнопками «Переназначить» и «Отменить задачу»: отказ по ошибке
+    // отыгрывается назад переназначением, а не правкой базы.
+    const res = await declineAssignee(env, task, mine, who.userId, phrase);
+    if (!res.ok) return null;
+    return { taskId: task.id, text: `🚫 Отказ передан автору: «${task.title}».` };
+  }
+  if (mine && V_LATE.test(phrase)) {
+    // Причина -- сама фраза: человек уже всё объяснил, второй раз спрашивать
+    // незачем. Автор получит её вместе с кнопками «перенести срок» и прочими.
+    if (!(await lateAssignee(env, task, mine, who.userId, phrase))) return null;
+    return { taskId: task.id, text: `⏳ Передал автору: не успеваете по «${task.title}».` };
   }
   if (mine && (V_START.test(phrase) || V_DONE.test(phrase))) {
     const to = V_DONE.test(phrase) ? 'done' : 'accepted';
@@ -256,12 +310,6 @@ export async function commandTaskByPhrase(
       taskId: task.id,
       text: to === 'accepted' ? `🚀 «${task.title}» — в работе.` : `✅ «${task.title}» сдана на проверку.`,
     };
-  }
-  if (mine && V_LATE.test(phrase)) {
-    // Причина -- сама фраза: человек уже всё объяснил, второй раз спрашивать
-    // незачем. Автор получит её вместе с кнопками «перенести срок» и прочими.
-    if (!(await lateAssignee(env, task, mine, who.userId, phrase))) return null;
-    return { taskId: task.id, text: `⏳ Передал автору: не успеваете по «${task.title}».` };
   }
 
   // ---- правка полей. Только АВТОР: срок и важность -- его решения, а

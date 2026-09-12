@@ -94,6 +94,52 @@ describe('этапы голосом и текстом', () => {
     expect(toAuthor.text).toContain('жду документы от бухгалтерии');
   });
 
+  it('«отказываюсь» снимает задачу и уносит причину автору', async () => {
+    const env = await world();
+    const spy = tg();
+    await say(env, 'tg-w1', 'отказываюсь от подготовить отчёт, нет доступа к базе');
+    expect(await state()).toBe('declined');
+    const toAuthor = sent(spy).find((m) => m.chat_id === 'tg-boss' && m.text.includes('Отказ от поручения'))!;
+    expect(toAuthor.text).toContain('нет доступа к базе');
+    // Отыграть назад можно переназначением -- кнопка в том же сообщении.
+    expect(labels(toAuthor)).toContain('👤 Переназначить');
+  });
+
+  it('«верни на доработку» возвращает сданное с новым сроком', async () => {
+    const env = await world();
+    const spy = tg();
+    await say(env, 'tg-w1', 'подготовить отчёт сделано');
+    expect(await status()).toBe('done');
+    await say(env, 'tg-boss', 'верни подготовить отчёт на доработку, нет итогов по регионам');
+    expect(await state()).toBe('rejected');
+    expect(await status()).toBe('in_progress');
+    const back = sent(spy).find((m) => m.chat_id === 'tg-w1' && m.text.includes('возвращено в работу'))!;
+    expect(back.text).toContain('нет итогов по регионам');
+    // Срок обязан сдвинуться: прежний уже прошёл, раз работу сдавали.
+    const t = (await testEnv.DB.prepare("SELECT deadline, confirmed_at, done_at FROM tasks WHERE id='t1'").first<{ deadline: string; confirmed_at: string | null; done_at: string | null }>())!;
+    expect(Date.parse(t.deadline)).toBeGreaterThan(Date.now());
+    expect(t.confirmed_at).toBeNull();
+    expect(t.done_at).toBeNull();
+  });
+
+  it('«не принимаю работу» -- это ВОЗВРАТ, а не приёмка', async () => {
+    const env = await world();
+    tg();
+    await say(env, 'tg-w1', 'подготовить отчёт сделано');
+    // Ловушка порядка: «не принимаю работу» содержит «принимаю работу».
+    await say(env, 'tg-boss', 'не принимаю работу подготовить отчёт, переделайте выводы');
+    expect((await testEnv.DB.prepare("SELECT confirmed_at FROM tasks WHERE id='t1'").first<{ confirmed_at: string | null }>())!.confirmed_at).toBeNull();
+    expect(await state()).toBe('rejected');
+  });
+
+  it('«не возьму» -- это ОТКАЗ, а не взятие в работу', async () => {
+    const env = await world();
+    tg();
+    // Ловушка порядка: «не возьму» содержит «возьму».
+    await say(env, 'tg-w1', 'не возьму подготовить отчёт, это не мой участок');
+    expect(await state()).toBe('declined');
+  });
+
   it('чужая задача командой не двигается: нет ни строки, ни авторства', async () => {
     const env = await world();
     tg();
