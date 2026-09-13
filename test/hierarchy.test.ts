@@ -140,6 +140,22 @@ describe('видимость по дереву', () => {
     expect(seen!.assignees.find((a) => a.user_id === 'w1')!.started_at).not.toBeNull();
   });
 
+  it('повторное «начал» -- не ошибка, а отставший клиент', async () => {
+    const env = await world();
+    tg();
+    const r = await api(env, '/projects/p1/tasks', 'POST', { title: 'Полить цветы', responsible_user_id: 'w1' }, 'boss', 'creator');
+    const { id } = await r.json<{ id: string }>();
+    // Не принял -- вот это ошибка, и она по-русски.
+    const early = await api(env, `/tasks/${id}/move`, 'POST', { to: 'started' }, 'w1', 'member');
+    expect(early.status).toBe(409);
+    expect((await early.json<{ error: string }>()).error).toBe('Сначала примите задачу');
+    await api(env, `/tasks/${id}/move`, 'POST', { to: 'in_progress' }, 'w1', 'member');
+    expect((await api(env, `/tasks/${id}/move`, 'POST', { to: 'started' }, 'w1', 'member')).status).toBe(200);
+    // Второе нажатие по уже начатой -- успех, а не «task is not accepted»:
+    // приложение могло отстать, и ругать человека за сделанное незачем.
+    expect((await api(env, `/tasks/${id}/move`, 'POST', { to: 'started' }, 'w1', 'member')).status).toBe(200);
+  });
+
   it('поручать можно только видимым: чужой отдел -- отказ, у владельца -- нет границ', async () => {
     const env = await world();
     tg();

@@ -1621,9 +1621,17 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
   // за человека решить, что он начал, нельзя -- это он знает, а не автор.
   if (to === 'started') {
     const mine = await myAssignee(c.env, task.id, userId, orgId);
-    if (!mine) return c.json({ error: 'only an assignee can start this task' }, 403);
-    if (!(await startWork(c.env, task, mine, userId))) return c.json({ error: 'task is not accepted' }, 409);
-    await drainOutbox(c.env);
+    if (!mine) return c.json({ error: 'Двигать может только исполнитель' }, 403);
+    if (mine.state !== 'accepted') return c.json({ error: 'Сначала примите задачу' }, 409);
+    // УЖЕ начата -- это не ошибка, а отставший клиент: приложение могло не
+    // получить отметку (она живёт в строке адресата) и показывать прежний
+    // этап. Отвечаем успехом: обновление приведёт карточку в порядок, а
+    // человек увидит задачу там, где она на самом деле, вместо «task is not
+    // accepted» на действие, которое давно сделано.
+    if (!mine.started_at) {
+      await startWork(c.env, task, mine, userId);
+      await drainOutbox(c.env);
+    }
     return c.json({ success: true });
   }
 
@@ -1642,7 +1650,7 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
     : (await isReviewer(c, task))
       ? (await loadAssignees(c.env, task.id, orgId)).filter((r) => canTransition(r.state, target) || (target === 'done' && r.state === 'pending'))
       : null;
-  if (!rows) return c.json({ error: 'only an assignee can move this task' }, 403);
+  if (!rows) return c.json({ error: 'Двигать может только исполнитель' }, 403);
   if (!rows.length) return c.json({ error: `invalid transition ${task.status} -> ${to}` }, 409);
 
   // "Draft the contract" must be done before "review the contract" can start --
