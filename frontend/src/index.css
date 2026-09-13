@@ -265,6 +265,43 @@ body {
   padding: calc(52px + var(--safe-t) + 10px) 16px calc(var(--dock-h) + 28px + var(--safe-b));
 }
 
+/* Экран без дока (подразделы «Ещё»): нижнего отступа под панель не нужно. */
+.content.is-bare {
+  padding-bottom: calc(16px + var(--safe-b));
+}
+/* Экран-переписка: прокручивается ЛЕНТА, а строка ввода стоит внизу, как в
+   мессенджере. Поэтому сам .content не прокручивается -- иначе поле ввода
+   уезжало бы вверх вместе с ответами. */
+.content.is-chat {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: calc(10px + var(--safe-b));
+}
+.chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+/* Первая реплика прижата к НИЗУ, а не висит под шапкой: разговор начинается
+   оттуда, где палец. Именно margin-top: auto, а не justify-content: flex-end --
+   у прокручиваемого контейнера тот прячет начало ленты за верхний край, и
+   первые ответы становится не достать. */
+.chat-log > *:first-child {
+  margin-top: auto;
+}
+
 /* ----- плавающая пилюля навигации, как в Ijoda ----- */
 .bottom-nav {
   position: absolute;
@@ -290,13 +327,18 @@ body {
      дёргались на пиксель-другой. */
   contain: layout paint;
   transform: translateZ(0);
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
 }
 /* Клавиатура: .app-frame сидит на 100dvh, которая на открытую клавиатуру не
    реагирует, а visualViewport -- реагирует. Раз высоты разъехались, панель,
    привязанная к «низу» старой высоты, всплывает поверх формы. Класс ставит
    MobileShell по разнице этих высот -- см. его useEffect. */
 body.kb-open .bottom-nav {
-  display: none;
+  /* Уезжает вниз, а НЕ display:none. При закрытии клавиатуры браузер
+     возвращает высоту не мгновенно, и панель, включённая кадром, выскакивала
+     снизу рывком -- выглядело как мигание. Переход делает это движением. */
+  transform: translateY(calc(100% + 10px + var(--safe-b))) translateZ(0);
+  pointer-events: none;
 }
 .nav-indicator {
   position: absolute;
@@ -455,7 +497,7 @@ body.kb-open .bottom-nav {
 }
 .card-tap:active {
   background: var(--bg3);
-  transform: scale(0.985);
+  transform: scale(0.97);
 }
 /* Единственный блок внутри шторки. Сама шторка -- уже карточка: того же цвета
    и с теми же полями, так что рамка вокруг всего её содержимого ничего ни от
@@ -593,6 +635,24 @@ body.kb-open .bottom-nav {
 .chips::-webkit-scrollbar {
   display: none;
 }
+/* Горизонтальная лента фильтров идёт ОТ КРАЯ ДО КРАЯ экрана, а свои 16px
+   несёт сама. Иначе последний чип упирался в поле .content и выглядел
+   обрезанным -- ни отступа за ним, ни подсказки, что лента прокручивается. */
+.content > .chips,
+.content > * > .chips {
+  margin-left: -16px;
+  margin-right: -16px;
+  padding-left: 16px;
+  padding-right: 16px;
+  scroll-padding-inline: 16px;
+}
+/* ...но не там, где чипы переносятся по строкам внутри карточки. */
+.card .chips {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
 .chip {
   flex-shrink: 0;
   display: inline-flex;
@@ -616,7 +676,7 @@ body.kb-open .bottom-nav {
   transition: background 0.15s, color 0.15s, transform 0.12s;
 }
 .chip:active {
-  transform: scale(0.96);
+  transform: scale(0.93);
 }
 .chip.on {
   background: var(--accent);
@@ -661,7 +721,7 @@ body.kb-open .bottom-nav {
   transition: filter 0.12s, transform 0.12s;
 }
 .btn:active {
-  transform: scale(0.98);
+  transform: scale(0.96);
 }
 .btn:disabled {
   opacity: 0.45;
@@ -702,6 +762,7 @@ body.kb-open .bottom-nav {
   color: var(--label2);
   cursor: pointer;
   font-family: inherit;
+  transition: background 0.15s, transform 0.12s;
 }
 /* Зона нажатия 44x44 при видимых 36x36 (Apple HIG): псевдоэлемент расширяет
    кликабельную область на 4px в каждую сторону, не трогая сам кружок. */
@@ -713,6 +774,7 @@ body.kb-open .bottom-nav {
 }
 .btn-icon:active {
   background: var(--fill);
+  transform: scale(0.88);
 }
 .btn-icon:disabled {
   opacity: 0.4;
@@ -795,6 +857,11 @@ textarea.inp {
   line-height: 1.4;
 }
 select.inp {
+  /* Пилюля, как у .btn и .chip рядом. Прямоугольный радиус остаётся у полей
+     ввода текста: там он честный -- в них пишут, а не выбирают. Список же --
+     такая же кнопка, и разный радиус в одной карточке читается как деталь из
+     другого приложения. */
+  border-radius: var(--r-sm);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 12px center;
@@ -970,16 +1037,40 @@ select.inp {
   background: var(--bg2);
   color: var(--label);
   border-radius: 22px 22px 0 0;
-  padding: 10px 20px calc(20px + var(--safe-b));
+  /* Верхнего отступа у самой шторки НЕТ: его несёт .sheet-top. Иначе
+     приклеенная шапка останавливается по нижнему краю этого отступа, и в
+     просвет над ней видно уезжающее содержимое. */
+  padding: 0 20px calc(20px + var(--safe-b));
   box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.25);
   font-family: var(--font-sans);
   animation: sheet-rise 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+  /* Уход и возврат после протяжки -- переходом, а не кадрами: протяжку
+     отпускают с любой высоты, и анимация должна ехать ОТТУДА, где палец. */
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.sheet-backdrop.is-leaving {
+  opacity: 0;
+  transition: opacity 0.22s ease-in;
 }
 /* Шторка -- колонка-флекс с прокруткой. Без этого её содержимое СЖИМАЕТСЯ,
    когда перестаёт помещаться, вместо того чтобы прокручиваться: ряд чипов
    схлопывался в полоску в несколько пикселей. */
 .sheet > * {
   flex-shrink: 0;
+}
+/* Полоска и заголовок с крестиком ПРИКЛЕЕНЫ к верху: длинную шторку
+   прокручивают, и единственный способ закрыть её пальцем сверху уезжал вместе
+   с содержимым. Отрицательные поля съедают собственные отступы шторки, чтобы
+   полоса шла от края до края и содержимое не проглядывало по бокам. */
+.sheet-top {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 -20px 12px;
+  padding: 10px 20px 0;
+  background: var(--bg2);
+  /* Ручка: палец ведёт шторку вниз, а не прокручивает её содержимое. */
+  touch-action: none;
 }
 .sheet-grab {
   width: 36px;
@@ -994,7 +1085,7 @@ select.inp {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  padding-bottom: 12px;
 }
 .sheet-title {
   font-size: 20px;
@@ -1102,7 +1193,7 @@ select.inp {
   position: fixed;
   left: 0;
   right: 0;
-  top: calc(var(--safe-t) + 58px);
+  top: calc(var(--safe-t) + 8px);
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -1227,7 +1318,10 @@ select.inp {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: color 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: color 0.22s cubic-bezier(0.32, 0.72, 0, 1), transform 0.12s;
+}
+.segmented-btn:active {
+  transform: scale(0.95);
 }
 .segmented-btn.on {
   color: var(--label);
@@ -1254,10 +1348,12 @@ select.inp {
   margin-top: 12px;
 }
 /* Поле именно в этой форме -- невысокое: общий .inp рассчитан на текстовые
-   описания задач (min-height: 96px), тут же нужна обычная строка чата. */
+   описания задач (min-height: 96px), тут же нужна обычная строка чата. Ровно
+   48px -- рост кнопок .btn-icon.is-tall рядом: ряд собран из одинаковых
+   деталей, а не из поля и двух кружков поменьше. */
 .ask-compose .inp {
-  min-height: 40px;
-  padding: 10px 14px;
+  min-height: 48px;
+  padding: 11px 14px;
   resize: none;
 }
 

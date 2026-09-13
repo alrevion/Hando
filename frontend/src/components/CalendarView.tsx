@@ -108,10 +108,11 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
       {/* Чьи сроки в сетке. Показывается всем: у участника «все» -- это его
           отдел, у руководителя -- его поддерево, у владельца -- организация.
           Кому что видно, решает сервер одним правилом (hierarchy.visibleTasks). */}
-      <div className="chips" aria-label="Чьи задачи">
-        <button type="button" aria-pressed={scope === 'mine'} className={scope === 'mine' ? 'chip on' : 'chip'}
+      <div className="segmented" style={{ ['--n' as string]: 2 }} aria-label="Чьи задачи">
+        <div className="segmented-indicator" aria-hidden="true" style={{ transform: `translateX(${scope === 'mine' ? 0 : 100}%)` }} />
+        <button type="button" aria-pressed={scope === 'mine'} className={scope === 'mine' ? 'segmented-btn on' : 'segmented-btn'}
           onClick={() => setScope('mine')}>Мои</button>
-        <button type="button" aria-pressed={scope === 'all'} className={scope === 'all' ? 'chip on' : 'chip'}
+        <button type="button" aria-pressed={scope === 'all'} className={scope === 'all' ? 'segmented-btn on' : 'segmented-btn'}
           onClick={() => setScope('all')}>Все</button>
       </div>
 

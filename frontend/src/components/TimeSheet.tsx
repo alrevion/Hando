@@ -24,10 +24,7 @@ export function TimeSheet({ iso, onPick, onClose }: {
   const [m, setM] = useState(Math.round(base.getMinutes() / 5) * 5 % 60);
 
   return (
-    <Sheet labelledBy="time-title" onClose={onClose}>
-      <div className="sheet-head">
-        <h2 id="time-title" className="sheet-title">Во сколько</h2>
-      </div>
+    <Sheet title="Во сколько" onClose={onClose}>
       <div className="wheel-row">
         <div>
           <p className="wheel-cap">Часы</p>

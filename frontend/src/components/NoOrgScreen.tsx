@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+
 import type { User } from '../types';
 import { getMe } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
@@ -44,11 +44,7 @@ export function NoOrgScreen({ user }: { user: User }) {
       </div>
 
       {open ? (
-        <Sheet labelledBy="join-title" onClose={() => setOpen(false)}>
-          <div className="sheet-head">
-            <h2 id="join-title" className="sheet-title">Создать или вступить</h2>
-            <button type="button" onClick={() => setOpen(false)} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
-          </div>
+        <Sheet title="Создать или вступить" onClose={() => setOpen(false)}>
           <OrgJoinForm
             onCancel={() => setOpen(false)}
             onDone={async (kind, name) => {

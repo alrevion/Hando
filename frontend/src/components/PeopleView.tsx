@@ -185,36 +185,31 @@ export function PeopleView() {
 
                 {/* Кем принять -- вопрос обязательный: молчаливый «сотрудник»
                     и был тем, из-за чего роль приходилось менять потом. */}
+                {/* Ровно два варианта -- сегментный переключатель: выбор
+                    «или--или» виден целиком, без ряда, который можно пролистать. */}
                 <div className="sec-title" style={{ margin: '10px 0 6px' }}>Кем принять</div>
-                <div className="chips" style={{ paddingBottom: 6 }}>
+                <div className="segmented" style={{ ['--n' as string]: ROLES.length, marginBottom: 12 }}>
+                  <div className="segmented-indicator" aria-hidden="true"
+                    style={{ transform: `translateX(${ROLES.findIndex((r) => r.value === c.role) * 100}%)` }} />
                   {ROLES.map((r) => (
-                    <button
-                      key={r.value}
-                      type="button"
-                      className={c.role === r.value ? 'chip on' : 'chip'}
-                      onClick={() => set({ role: r.value })}
-                    >
+                    <button key={r.value} type="button" aria-pressed={c.role === r.value}
+                      className={c.role === r.value ? 'segmented-btn on' : 'segmented-btn'}
+                      onClick={() => set({ role: r.value })}>
                       {r.label}
                     </button>
                   ))}
                 </div>
 
+                {/* Отделов в школе или фирме бывает десяток: ряд чипов пришлось бы
+                    листать вслепую, а список показывает все разом. */}
                 {projects.length > 1 ? (
-                  <>
-                    <div className="sec-title" style={{ margin: '4px 0 6px' }}>В какой отдел</div>
-                    <div className="chips" style={{ paddingBottom: 6 }}>
-                      {projects.map((pr) => (
-                        <button
-                          key={pr.id}
-                          type="button"
-                          className={(c.project ?? projects[0]?.id) === pr.id ? 'chip on' : 'chip'}
-                          onClick={() => set({ project: pr.id })}
-                        >
-                          {pr.name}
-                        </button>
-                      ))}
-                    </div>
-                  </>
+                  <div className="field" style={{ marginBottom: 12 }}>
+                    <label className="lbl" htmlFor={`prj-${p.user_id}`}>В какой отдел</label>
+                    <select id={`prj-${p.user_id}`} className="inp" value={c.project ?? projects[0]?.id ?? ''}
+                      onChange={(e) => set({ project: e.target.value })}>
+                      {projects.map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
+                    </select>
+                  </div>
                 ) : null}
 
                 {positions.length > 0 ? (
@@ -232,7 +227,10 @@ export function PeopleView() {
                   </div>
                 ) : null}
 
-                <div className="btn-row">
+                {/* 48px -- рост списков прямо над ними. Кнопки «выбивались»
+                    не размером самим по себе, а тем, что ряд чипов рядом был
+                    36px: разнобой ушёл вместе с чипами. */}
+                <div className="btn-row" style={{ marginTop: 12 }}>
                   <button type="button" className="btn btn-primary" disabled={busyId === p.user_id} onClick={() => decide(p.user_id, true)}>
                     <Check aria-hidden="true" style={{ width: 16, height: 16 }} />
                     Принять

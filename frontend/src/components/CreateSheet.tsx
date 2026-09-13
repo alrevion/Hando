@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Mic, Square, X } from 'lucide-react';
+import { Mic, Square } from 'lucide-react';
 import type { User } from '../types';
 import { ApiError, dictateTask, type DraftView } from '../lib/api';
 import { DraftCard } from './DraftCard';
@@ -84,13 +84,8 @@ export function CreateSheet({
   const reset = () => { setDraft(null); setText(''); };
 
   return (
-    <Sheet labelledBy="create-title" onClose={onClose}>
-      <div className="sheet-head">
-        <h2 id="create-title" className="sheet-title">
-          {draft ? 'Проверьте черновик' : mode === 'mine' ? 'Новая задача себе' : 'Новое поручение'}
-        </h2>
-        <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
-      </div>
+    <Sheet onClose={onClose}
+      title={draft ? 'Проверьте черновик' : mode === 'mine' ? 'Новая задача себе' : 'Новое поручение'}>
 
       {draft ? (
         <>
@@ -122,7 +117,6 @@ export function CreateSheet({
               <textarea
                 id="create-text"
                 className="inp"
-                autoFocus
                 rows={3}
                 value={text}
                 placeholder={mode === 'mine' ? 'Сдать отчёт в пятницу' : 'Азизу подготовить отчёт до пятницы'}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X } from 'lucide-react';
+
 import { Sheet } from './Sheet';
 
 /**
@@ -41,11 +41,7 @@ export function Confirm({
   }
 
   return (
-    <Sheet labelledBy="confirm-title" onClose={onClose}>
-      <div className="sheet-head">
-        <h2 id="confirm-title" className="sheet-title">{title}</h2>
-        <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
-      </div>
+    <Sheet title={title} onClose={onClose}>
       {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
       {text ? <p className="prose" style={{ marginTop: 0 }}>{text}</p> : null}
 

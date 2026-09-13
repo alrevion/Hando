@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Sheet } from './Sheet';
-import { AlertTriangle, CalendarDays, Download, File as FileIcon, Paperclip, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CalendarDays, Download, File as FileIcon, Paperclip, Trash2 } from 'lucide-react';
 import type { ContentBlock, Priority, Task, User } from '../types';
 import { parseContentBlocks } from '../types';
 import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
@@ -126,14 +126,7 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
     || (single && who !== ((task.assignees ?? [])[0]?.user_id ?? ''));
 
   return (
-    <Sheet labelledBy="task-detail-title" onClose={onClose}>
-        <div className="sheet-head">
-          <h2 id="task-detail-title" className="sheet-title">{task.title}</h2>
-          <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon">
-            <X aria-hidden="true" />
-          </button>
-        </div>
-
+    <Sheet title={task.title} onClose={onClose}>
         <div className="pills" style={{ marginTop: 0, marginBottom: 16 }}>
           <span className="pill">
             <span className={`dot ${PRIORITY_DOT[task.priority]}`} aria-hidden="true" />

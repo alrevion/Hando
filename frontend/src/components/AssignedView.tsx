@@ -145,11 +145,7 @@ export function AssignedView({ user }: { user: User }) {
           onReject={async (comment, extraDays) => { if (!(await act(rejecting, () => rejectTask(rejecting.id, comment, extraDays), 'Возвращено в работу'))) throw new Error('Не получилось.'); }} />
       ) : null}
       {reassigning ? (
-        <Sheet labelledBy="reassign-title" onClose={() => setReassigning(null)}>
-          <div className="sheet-head">
-            <h2 id="reassign-title" className="sheet-title">Кому переназначить</h2>
-            <button type="button" onClick={() => setReassigning(null)} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
-          </div>
+        <Sheet title="Кому переназначить" onClose={() => setReassigning(null)}>
           <ul className="stack">
             {users.filter((u) => u.id !== user.id && !u.frozen_at).map((u) => (
               <li key={u.id}>

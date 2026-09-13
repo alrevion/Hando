@@ -18,12 +18,17 @@ const pad = (n: number) => String(n).padStart(2, '0');
  * Значение наружу уходит в МИНУТАХ -- в них повтор и хранится, и только так
  * «каждые полтора часа» и «через день» помещаются в одно поле.
  */
-export function IntervalSheet({ value, onPick, onClose }: {
+export function IntervalSheet({ value, onPick, onClose, title = 'Свой интервал', confirm = 'Повторять', days: withDays = true }: {
   value: number | null;
   onPick: (minutes: number) => void;
   onClose: () => void;
+  /** Те же колёса служат и напоминанию «за сколько до срока» -- слова другие. */
+  title?: string;
+  confirm?: string;
+  /** Напоминание дальше суток сервер не берёт: там дни прятать. */
+  days?: boolean;
 }) {
-  const начальныеДни = value && value % 1440 === 0 ? value / 1440 : 0;
+  const начальныеДни = withDays && value && value % 1440 === 0 ? value / 1440 : 0;
   const [mode, setMode] = useState<'time' | 'days'>(начальныеДни ? 'days' : 'time');
   const [h, setH] = useState(value && !начальныеДни ? Math.floor(value / 60) % 24 : 1);
   const [m, setM] = useState(value && !начальныеДни ? value % 60 : 0);
@@ -34,14 +39,10 @@ export function IntervalSheet({ value, onPick, onClose }: {
   const minutes = mode === 'days' ? dayCount * 1440 : h * 60 + m;
 
   return (
-    <Sheet labelledBy="interval-title" onClose={onClose}>
-      <div className="sheet-head">
-        <h2 id="interval-title" className="sheet-title">Свой интервал</h2>
-      </div>
-
+    <Sheet title={title} onClose={onClose}>
       {/* Часы или дни. Сегментный переключатель, а не два экрана: выбор между
           двумя единицами -- это одно решение, а не два шага. */}
-      <div className="segmented" style={{ ['--n' as string]: 2 }}>
+      <div className="segmented" style={{ ['--n' as string]: 2, display: withDays ? undefined : 'none' }}>
         <div className="segmented-indicator" aria-hidden="true" style={{ transform: `translateX(${mode === 'time' ? 0 : 100}%)` }} />
         <button type="button" className={mode === 'time' ? 'segmented-btn on' : 'segmented-btn'}
           aria-pressed={mode === 'time'} onClick={() => setMode('time')}>Часы</button>
@@ -78,7 +79,7 @@ export function IntervalSheet({ value, onPick, onClose }: {
         <button type="button" className="btn" onClick={onClose}>Отмена</button>
         <button type="button" className="btn btn-primary" disabled={minutes < 1}
           onClick={() => { onPick(minutes); onClose(); }}>
-          Повторять
+          {confirm}
         </button>
       </div>
     </Sheet>

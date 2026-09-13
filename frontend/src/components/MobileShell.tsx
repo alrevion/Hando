@@ -135,7 +135,11 @@ export function MobileShell({ user, deepLinkTask, onLinkOpened }: { user: User; 
         </div>
       </header>
 
-      <main className="content">
+      {/* В подразделе «Ещё» дока нет: экран открыт «вглубь», выход из него --
+          стрелка в шапке. Панель вкладок там только предлагает уйти, не
+          показав, куда вернуться. «Вопрос» вдобавок переписка: прокручивается
+          лента, а строка ввода стоит внизу. */}
+      <main className={sub === null ? 'content' : sub === 'ask' ? 'content is-chat' : 'content is-bare'}>
         {active === 'tasks' ? <><TipsCard screen="tasks" /><MyTasksView user={user} /></> : null}
         {active === 'assigned' ? <><TipsCard screen="assigned" /><AssignedView user={user} /></> : null}
         {active === 'calendar' ? <CalendarView currentUser={user} /> : null}
@@ -160,11 +164,13 @@ export function MobileShell({ user, deepLinkTask, onLinkOpened }: { user: User; 
       {/* Повторное нажатие активной вкладки возвращает к её корню -- так ведут
           себя все вкладочные приложения, и человек, застрявший в «Людях»,
           жмёт «Ещё» именно за этим. Раньше нажатие не делало ничего. */}
-      <BottomNav tabs={tabs} active={active} onSelect={(id) => {
-        if (id !== active) cameFrom.current = active;
-        setActive(id);
-        setSub(null);
-      }} />
+      {sub === null ? (
+        <BottomNav tabs={tabs} active={active} onSelect={(id) => {
+          if (id !== active) cameFrom.current = active;
+          setActive(id);
+          setSub(null);
+        }} />
+      ) : null}
 
       {creating ? <CreateSheet mode={active === 'tasks' ? 'mine' : 'assigned'} me={user} onClose={() => setCreating(false)} /> : null}
       {profileOpen ? <ProfileSheet user={user} onClose={() => setProfileOpen(false)} /> : null}

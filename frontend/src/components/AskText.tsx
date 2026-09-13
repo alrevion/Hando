@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X } from 'lucide-react';
+
 import { Sheet } from './Sheet';
 
 /** Одна строка от человека: причина отказа, комментарий «не успею», подтверждение именем. */
@@ -10,11 +10,7 @@ export function AskText({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <Sheet labelledBy="ask-title" onClose={onClose}>
-      <div className="sheet-head">
-        <h2 id="ask-title" className="sheet-title">{title}</h2>
-        <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
-      </div>
+    <Sheet title={title} onClose={onClose}>
       {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
       <form onSubmit={async (e) => {
         e.preventDefault();

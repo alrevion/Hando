@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Sheet } from './Sheet';
-import { LogOut, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { LogOut, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { User } from '../types';
 import {
   ApiError, cachedMyOrgs, deleteOrg, getMe, getMyOrgs, leaveOrg,
@@ -103,12 +103,7 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
   );
 
   return (
-    <Sheet labelledBy="profile-title" onClose={onClose}>
-        <div className="sheet-head">
-          <h2 id="profile-title" className="sheet-title">Профиль</h2>
-          <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
-        </div>
-
+    <Sheet title="Профиль" onClose={onClose}>
         {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
         {info ? <div role="status" className="alert alert-ok">{info}</div> : null}
 

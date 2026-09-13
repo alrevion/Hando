@@ -85,40 +85,43 @@ export function AskView() {
   }
 
   return (
-    <div className="lg:h-full lg:overflow-y-auto lg:p-6">
-      <h1 className="h1">Вопрос</h1>
-      {turns.length === 0 ? (
-        <div className="empty">
-          <b>Спросите или скомандуйте</b>
-          «За что взяться сначала?», «Что у меня горит на этой неделе?»
-          {/* Команда отличается от вопроса только тем, что в ней названа тема
-              задачи: отдельного режима нет, и объяснять его не приходится. */}
-          Назовите тему — и командуйте: «взял в работу подготовить отчёт»,
-          «подготовить отчёт готово», «не успеваю подготовить отчёт, жду документы»,
-          «верни подготовить отчёт на доработку, нет итогов».
-        </div>
-      ) : (
-        <div className="stack" style={{ gap: 8 }}>
-          {turns.map((t, i) => (
-            <div key={i} className={t.role === 'user' ? 'bubble bubble-me' : 'bubble'}>{t.text}</div>
-          ))}
-          {busy ? (
-            // Вместо «Думаю…» -- три пульсирующие точки, как индикатор набора
-            // в мессенджерах: тот же пузырь, но без текста, который дублирует
-            // спиннер рядом с кнопкой отправки.
-            <div className="bubble" aria-live="polite" aria-label="Помощник печатает">
-              <span className="typing"><span /><span /><span /></span>
-            </div>
-          ) : null}
-          <div ref={end} />
-        </div>
-      )}
+    <div className="chat">
+      <div className="chat-log">
+        {turns.length === 0 ? (
+          <div className="empty">
+            <b>Спросите или скомандуйте</b>
+            «За что взяться сначала?», «Что у меня горит на этой неделе?»
+            {/* Команда отличается от вопроса только тем, что в ней названа тема
+                задачи: отдельного режима нет, и объяснять его не приходится. */}
+            Назовите тему — и командуйте: «взял в работу подготовить отчёт»,
+            «подготовить отчёт готово», «не успеваю подготовить отчёт, жду документы»,
+            «верни подготовить отчёт на доработку, нет итогов».
+          </div>
+        ) : (
+          <>
+            {turns.map((t, i) => (
+              <div key={i} className={t.role === 'user' ? 'bubble bubble-me' : 'bubble'}>{t.text}</div>
+            ))}
+            {busy ? (
+              // Вместо «Думаю…» -- три пульсирующие точки, как индикатор набора
+              // в мессенджерах: тот же пузырь, но без текста, который дублирует
+              // спиннер рядом с кнопкой отправки.
+              <div className="bubble" aria-live="polite" aria-label="Помощник печатает">
+                <span className="typing"><span /><span /><span /></span>
+              </div>
+            ) : null}
+          </>
+        )}
+        <div ref={end} />
+      </div>
 
+      {recording ? <p className="hint" style={{ marginBottom: 0 }}>Идёт запись — нажмите квадрат, когда закончите.</p> : null}
+      {voiceHint ? <p className="hint" style={{ marginBottom: 0 }}>{voiceHint}</p> : null}
       <form className="ask-compose" onSubmit={(e) => { e.preventDefault(); void send(); }}>
         {canRecord() ? (
           <button
             type="button"
-            className={recording ? 'btn-icon is-danger' : 'btn-icon'}
+            className={recording ? 'btn-icon is-tall is-danger' : 'btn-icon is-tall'}
             aria-label={recording ? 'Остановить запись' : 'Наговорить вопрос'}
             disabled={busy && !recording}
             onClick={() => void toggleRecording()}
@@ -134,12 +137,10 @@ export function AskView() {
           onChange={(e) => { setText(e.target.value); setVoiceHint(null); }}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
         />
-        <button type="submit" className="btn-icon is-accent" disabled={busy || !text.trim()} aria-label="Спросить">
+        <button type="submit" className="btn-icon is-tall is-accent" disabled={busy || !text.trim()} aria-label="Спросить">
           <Send aria-hidden="true" />
         </button>
       </form>
-      {recording ? <p className="hint">Идёт запись — нажмите квадрат, когда закончите.</p> : null}
-      {voiceHint ? <p className="hint">{voiceHint}</p> : null}
     </div>
   );
 }

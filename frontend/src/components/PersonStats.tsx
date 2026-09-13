@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X } from 'lucide-react';
+
 import type { User } from '../types';
 import type { PersonStats as Stats } from '../lib/api';
 import { Sheet } from './Sheet';
@@ -28,12 +28,7 @@ export function PersonStatsSheet({
   const neverDid = !!data && data.all.done === 0 && data.all.accepted === 0 && data.all.declined === 0 && data.all.in_progress === 0;
 
   return (
-    <Sheet labelledBy="stats-title" onClose={onClose}>
-      <div className="sheet-head">
-        <h2 id="stats-title" className="sheet-title">{user.name}</h2>
-        <button type="button" onClick={onClose} aria-label="Закрыть" className="btn-icon"><X aria-hidden="true" /></button>
-      </div>
-
+    <Sheet title={user.name} onClose={onClose}>
       {data === undefined ? (
         <p className="muted">Считаю…</p>
       ) : data === null ? (
