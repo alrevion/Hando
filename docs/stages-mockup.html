@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Этапы задач — три варианта</title>
+<style>
+  :root {
+    --bg: #000; --bg2: #1c1c1e;
+    --fill: rgba(120,120,128,.28); --fill2: rgba(120,120,128,.16);
+    --hair: rgba(255,255,255,.07);
+    --label: #fff; --label2: #c2c2c8; --label3: #9a9aa2;
+    --green: #30d158; --orange: #ff9f0a; --red: #ff453a;
+    --accent: #30d158; --accent-fg: #000;
+    --r: 14px;
+    --font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 20px 60px;
+    background: #0b0b0c; color: var(--label);
+    font-family: var(--font); font-size: 15px; line-height: 1.45;
+  }
+  h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -.3px; }
+  .lede { color: var(--label3); max-width: 64ch; margin: 0 0 26px; font-size: 14px; }
+
+  .row { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+  .col { flex: 0 0 auto; width: 330px; max-width: 100%; }
+  .cap { margin: 0 0 4px; font-size: 15px; font-weight: 700; }
+  .cap span { color: var(--label3); font-weight: 500; }
+  .why { margin: 0 0 12px; font-size: 13px; color: var(--label3); }
+  .why b { color: var(--label2); font-weight: 600; }
+
+  .phone {
+    height: 540px; border-radius: 26px; background: var(--bg);
+    border: 1px solid #2a2a2c; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .bar {
+    flex: 0 0 auto; padding: 12px 16px 10px; text-align: center;
+    font-size: 15px; font-weight: 600; border-bottom: .5px solid var(--hair);
+  }
+  .body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 18px; }
+  .body::-webkit-scrollbar { width: 0; }
+
+  .card {
+    background: var(--bg2); border-radius: var(--r); padding: 12px 14px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.06); margin-bottom: 8px;
+  }
+  .t { font-size: 15px; font-weight: 600; line-height: 1.3; }
+  .m { margin-top: 5px; font-size: 12.5px; color: var(--label3); display: flex; gap: 6px; align-items: center; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .g { background: var(--green); } .o { background: var(--orange); } .r { background: var(--red); }
+
+  /* ---------- 1. чипы: переключение на чистом CSS ---------- */
+  .sw input { position: absolute; opacity: 0; pointer-events: none; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .chip {
+    height: 34px; padding: 0 13px; border-radius: 999px; display: inline-flex; align-items: center;
+    background: var(--fill2); color: var(--label2);
+    font: 600 13px/1 var(--font); cursor: pointer; user-select: none;
+  }
+  .pane { display: none; }
+  #a0:checked ~ .chips [for=a0], #a1:checked ~ .chips [for=a1],
+  #a2:checked ~ .chips [for=a2], #a3:checked ~ .chips [for=a3] {
+    background: var(--accent); color: var(--accent-fg);
+  }
+  #a0:checked ~ #p0, #a1:checked ~ #p1, #a2:checked ~ #p2, #a3:checked ~ #p3 { display: block; }
+
+  /* ---------- 2. колонки со смахиванием ---------- */
+  .pager { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; height: 100%; }
+  .pager::-webkit-scrollbar { height: 0; }
+  .page { flex: 0 0 100%; scroll-snap-align: start; padding: 0 14px; overflow-y: auto; }
+  .page::-webkit-scrollbar { width: 0; }
+  .ptitle {
+    position: sticky; top: 0; z-index: 1; background: var(--bg);
+    padding: 12px 0 8px; font-size: 14px; font-weight: 700;
+  }
+  .ptitle i { font-style: normal; color: var(--label3); font-weight: 500; }
+  .pips { display: flex; justify-content: center; gap: 5px; padding: 9px 0 5px; }
+  .pip { width: 6px; height: 6px; border-radius: 999px; background: var(--fill); }
+  .pip.on { background: var(--accent); width: 16px; }
+  .hintbar { text-align: center; font-size: 12px; color: var(--label3); padding: 4px 0 9px; }
+
+  /* ---------- 3. одна лента ---------- */
+  .grp {
+    position: sticky; top: -12px; z-index: 1;
+    margin: 0 -14px 8px; padding: 10px 14px 8px;
+    background: var(--bg);
+    font-size: 13px; font-weight: 700; color: var(--label2);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .grp + .card { margin-top: 0; }
+  .card + .grp { margin-top: 14px; }
+  .grp .n {
+    background: var(--fill2); color: var(--label3);
+    border-radius: 999px; padding: 1px 8px; font-size: 12px; font-weight: 600;
+  }
+  .grp .line { flex: 1; height: .5px; background: var(--hair); }
+
+  .verdict {
+    margin: 30px 0 0; padding: 16px 18px; max-width: 74ch;
+    background: var(--bg2); border-radius: var(--r);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.06); font-size: 14px; color: var(--label2);
+  }
+  .verdict b { color: var(--label); }
+  @media (max-width: 760px) { .col { width: 100%; } }
+</style>
+</head>
+<body>
+
+<h1>Этапы задач — три варианта</h1>
+<p class="lede">Один и тот же список из семи задач. Можно потрогать: в первом переключаются чипы,
+во втором колонки смахиваются вбок, в третьем всё прокручивается одной лентой.</p>
+
+<div class="row">
+
+<!-- ============ 1 ============ -->
+<div class="col">
+  <p class="cap">1. Чипы в две строки <span>— как сейчас</span></p>
+  <p class="why"><b>За:</b> все счётчики видно сразу, осваивать нечего.<br>
+    <b>Против:</b> две строки съедают место, каждый этап — отдельное нажатие.</p>
+  <div class="phone">
+    <div class="bar">Мои задачи</div>
+    <div class="body sw">
+      <input type="radio" name="a" id="a0" checked>
+      <input type="radio" name="a" id="a1">
+      <input type="radio" name="a" id="a2">
+      <input type="radio" name="a" id="a3">
+      <div class="chips">
+        <label class="chip" for="a0">К выполнению · 3</label>
+        <label class="chip" for="a1">Принято · 2</label>
+        <label class="chip" for="a2">В работе · 1</label>
+        <label class="chip" for="a3">Сдано · 1</label>
+      </div>
+
+      <div class="pane" id="p0">
+        <div class="card"><div class="t">Полить цветы Ларисы Сергеевны</div><div class="m"><span class="dot o"></span>сегодня до 18:00</div></div>
+        <div class="card"><div class="t">Купить свёклу, морковь, молоко</div><div class="m"><span class="dot g"></span>завтра · 0 из 3</div></div>
+        <div class="card"><div class="t">Сдать отчёт по квартплате</div><div class="m"><span class="dot r"></span>пн, 21 сентября</div></div>
+      </div>
+      <div class="pane" id="p1">
+        <div class="card"><div class="t">Забрать документы из МФЦ</div><div class="m"><span class="dot g"></span>ср, 16 сентября</div></div>
+        <div class="card"><div class="t">Согласовать смету с бухгалтерией</div><div class="m"><span class="dot o"></span>без срока</div></div>
+      </div>
+      <div class="pane" id="p2">
+        <div class="card"><div class="t">Подготовить отчёт по продажам</div><div class="m"><span class="dot o"></span>чт, 17 сентября · начато вчера</div></div>
+      </div>
+      <div class="pane" id="p3">
+        <div class="card"><div class="t">Починить кран в кабинете 204</div><div class="m"><span class="dot r"></span>сдано 2 дня назад · ждёт проверки</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 2 ============ -->
+<div class="col">
+  <p class="cap">2. Колонки со смахиванием <span>— доска, как в Jira</span></p>
+  <p class="why"><b>За:</b> привычно по трелло и джире, этап занимает весь экран.<br>
+    <b>Против:</b> счётчики соседних этапов пропадают из виду — «Сдано · 1» не заметят.</p>
+  <div class="phone">
+    <div class="bar">Мои задачи</div>
+    <div class="pips"><span class="pip on"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div>
+    <div class="pager">
+      <div class="page">
+        <div class="ptitle">К выполнению <i>· 3</i></div>
+        <div class="card"><div class="t">Полить цветы Ларисы Сергеевны</div><div class="m"><span class="dot o"></span>сегодня до 18:00</div></div>
+        <div class="card"><div class="t">Купить свёклу, морковь, молоко</div><div class="m"><span class="dot g"></span>завтра · 0 из 3</div></div>
+        <div class="card"><div class="t">Сдать отчёт по квартплате</div><div class="m"><span class="dot r"></span>пн, 21 сентября</div></div>
+      </div>
+      <div class="page">
+        <div class="ptitle">Принято <i>· 2</i></div>
+        <div class="card"><div class="t">Забрать документы из МФЦ</div><div class="m"><span class="dot g"></span>ср, 16 сентября</div></div>
+        <div class="card"><div class="t">Согласовать смету с бухгалтерией</div><div class="m"><span class="dot o"></span>без срока</div></div>
+      </div>
+      <div class="page">
+        <div class="ptitle">В работе <i>· 1</i></div>
+        <div class="card"><div class="t">Подготовить отчёт по продажам</div><div class="m"><span class="dot o"></span>чт, 17 сентября · начато вчера</div></div>
+      </div>
+      <div class="page">
+        <div class="ptitle">Сдано <i>· 1</i></div>
+        <div class="card"><div class="t">Починить кран в кабинете 204</div><div class="m"><span class="dot r"></span>сдано 2 дня назад · ждёт проверки</div></div>
+      </div>
+    </div>
+    <div class="hintbar">← смахните вбок →</div>
+  </div>
+</div>
+
+<!-- ============ 3 ============ -->
+<div class="col">
+  <p class="cap">3. Одна лента с разделителями <span>— моя ставка</span></p>
+  <p class="why"><b>За:</b> ничего не спрятано, прокрутка вместо переключения, заголовки липкие.<br>
+    <b>Против:</b> при сорока задачах ленту придётся долго мотать.</p>
+  <div class="phone">
+    <div class="bar">Мои задачи</div>
+    <div class="body">
+      <div class="grp">К выполнению<span class="n">3</span><span class="line"></span></div>
+      <div class="card"><div class="t">Полить цветы Ларисы Сергеевны</div><div class="m"><span class="dot o"></span>сегодня до 18:00</div></div>
+      <div class="card"><div class="t">Купить свёклу, морковь, молоко</div><div class="m"><span class="dot g"></span>завтра · 0 из 3</div></div>
+      <div class="card"><div class="t">Сдать отчёт по квартплате</div><div class="m"><span class="dot r"></span>пн, 21 сентября</div></div>
+      <div class="grp">Принято<span class="n">2</span><span class="line"></span></div>
+      <div class="card"><div class="t">Забрать документы из МФЦ</div><div class="m"><span class="dot g"></span>ср, 16 сентября</div></div>
+      <div class="card"><div class="t">Согласовать смету с бухгалтерией</div><div class="m"><span class="dot o"></span>без срока</div></div>
+      <div class="grp">В работе<span class="n">1</span><span class="line"></span></div>
+      <div class="card"><div class="t">Подготовить отчёт по продажам</div><div class="m"><span class="dot o"></span>чт, 17 сентября · начато вчера</div></div>
+      <div class="grp">Сдано<span class="n">1</span><span class="line"></span></div>
+      <div class="card"><div class="t">Починить кран в кабинете 204</div><div class="m"><span class="dot r"></span>сдано 2 дня назад · ждёт проверки</div></div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<div class="verdict">
+  <b>Почему я ставлю на третий.</b> У этапа «Сдано» есть отличие от остальных: он ждёт не
+  исполнителя, а вас. Сданная и не проверенная задача — единственное место, где работа
+  стоит из-за руководителя. В первом и втором вариантах этот этап спрятан за нажатием или
+  за смахиванием, и именно его проще всего не заметить. В третьем он просто идёт
+  следующим блоком, и непроверенное попадается на глаза само.
+  <br><br>
+  Второй вариант стоит брать, только если задач станет заметно больше двух десятков на
+  человека — тогда лента перестанет помещаться в голове, и разделение на экраны начнёт
+  окупаться. Третий к этому времени можно будет свернуть по этапам, оставив открытым
+  только текущий.
+</div>
+
+</body>
+</html>
