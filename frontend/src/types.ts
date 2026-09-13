@@ -58,6 +58,10 @@ export interface Task {
   title: string;
   description: string;
   content_blocks: string | null;
+  /** Через сколько дней задача возвращается. null -- разовая. */
+  repeat_days: number | null;
+  /** Пункты списка, JSON [{t,d}]. null -- списка нет. */
+  checklist: string | null;
   // Кто делает. Адресатов бывает много (рассылка на 14 человек), поэтому это
   // список, а не колонка: tasks.responsible_user_id снята contract-релизом.
   assignees: Assignee[];

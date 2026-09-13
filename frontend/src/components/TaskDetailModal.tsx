@@ -4,9 +4,10 @@ import { AlertTriangle, CalendarDays, Download, File as FileIcon, Paperclip, Tra
 import type { ContentBlock, Priority, Task, User } from '../types';
 import { parseContentBlocks } from '../types';
 import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
+import { toggleChecklistItem } from '../lib/api';
 import { formatDeadlineDays, isReviewOverdue, isTaskOverdue } from '../lib/overdue';
 import { Lightbox } from './Lightbox';
-import { STATE_PILL, stateLabel } from '../lib/tasks';
+import { checklistOf, REPEAT_CHOICES, repeatLabel, STATE_PILL, stateLabel } from '../lib/tasks';
 import { endOfWeek, inDays } from './QuickEdit';
 import { PRIORITIES } from '../lib/priority';
 import { useAuth } from '../context/AuthContext';
@@ -81,6 +82,10 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
   const [desc, setDesc] = useState(task.description ?? '');
   const [deadline, setDeadline] = useState<string | null>(task.deadline ?? null);
   const [priority, setPriority] = useState<Priority>(task.priority);
+  const [repeat, setRepeat] = useState<number>(task.repeat_days ?? 0);
+  // Список живёт своей жизнью: галочка сохраняется сразу, а не по «Сохранить».
+  // Человек стоит у полки и отмечает морковку -- лишнее нажатие тут лишнее.
+  const [items, setItems] = useState(() => checklistOf(task));
   const [who, setWho] = useState((task.assignees ?? [])[0]?.user_id ?? '');
   const [busy, setBusy] = useState(false);
   const [filesTick, setFilesTick] = useState(0);
@@ -114,6 +119,7 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
     || desc !== (task.description ?? '')
     || deadline !== (task.deadline ?? null)
     || priority !== task.priority
+    || repeat !== (task.repeat_days ?? 0)
     || (single && who !== ((task.assignees ?? [])[0]?.user_id ?? ''));
 
   return (
@@ -231,6 +237,38 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
           </div>
         ) : null}
 
+        {/* СПИСОК ПУНКТОВ. Галочка сохраняется сразу, отдельно от «Сохранить»:
+            человек стоит у полки и отмечает морковку, лишнее нажатие тут
+            лишнее. Ответ сервера возвращает список целиком -- он короткий, и
+            так не разъезжается с тем, что отметили в боте. */}
+        {items.length > 0 ? (
+          <div style={{ marginTop: 14 }}>
+            <div className="sec-title" style={{ margin: '0 0 8px' }}>
+              Список · отмечено {items.filter((i) => i.d).length} из {items.length}
+            </div>
+            <ul className="stack" style={{ gap: 6 }}>
+              {items.map((item, i) => (
+                <li key={`${item.t}-${i}`}>
+                  <button type="button" className="card card-tap" disabled={busy}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', width: '100%', textAlign: 'left', font: 'inherit', color: 'inherit' }}
+                    onClick={async () => {
+                      const before = items;
+                      // Отмечаем сразу, ответ только подтверждает: иначе
+                      // галочка «думает» полсекунды на каждый пункт.
+                      setItems(items.map((x, j) => (j === i ? { ...x, d: x.d ? null : new Date().toISOString() } : x)));
+                      try {
+                        setItems((await toggleChecklistItem(task.id, i)).checklist);
+                      } catch { setItems(before); toast('Не получилось отметить.'); }
+                    }}>
+                    <span aria-hidden="true" style={{ fontSize: 17, lineHeight: 1 }}>{item.d ? '✅' : '⬜️'}</span>
+                    <span style={{ minWidth: 0, flex: 1, textDecoration: item.d ? 'line-through' : 'none', color: item.d ? 'var(--label3)' : 'inherit' }}>{item.t}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         <div className="btn-row" style={{ marginTop: 14 }}>
           <label className="btn" style={{ position: 'relative', overflow: 'hidden' }}>
             <Paperclip aria-hidden="true" style={{ width: 16, height: 16 }} />Прикрепить файл
@@ -280,6 +318,19 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
             </div>
 
             <div>
+              {/* Повтор -- ряд чипов, а не выпадающий список: вариантов пять,
+                  и все они помещаются в строку. */}
+              <div className="sec-title" style={{ margin: '0 0 8px' }}>Повтор</div>
+              <div className="chips" style={{ paddingBottom: 0 }}>
+                {REPEAT_CHOICES.map((d) => (
+                  <button key={d} type="button" disabled={busy}
+                    className={repeat === d ? 'chip on' : 'chip'}
+                    onClick={() => setRepeat(d)}>{repeatLabel(d || null)}</button>
+                ))}
+              </div>
+            </div>
+
+            <div>
               <div className="sec-title" style={{ margin: '0 0 8px' }}>Срок{deadline ? '' : ' не указан'}</div>
               <div className="chips" style={{ paddingBottom: 0, flexWrap: 'wrap', overflowX: 'visible' }}>
                 <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(inDays(0))}>Сегодня</button>
@@ -303,6 +354,7 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
                 ...(single && who && who !== (task.assignees ?? [])[0]?.user_id ? { responsible_user_id: who } : {}),
                 deadline,
                 priority,
+                repeat_days: repeat || null,
               }), 'Сохранено')}>
               Сохранить
             </button>

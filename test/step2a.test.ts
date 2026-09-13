@@ -181,6 +181,7 @@ const FIXTURES: Record<string, Probe> = {
   'POST /tasks/:id/move': { path: '/tasks/tb/move', method: 'POST', body: { to: 'done' } },
   'DELETE /tasks/:id': { path: '/tasks/tb', method: 'DELETE' },
   'POST /tasks/:id/restore': { path: '/tasks/tb/restore', method: 'POST', body: { comment: 'x' } },
+  'POST /tasks/:id/checklist': { path: '/tasks/tb/checklist', method: 'POST', body: { index: 0 } },
   'POST /tasks/:id/confirm': { path: '/tasks/tb/confirm', method: 'POST', body: {} },
   'POST /tasks/:id/reject': { path: '/tasks/tb/reject', method: 'POST', body: { comment: 'x', extra_days: 1 } },
   'POST /tasks/:id/decline': { path: '/tasks/tb/decline', method: 'POST', body: { reason: 'не буду' } },

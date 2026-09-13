@@ -106,12 +106,18 @@ describe('матрица напоминаний: дозировка', () => {
     expect(n.p.keyboard.flat().map((b) => b.text)).toEqual(['✅ Принять', '📱 Открыть']);
   });
 
-  it('«не принято» без срока сегодня -- один раз', async () => {
+  it('«не принято» -- КАЖДЫЙ час, даже когда срок не сегодня и когда его нет', async () => {
     const env = await world(null);
     await createdAgo(120);
     await remindNotAccepted(env, NOW);
-    await remindNotAccepted(env, plus(NOW, 120));
+    // Внутри того же часа -- по-прежнему одно.
+    await remindNotAccepted(env, plus(NOW, 30));
     expect((await queued()).filter((n) => n.kind === 'not_accepted')).toHaveLength(1);
+    // Следующий час -- следующее напоминание: непринятое поручение не должно
+    // теряться в ленте после единственной попытки.
+    await remindNotAccepted(env, plus(NOW, 61));
+    await remindNotAccepted(env, plus(NOW, 122));
+    expect((await queued()).filter((n) => n.kind === 'not_accepted')).toHaveLength(3);
   });
 
   it('за час, за N минут (настройка человека) и в срок -- по разу и всегда (urgent)', async () => {

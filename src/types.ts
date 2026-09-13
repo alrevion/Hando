@@ -79,6 +79,10 @@ export interface Task {
   // JSON array of {type:'text',text} / {type:'image',attachment_id} blocks --
   // the canvas editor's content. NULL for tasks created before this existed.
   content_blocks: string | null;
+  /** Через сколько дней задача возвращается. NULL -- разовая. */
+  repeat_days: number | null;
+  /** Пункты списка, JSON [{t,d}]: t -- текст, d -- когда отметили. NULL -- списка нет. */
+  checklist: string | null;
   // Вид поручения: single (один), each (каждый делает своё), any (достаточно
   // одного). От него зависит свёртка состояний адресатов в статус задачи.
   kind: 'single' | 'each' | 'any';

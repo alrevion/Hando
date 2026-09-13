@@ -116,6 +116,8 @@ export interface TaskInput {
   responsible_user_id: string;
   deadline: string | null;
   priority: Priority;
+  /** Через сколько дней задача возвращается. null снимает повтор. */
+  repeat_days?: number | null;
   // Predecessor task (same project) that must be done/archived first. undefined
   // = leave unchanged (edit only), null = no dependency.
   depends_on_task_id?: string | null;
@@ -134,6 +136,9 @@ export const updateTask = (taskId: string, input: Partial<TaskInput> & { content
 /** 'started' -- не статус задачи, а отметка «сел за работу» на своей строке. */
 export const moveTask = (taskId: string, status: TaskStatus | 'started') =>
   post<Task>(`/tasks/${taskId}/move`, { to: status });
+/** Отметить или снять пункт списка. Возвращает список целиком -- он короткий. */
+export const toggleChecklistItem = (taskId: string, index: number) =>
+  post<{ checklist: { t: string; d: string | null }[] }>(`/tasks/${taskId}/checklist`, { index });
 export const confirmTask = (taskId: string) =>
   post<{ success: true; overdue_by: number | null }>(`/tasks/${taskId}/confirm`);
 export const rejectTask = (taskId: string, comment: string, extraDays: number) =>

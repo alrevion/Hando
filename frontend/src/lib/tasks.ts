@@ -71,3 +71,24 @@ export const STATE_PILL: Record<Assignee['state'], string> = {
   rejected: 'pill pill-orange',
   declined: 'pill pill-red',
 };
+
+/** Пункты списка задачи. Битый JSON -- пустой список, а не белый экран. */
+export function checklistOf(task: Task): { t: string; d: string | null }[] {
+  if (!task.checklist) return [];
+  try {
+    const v = JSON.parse(task.checklist) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is { t: string; d: string | null } => !!x && typeof (x as { t: unknown }).t === 'string') : [];
+  } catch { return []; }
+}
+
+/** Повтор словами: хранится числом дней, читать его так никто не станет. */
+export function repeatLabel(days: number | null): string {
+  if (!days) return 'Нет';
+  if (days === 1) return 'Каждый день';
+  if (days === 2) return 'Через день';
+  if (days === 7) return 'Каждую неделю';
+  if (days === 30) return 'Каждый месяц';
+  return `Каждые ${days} дн.`;
+}
+
+export const REPEAT_CHOICES = [0, 1, 2, 7, 30];

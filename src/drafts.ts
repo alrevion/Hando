@@ -28,6 +28,10 @@ export type DraftRow = {
   deadline: string | null;
   priority: 'urgent' | 'medium' | 'low';
   description: string | null;
+  /** Через сколько дней задача возвращается. NULL -- разовая. */
+  repeat_days: number | null;
+  /** Пункты списка, JSON-массив строк. NULL -- списка нет. */
+  checklist: string | null;
   priority_explicit: number;
   kind: 'single' | 'each' | 'any' | 'ack';
   heard: string;
@@ -40,6 +44,25 @@ export type DraftRow = {
 };
 
 export const PRIORITY_RU: Record<DraftRow['priority'], string> = { urgent: 'высокая', medium: 'средняя', low: 'низкая' };
+
+/** Повтор словами. Числом дней он хранится, а читать его так никто не станет. */
+export function repeatRu(days: number | null): string {
+  if (!days) return 'нет';
+  if (days === 1) return 'каждый день';
+  if (days === 2) return 'через день';
+  if (days === 7) return 'каждую неделю';
+  if (days === 30) return 'каждый месяц';
+  return `каждые ${days} дн.`;
+}
+
+/** Пункты списка черновика. Битый JSON -- пустой список, а не падение. */
+export function checklistOf(row: { checklist: string | null }): string[] {
+  if (!row.checklist) return [];
+  try {
+    const v = JSON.parse(row.checklist) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch { return []; }
+}
 
 export function assigneesOf(row: DraftRow): string[] {
   try { return JSON.parse(row.assignee_ids) as string[]; } catch { return []; }
@@ -58,10 +81,12 @@ export async function saveDraft(
   const id = uuid();
   const now = nowIso();
   await env.DB.prepare(
-    `INSERT INTO drafts (id, org_id, author_id, title, description, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO drafts (id, org_id, author_id, title, description, repeat_days, checklist, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
-    id, who.orgId, who.userId, draft.title, draft.description ?? null, JSON.stringify(draft.assigneeIds), draft.deadline,
+    id, who.orgId, who.userId, draft.title, draft.description ?? null,
+    draft.repeatDays ?? null, draft.checklist?.length ? JSON.stringify(draft.checklist) : null,
+    JSON.stringify(draft.assigneeIds), draft.deadline,
     draft.priority, draft.priorityExplicit ? 1 : 0, draft.kind, heard.slice(0, 1000),
     JSON.stringify(media), draft.source, now, now,
   ).run();
@@ -162,6 +187,8 @@ export async function confirmDraft(env: Env, row: DraftRow): Promise<string | nu
     priorityExplicit: row.priority_explicit === 1,
     kind: row.kind === 'any' ? 'each' : row.kind,
     source: row.source === 'llm' || row.source === 'fallback' ? row.source : 'pattern',
+    repeatDays: row.repeat_days,
+    checklist: checklistOf(row),
     ambiguous: [],
   };
   const taskId = await createFromDraft(env, { userId: row.author_id, orgId: row.org_id }, draft, mediaOf(row), row.heard, row.description);
@@ -212,6 +239,12 @@ export async function draftText(env: Env, row: DraftRow, timeZone: string): Prom
     `📅 <b>Срок:</b> ${row.deadline ? formatWhen(row.deadline, timeZone) : 'не указан'}`,
     `${PRIORITY_DOT[row.priority] ?? '🟡'} <b>Важность:</b> ${PRIORITY_RU[row.priority]}${row.priority_explicit ? '' : ' (не сказана)'}`,
   );
+  if (row.repeat_days) lines.push(`🔁 <b>Повтор:</b> ${repeatRu(row.repeat_days)}`);
+  const items = checklistOf(row);
+  if (items.length) {
+    lines.push('', '🧾 <b>Список:</b>');
+    lines.push(...items.map((t) => `• ${esc(t)}`));
+  }
   if (row.kind === 'ack') lines.push('👁 <b>Вид:</b> ознакомиться — «прочитал» и есть выполнение');
   if (files > 0) lines.push(`📎 <b>Вложений:</b> ${files}`);
   // Что именно услышано -- чтобы «Иве» вместо «Еве» было видно сразу.

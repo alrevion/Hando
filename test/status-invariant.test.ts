@@ -58,6 +58,8 @@ async function mismatch(taskId: string): Promise<string | null> {
 type Step = { path: string; method?: 'POST' | 'PATCH' | 'DELETE'; body?: unknown; as: 'boss' | 'aziz' | 'bek' };
 type Scenario = {
   name: string; setup: Step[]; act: Step; expectRows?: string;
+  /** Подготовка данных, которых нет в фикстуре (например список пунктов). */
+  before?: () => Promise<void>;
   // Требует, чтобы работу сдали ВСЕ адресаты. У 'each' и 'ack' задача не
   // считается сданной, пока не закрылся последний, и подтверждать нечего --
   // прежняя редакция получала здесь 409 и молча ничего не проверяла.
@@ -76,6 +78,19 @@ const SCENARIOS: Scenario[] = [
     name: 'срочность кнопкой',
     setup: [move('aziz', 'in_progress')],
     act: { path: '/tasks/t1/quick', method: 'PATCH', body: { priority: 'urgent' }, as: 'boss' },
+    expectRows: 'accepted',
+  },
+  {
+    // Галочка в списке -- НЕ движение задачи: отметили морковку, а поручение
+    // как было в работе, так и осталось. Ровно это здесь и проверяется.
+    name: 'галочка в списке',
+    // Списка в фикстуре нет -- ставим его прямо перед действием.
+    before: async () => {
+      await testEnv.DB.prepare("UPDATE tasks SET checklist = ? WHERE id='t1'")
+        .bind(JSON.stringify([{ t: 'молоко', d: null }, { t: 'хлеб', d: null }])).run();
+    },
+    setup: [move('aziz', 'in_progress')],
+    act: { path: '/tasks/t1/checklist', method: 'POST', body: { index: 0 }, as: 'aziz' },
     expectRows: 'accepted',
   },
   {
@@ -145,6 +160,7 @@ describe('инвариант: колонка доски = свёртка стр�
         tg();
         COOKIES.boss = await cookie('boss', 'creator', ORG_A);
         COOKIES.aziz = await cookie('aziz', 'admin', ORG_A);
+        if (sc.before) await sc.before();
 
         for (const st of sc.setup) {
           const r = await run(st);

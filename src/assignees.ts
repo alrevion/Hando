@@ -102,6 +102,72 @@ export function confirmAssignees(env: Env, taskId: string): D1PreparedStatement 
 }
 
 /**
+ * Повторяющаяся задача заводит СЛЕДУЮЩИЙ заход -- в момент, когда закрыли
+ * предыдущий.
+ *
+ * По часам, а не по закрытию, делать нельзя: невыполненная задача плодила бы
+ * копии сама себя, и к пятнице «полить цветы» висело бы пять раз. Закрытие --
+ * единственный момент, когда точно известно, что круг пройден.
+ *
+ * Срок нового захода считается от СТАРОГО срока, а не от «сейчас»: полив через
+ * день остаётся через день, даже если вчерашний полив подтвердили только
+ * сегодня вечером. Если старый срок уже далеко позади (задачу закрыли сильно
+ * позже), отсчёт идёт от текущего момента -- иначе новая задача родилась бы
+ * просроченной.
+ */
+async function respawnRepeating(env: Env, task: Task, actorId: string): Promise<void> {
+  const days = task.repeat_days;
+  if (!days || days < 1) return;
+  const step = days * 24 * 60 * 60 * 1000;
+  const from = task.deadline ? Date.parse(task.deadline) : Date.now();
+  const candidate = from + step;
+  const deadline = new Date(candidate > Date.now() ? candidate : Date.now() + step).toISOString();
+
+  // Кто делал, тот и делает дальше: список адресатов копируется как есть, без
+  // отказавшихся -- они уже сказали, что этим не занимаются.
+  const { results: live } = await env.DB.prepare(
+    "SELECT user_id FROM task_assignees WHERE task_id = ? AND org_id = ? AND state <> 'declined'",
+  ).bind(task.id, task.org_id).all<{ user_id: string }>();
+  if (live.length === 0) return;
+
+  const id = uuid();
+  const fresh = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>() ?? task;
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_days, checklist, author_id, kind, source, status, priority, deadline)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'repeat', 'todo', ?, ?)`,
+    ).bind(id, fresh.org_id, fresh.project_id, fresh.title, fresh.description ?? '', days,
+      // Галочки сбрасываются: список покупок на следующую неделю пустой.
+      resetChecklist(fresh.checklist), fresh.author_id, fresh.kind, fresh.priority, deadline),
+    env.DB.prepare(
+      `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
+       VALUES (?, ?, ?, 'task', ?, 'created', 'повтор', NULL, ?)`,
+    ).bind(uuid(), actorId, fresh.org_id, id, nowIso()),
+    ...buildAssignees(env, { id, org_id: fresh.org_id }, live.map((a) => a.user_id), deadline),
+  ]);
+
+  // Карточка новому кругу -- каждому, кроме того, кто её сам и закрыл.
+  const writes: D1PreparedStatement[] = [];
+  const nextTask = { ...fresh, id, deadline, telegram_message_id: null } as Task;
+  for (const a of live) {
+    if (a.user_id === actorId) continue;
+    writes.push(await buildNotification(env, nextTask, 'created',
+      { emoji: '🔁', label: 'Снова по кругу', buttons: assigneeButtons(nextTask, a.user_id) },
+      deadline, a.user_id, actorId));
+  }
+  if (writes.length) await env.DB.batch(writes);
+}
+
+/** Новый круг начинается с чистых галочек. */
+function resetChecklist(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as { t: string }[];
+    return Array.isArray(v) ? JSON.stringify(v.map((x) => ({ t: x.t, d: null }))) : null;
+  } catch { return null; }
+}
+
+/**
  * Приёмка работы -- ОДНА дорога для приложения и для кнопки «✔️ Принять» под
  * поводом в боте. Кнопка раньше писала confirmed_at напрямую: строки адресатов
  * оставались в 'done', события в журнале не было, а исполнитель не узнавал, что
@@ -125,6 +191,7 @@ export async function confirmWork(env: Env, task: Task, actorId: string, notify 
       ? { emoji: '✔️', label: 'Подтверждено', extraLine: overdueBy == null ? undefined : describeOverdue(overdueBy) }
       : undefined,
   });
+  await respawnRepeating(env, task, actorId);
   return overdueBy;
 }
 

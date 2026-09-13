@@ -11,6 +11,7 @@ import { applyTransition, assigneeButtons, buildNotification } from './transitio
 import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, reassignTask, resetAssignees, startWork, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
 import { commandTaskByPhrase, setTaskDeadline } from './intake';
+import { toggleItem } from './checklist';
 import {
   assigneesOf, confirmDraft, draftAssignable, getDraft, listDrafts, logMiss, mediaOf, patchDraft, removeDraft, renderCreated, renderDraft,
   saveDraft, type DraftPatch, type DraftRow,
@@ -1497,6 +1498,7 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
       responsible_user_id?: string;
       deadline?: string | null;
       content_blocks?: string;
+      repeat_days?: number | null;
       priority?: string;
       depends_on_task_id?: string | null;
     }>()
@@ -1523,7 +1525,7 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
   // уходит в applyTransition отдельным шагом ниже.
   await c.env.DB.prepare(
     `UPDATE tasks SET title = COALESCE(?, title), description = COALESCE(?, description),
-       deadline = ?,
+       deadline = ?, repeat_days = ?,
        content_blocks = COALESCE(?, content_blocks), priority = COALESCE(?, priority),
        depends_on_task_id = ?, updated_at = ? WHERE id = ?`,
   )
@@ -1531,6 +1533,8 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
       b.title ?? null,
       b.description ?? null,
       b.deadline === undefined ? task.deadline : b.deadline,
+      // Повтор снимается передачей null -- COALESCE такого не умеет.
+      b.repeat_days === undefined ? task.repeat_days : (b.repeat_days || null),
       b.content_blocks ?? null,
       priority,
       b.depends_on_task_id === undefined ? task.depends_on_task_id : dependency.value,
@@ -1753,6 +1757,18 @@ apiRoutes.post('/tasks/:id/restore', requireProjectAccess('task'), requireRole('
 // Confirm completion. Computes overdue_by vs deadline (0 if on time, null if no deadline).
 // confirmed_at guards against re-confirming and lets the board hide Confirm/Reject
 // once done (a Done card otherwise looks identical whether confirmed or not).
+// Пункт списка. Отмечает ЛЮБОЙ, кто задачу видит: покупки отмечает тот, кто в
+// магазине, и спрашивать у него роль незачем -- задача всё равно закрывается
+// целиком и отдельным действием.
+apiRoutes.post('/tasks/:id/checklist', requireProjectAccess('task'), async (c) => {
+  const task = c.get('task')!;
+  const { index } = await c.req.json<{ index?: number }>().catch(() => ({ index: undefined }));
+  if (!Number.isInteger(index)) return c.json({ error: 'index required' }, 400);
+  const items = await toggleItem(c.env, task, index as number);
+  if (!items) return c.json({ error: 'no such item' }, 409);
+  return c.json({ checklist: items });
+});
+
 apiRoutes.post('/tasks/:id/confirm', requireProjectAccess('task'), async (c) => {
   const task = c.get('task')!;
   // Гейт -- АВТОРСТВО, а не роль (ADR-3 после R1-1). Поручения идут в любую

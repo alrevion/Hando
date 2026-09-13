@@ -36,6 +36,7 @@ import { dayEnd, hm, loadSchedule, localHm, weekEndDay, type OrgSchedule } from 
 import { askAssistant, classifyIntent } from './assistant';
 import { assignableMembers } from './hierarchy';
 import { APP_URL } from './transition';
+import { show as showChecklist, toggleItem } from './checklist';
 import { membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -810,6 +811,22 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
 
+    // Список: отдельное сообщение с кнопкой на каждый пункт. Нажатие правит
+    // его на месте, поэтому в чате не растёт стопка одинаковых списков.
+    if (action === 'cl' || action === 'ci') {
+      if (action === 'ci') {
+        const idx = Number(parts[2] ?? '');
+        const items = Number.isInteger(idx) ? await toggleItem(c.env, task, idx) : null;
+        await answerCallbackQuery(c.env, cq.id, items ? (items[idx].d ? 'Отмечено' : 'Снято') : 'Список изменился');
+      } else {
+        await answerCallbackQuery(c.env, cq.id);
+      }
+      const after = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>();
+      // При «cl» сообщение с карточкой править нельзя -- список уходит новым.
+      if (after && chat) await showChecklist(c.env, after, chat, action === 'ci' ? msgId : null);
+      return c.json({ ok: true });
+    }
+
     // «Начал» -- не переход состояния, а отметка времени: строка остаётся
     // accepted, и автор узнаёт, что человек сел за работу, а не просто
     // согласился.
@@ -843,9 +860,12 @@ botApp.post('/webhook', async (c) => {
       // После «Принять» на карточке остаётся следующий шаг -- «Начал». Для
       // рассылки «ознакомиться» его нет: там принятие и есть выполнение.
       await editMessageReplyMarkup(c.env, chat, msgId, {
-        inline_keyboard: [action === 'ack'
-          ? [openButton(task.id)]
-          : [{ text: '🚀 Начал', callback_data: `start:${task.id}` }, openButton(task.id)]],
+        inline_keyboard: [
+          ...(task.checklist ? [[{ text: '🧾 Список', callback_data: `cl:${task.id}` }]] : []),
+          action === 'ack'
+            ? [openButton(task.id)]
+            : [{ text: '🚀 Начал', callback_data: `start:${task.id}` }, openButton(task.id)],
+        ],
       });
     }
     await drainOutbox(c.env);

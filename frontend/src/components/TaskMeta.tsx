@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react';
-import { CalendarDays, Check, ChevronsDown, ChevronsUp, Equal, LayoutGrid, Play, User as UserIcon } from 'lucide-react';
+import { CalendarDays, Check, ChevronsDown, ChevronsUp, Equal, LayoutGrid, ListChecks, Play, Repeat, User as UserIcon } from 'lucide-react';
 import type { Assignee, Priority, Task } from '../types';
 import { formatDeadlineDays, isTaskOverdue } from '../lib/overdue';
 import { PRIORITY_LABEL } from '../lib/priority';
-import { anyStarted } from '../lib/tasks';
+import { anyStarted, checklistOf, repeatLabel } from '../lib/tasks';
 
 /**
  * Признаки задачи метками: кто и где -- первой строкой, важность и срок --
@@ -66,6 +66,7 @@ export function TaskMeta({
 }) {
   const overdue = isTaskOverdue(task);
   const PriorityIcon = PRIORITY_ICON[task.priority];
+  const items = checklistOf(task);
   const base = showStage ? STAGE[task.status] : undefined;
   const stage = base && task.status === 'in_progress' && anyStarted(task) ? STARTED : base;
   const StageIcon = stage?.icon;
@@ -111,6 +112,17 @@ export function TaskMeta({
           <span className={overdue ? 'pill pill-red' : 'pill'}>
             <CalendarDays aria-hidden="true" />
             <span>{formatDeadlineDays(task.deadline)}</span>
+          </span>
+        ) : null}
+
+        {/* Повтор и список -- признаки самой задачи, а не её состояния:
+            по ним видно, что она вернётся и что внутри есть пункты. */}
+        {task.repeat_days ? (
+          <span className="pill"><Repeat aria-hidden="true" /><span>{repeatLabel(task.repeat_days).toLowerCase()}</span></span>
+        ) : null}
+        {items.length > 0 ? (
+          <span className={items.every((i) => i.d) ? 'pill pill-green' : 'pill'}>
+            <ListChecks aria-hidden="true" /><span>{items.filter((i) => i.d).length} из {items.length}</span>
           </span>
         ) : null}
 

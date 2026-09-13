@@ -49,6 +49,75 @@ const row = async (userId: string) =>
   (await testEnv.DB.prepare("SELECT state, declined_reason FROM task_assignees WHERE task_id='t1' AND user_id=?").bind(userId).first<{ state: string; declined_reason: string | null }>());
 const status = async () => (await testEnv.DB.prepare("SELECT status FROM tasks WHERE id='t1'").first<{ status: string }>())!.status;
 
+describe('повтор и список пунктов', () => {
+  it('подтверждение повторяющейся задачи заводит следующий круг', async () => {
+    const env = await world();
+    tg();
+    // Срок В БУДУЩЕМ: только тогда следующий круг считается от него. Если
+    // прежний срок уже прошёл, отсчёт идёт от «сейчас» -- иначе новая задача
+    // родилась бы просроченной (это проверяет следующий тест).
+    const before = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    await testEnv.DB.prepare("UPDATE tasks SET repeat_days = 2, deadline = ? WHERE id='t1'").bind(before).run();
+    await testEnv.DB.prepare("UPDATE task_assignees SET due_at = ? WHERE task_id='t1'").bind(before).run();
+    await say(env, 'tg-w1', 'подготовить отчёт готово');
+    await say(env, 'tg-boss', 'принимаю работу подготовить отчёт');
+    const { results } = await testEnv.DB.prepare("SELECT id, deadline, status, repeat_days FROM tasks WHERE title='Подготовить отчёт' ORDER BY created_at")
+      .all<{ id: string; deadline: string; status: string; repeat_days: number }>();
+    expect(results).toHaveLength(2);
+    const next = results.find((t) => t.id !== 't1')!;
+    // Новый круг: свой срок ровно через два дня от прежнего, снова todo и
+    // снова повторяющийся -- иначе цветы политы один раз и навсегда.
+    expect(next.status).toBe('todo');
+    expect(next.repeat_days).toBe(2);
+    expect(Date.parse(next.deadline) - Date.parse(before)).toBe(2 * 24 * 60 * 60 * 1000);
+    // Исполнитель тот же, и строка у него новая.
+    const row = await testEnv.DB.prepare('SELECT state FROM task_assignees WHERE task_id = ? AND user_id = ?')
+      .bind(next.id, 'w1').first<{ state: string }>();
+    expect(row!.state).toBe('pending');
+  });
+
+  it('просроченный круг начинается от «сейчас», а не рождается просроченным', async () => {
+    const env = await world();
+    tg();
+    // Срок фикстуры уже в прошлом.
+    await testEnv.DB.prepare("UPDATE tasks SET repeat_days = 2 WHERE id='t1'").run();
+    await say(env, 'tg-w1', 'подготовить отчёт готово');
+    await say(env, 'tg-boss', 'принимаю работу подготовить отчёт');
+    const next = (await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE title='Подготовить отчёт' AND id <> 't1'")
+      .first<{ deadline: string }>())!;
+    expect(Date.parse(next.deadline)).toBeGreaterThan(Date.now());
+  });
+
+  it('разовая задача следующего круга НЕ заводит', async () => {
+    const env = await world();
+    tg();
+    await say(env, 'tg-w1', 'подготовить отчёт готово');
+    await say(env, 'tg-boss', 'принимаю работу подготовить отчёт');
+    expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM tasks WHERE title='Подготовить отчёт'").first<{ n: number }>())!.n).toBe(1);
+  });
+
+  it('список: кнопка на карточке, пункт отмечается нажатием и снимается вторым', async () => {
+    const env = await world();
+    const spy = tg();
+    await testEnv.DB.prepare("UPDATE tasks SET checklist = ? WHERE id='t1'")
+      .bind(JSON.stringify([{ t: 'молоко', d: null }, { t: 'хлеб', d: null }])).run();
+    // Кнопка списка стоит первой в карточке адресата.
+    expect(assigneeButtons({ id: 't1', checklist: '[]x' }, 'w1')[0][0].text).toBe('🧾 Список');
+    await press(env, 'tg-w1', 'cl:t1');
+    const list = sent(spy).find((m) => m.text.includes('Отмечено 0 из 2'))!;
+    expect(list.text).toContain('⬜️ молоко');
+    await press(env, 'tg-w1', 'ci:t1:0');
+    const raw = (await testEnv.DB.prepare("SELECT checklist FROM tasks WHERE id='t1'").first<{ checklist: string }>())!.checklist;
+    expect(JSON.parse(raw)[0].d).not.toBeNull();
+    // Второе нажатие снимает.
+    await press(env, 'tg-w1', 'ci:t1:0');
+    const raw2 = (await testEnv.DB.prepare("SELECT checklist FROM tasks WHERE id='t1'").first<{ checklist: string }>())!.checklist;
+    expect(JSON.parse(raw2)[0].d).toBeNull();
+    // Статус задачи галочка НЕ трогает.
+    expect(await status()).toBe('todo');
+  });
+});
+
 describe('этапы голосом и текстом', () => {
   const state = async (u = 'w1') =>
     (await testEnv.DB.prepare("SELECT state FROM task_assignees WHERE task_id='t1' AND user_id=?").bind(u).first<{ state: string }>())!.state;

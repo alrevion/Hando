@@ -156,8 +156,13 @@ export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
   for (const r of results) {
     const age = now.getTime() - Date.parse(r.created_at.includes('T') ? r.created_at : `${r.created_at.replace(' ', 'T')}Z`);
     if (age < HOUR_MS) continue;
-    const dueToday = r.due_at !== null && sameLocalDay(r.due_at, now, r.timezone);
-    if (working(r, now) && dueNow(log, r.id, 'not_accepted', dueToday ? HOURLY_MS : ONCE, now)) {
+    // КАЖДЫЙ ЧАС, пока не принял, а не один раз. Одно напоминание теряется в
+    // ленте Telegram за ночь, и поручение висит непринятым до утра, хотя
+    // человек в телефоне. Тишина и график по-прежнему держат: working()
+    // проверяется тем же условием, поэтому ночью у конторы не звонит.
+    // Останавливает это сам человек -- «Принять», «Не успею» или «Отказать»:
+    // любое из трёх уводит строку из pending, и выборка её больше не видит.
+    if (working(r, now) && dueNow(log, r.id, 'not_accepted', HOURLY_MS, now)) {
       // Задача себе: «примите или откажитесь -- автор ждёт» здесь ложь, автор
       // и есть получатель. Повод остаётся тот же -- час прошёл, а работа не
       // начата, -- но называется своим именем.

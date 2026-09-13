@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { matchDeadline, parseByPattern } from '../src/parse';
+import { matchDeadline, matchRepeat, parseByPattern } from '../src/parse';
 
 const TZ = 'Asia/Tashkent';
 // Понедельник 7 сентября 2026, 10:00 по Ташкенту.
@@ -56,6 +56,24 @@ describe('срок из фразы', () => {
     expect(matchDeadline('срочно закрыть акты', NOW, TZ).iso).toBeNull();
     expect(matchDeadline('всё сделать по сроку', NOW, TZ).iso).toBeNull();
     expect(matchDeadline('уточнить сроки поставки', NOW, TZ).iso).toBeNull();
+  });
+});
+
+describe('повтор из фразы', () => {
+  it('«через день», «каждый день», «каждую неделю», «каждые 3 дня»', () => {
+    expect(matchRepeat('Мои цветы поливать через день').days).toBe(2);
+    expect(matchRepeat('кормить кота каждый день').days).toBe(1);
+    expect(matchRepeat('сдавать отчёт каждую неделю').days).toBe(7);
+    expect(matchRepeat('полить цветы каждые 3 дня').days).toBe(3);
+    expect(matchRepeat('платить аренду каждый месяц').days).toBe(30);
+    expect(matchRepeat('купить молоко').days).toBeNull();
+  });
+
+  it('слова повтора вычитаются из темы: иначе они остаются в названии', () => {
+    const d = parseByPattern('мои цветы поливать через день', [{ id: 'me', name: 'Тимур' }], 'me', NOW, TZ)!;
+    expect(d).toBeTruthy();
+    expect(d.repeatDays).toBe(2);
+    expect(d.title.toLowerCase()).not.toContain('через день');
   });
 });
 

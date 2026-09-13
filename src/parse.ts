@@ -29,6 +29,10 @@ export type Person = { id: string; name: string; aliases?: string[] };
 
 export type Draft = {
   title: string;
+  /** Через сколько дней задача возвращается. null -- разовая. */
+  repeatDays?: number | null;
+  /** Пункты списка, если фраза их перечисляет. */
+  checklist?: string[] | null;
   /** Подробности сверх темы: их отделяет модель, см. splitTitle. */
   description?: string | null;
   assigneeIds: string[];
@@ -525,6 +529,7 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
   const { ids, ambiguous, usedWords } = matchPeople(clean, people);
   const { iso, usedWords: dateWords } = matchDeadline(clean, now, timeZone, dayEnd, weekEnd);
   const { priority, usedWords: priorityWords } = matchPriority(clean, packId);
+  const repeat = matchRepeat(clean);
 
   // «напомни мне завтра...» -- поручение себе. Оно же личный слой: адресат
   // совпадает с автором, отдельной сущности для этого нет по замыслу.
@@ -540,16 +545,20 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
   // пятницу». Ровно то, ради чего человек пишет боту в личку, и то, из-за чего
   // раньше фраза уезжала в модель: та возвращала пустоту, и оставался сырой
   // текст без срока -- то есть без напоминания вообще.
-  const isSelf = ids.length === 0 && (SELF.test(clean) || iso !== null);
+  // ПОВТОР -- такой же признак поручения себе, как срок. «Цветы поливать через
+  // день» человек говорит про себя, и без этого условия фраза уезжала в модель,
+  // а оттуда возвращалась темой во всю длину.
+  const isSelf = ids.length === 0 && (SELF.test(clean) || iso !== null || repeat.days !== null);
   const assignees = isSelf ? [selfId] : ids;
   if (assignees.length === 0) return null; // ни адресата, ни срока -- решает модель
 
   // Заголовок -- то, что осталось: убираем имена, слова даты и служебные слова.
-  const title = buildTitle(clean, [usedWords, dateWords, priorityWords]);
+  const title = buildTitle(clean, [usedWords, dateWords, priorityWords, repeat.usedWords]);
   if (title.length < 3) return null; // осталась пустота -- это не поручение
 
   return {
     title: title[0].toUpperCase() + title.slice(1),
+    repeatDays: repeat.days,
     assigneeIds: assignees,
     deadline: iso,
     priority,
@@ -621,6 +630,37 @@ export async function parseByLlm(env: Env, text: string, people: Person[], model
   }
 }
 
+/**
+ * Повторяемость из фразы: «через день», «каждый день», «еженедельно».
+ *
+ * Числом дней, а не расписанием: вслух люди говорят именно так, а cron-строка
+ * для «поливать цветы через день» -- инструмент не по размеру задачи.
+ * Возвращает и слова, которые нужно вычесть из темы: без этого «поливать цветы
+ * через день» осталось бы темой целиком.
+ */
+export function matchRepeat(text: string): { days: number | null; usedWords: Set<string> } {
+  const lower = text.toLowerCase();
+  const used = new Set<string>();
+  const take = (m: RegExpMatchArray, days: number) => {
+    m[0].trim().split(/\s+/).forEach((w) => used.add(w));
+    return { days, usedWords: used };
+  };
+  // Порядок от частного к общему: «каждые 3 дня» содержит «кажд».
+  const n = lower.match(/кажд[а-яё]+\s+(\d+)\s*(?:дн[а-яё]*|день)/i);
+  if (n) return take(n, Math.max(1, Number(n[1])));
+  const nw = lower.match(/кажд[а-яё]+\s+(\d+)\s*недел[а-яё]*/i);
+  if (nw) return take(nw, Math.max(1, Number(nw[1])) * 7);
+  const every2 = lower.match(/(?:^|[\s,])через\s+день/i);
+  if (every2) return take(every2, 2);
+  const daily = lower.match(/(?:^|[\s,])(?:кажд[ыои][йе]\s+день|ежедневно|каждодневно)/i);
+  if (daily) return take(daily, 1);
+  const weekly = lower.match(/(?:^|[\s,])(?:кажд[уы][юе]\s+недел[юя]|еженедельно|раз\s+в\s+неделю)/i);
+  if (weekly) return take(weekly, 7);
+  const monthly = lower.match(/(?:^|[\s,])(?:кажд[ыи][йе]\s+месяц|ежемесячно|раз\s+в\s+месяц)/i);
+  if (monthly) return take(monthly, 30);
+  return { days: null, usedWords: used };
+}
+
 /** Тема длиннее этого -- уже не тема, а пересказ фразы. Шесть слов. */
 const TITLE_WORDS = 6;
 
@@ -636,13 +676,17 @@ const TITLE_WORDS = 6;
  * Не срабатывает -- возвращаем как было: длинная тема хуже короткой, но лучше
  * отказа разобрать.
  */
-export async function splitTitle(env: Env, title: string, model: string): Promise<{ title: string; description: string | null }> {
+export async function splitTitle(env: Env, title: string, model: string): Promise<{ title: string; description: string | null; checklist?: string[] | null }> {
   const words = title.trim().split(/\s+/);
-  if (words.length <= TITLE_WORDS || !env.GROQ_API_KEY) return { title, description: null };
+  // Перечисление -- тоже повод позвать модель, даже если фраза короткая:
+  // «купить свёклу, морковь, молоко» это шесть слов и три пункта списка.
+  const enumerated = (title.match(/,/g) ?? []).length >= 2;
+  if ((words.length <= TITLE_WORDS && !enumerated) || !env.GROQ_API_KEY) return { title, description: null };
   const prompt = [
-    'Раздели поручение на тему и содержание. Отвечай ТОЛЬКО JSON, без пояснений.',
+    'Раздели поручение на тему, содержание и список пунктов. Отвечай ТОЛЬКО JSON, без пояснений.',
     'title: суть, 2-5 слов, повелительная форма, без дат, имён и слов о важности.',
     'description: остальные подробности из фразы, одной-двумя фразами; пустая строка, если сверх темы ничего нет.',
+    'items: массив строк, ЕСЛИ фраза перечисляет вещи, которые отмечают по одной (покупки, пункты повестки, что взять с собой). Каждый пункт 1-3 слова. Пустой массив, если перечисления нет.',
     `Фраза: ${title}`,
   ].join('\n');
   try {
@@ -655,11 +699,17 @@ export async function splitTitle(env: Env, title: string, model: string): Promis
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const raw = data.choices?.[0]?.message?.content;
     if (!raw) return { title, description: null };
-    const parsed = JSON.parse(raw) as { title?: string; description?: string };
+    const parsed = JSON.parse(raw) as { title?: string; description?: string; items?: unknown };
+    // Пункты берём даже когда тему сократить не удалось: список полезен сам по
+    // себе. Два пункта -- уже список, один -- просто уточнение темы.
+    const items = Array.isArray(parsed.items)
+      ? parsed.items.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim().slice(0, 100)).slice(0, 30)
+      : [];
+    const checklist = items.length >= 2 ? items : null;
     const short = parsed.title?.trim();
     // Короче исходного и не пустая -- иначе модель просто вернула ту же фразу.
-    if (!short || short.length < 3 || short.split(/\s+/).length >= words.length) return { title, description: null };
-    return { title: short[0].toUpperCase() + short.slice(1), description: parsed.description?.trim() || null };
+    if (!short || short.length < 3 || short.split(/\s+/).length >= words.length) return { title, description: null, checklist };
+    return { title: short[0].toUpperCase() + short.slice(1), description: parsed.description?.trim() || null, checklist };
   } catch {
     return { title, description: null };
   }

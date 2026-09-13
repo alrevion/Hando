@@ -81,14 +81,21 @@ export function openButton(taskId: string, label = '📱 Открыть'): Inlin
  * Кнопки адресата под карточкой. «Готово» здесь нет: сдают в приложении
  * (решение владельца). Рассылке «прочитать» хватает одного «Ознакомился».
  */
-export function assigneeButtons(task: { id: string; kind?: string | null; author_id?: string | null }, recipientId: string): InlineButton[][] {
-  if (task.kind === 'ack') return [[{ text: '👁 Ознакомился', callback_data: `ack:${task.id}` }]];
+export function assigneeButtons(
+  task: { id: string; kind?: string | null; author_id?: string | null; checklist?: string | null },
+  recipientId: string,
+): InlineButton[][] {
+  // Список -- первой строкой и у любого вида задачи: по нему и работают, а
+  // «Принять» ниже никуда не денется.
+  const list = task.checklist ? [[{ text: '🧾 Список', callback_data: `cl:${task.id}` }]] : [];
+  if (task.kind === 'ack') return [...list, [{ text: '👁 Ознакомился', callback_data: `ack:${task.id}` }]];
   // Задачу себе не у кого отпрашивать: «не успею» и «отказать» адресованы
   // АВТОРУ, а он здесь тот же человек. lateAssignee/declineAssignee и так не
   // шлют себе письмо (task.author_id !== actorId), то есть кнопки были пустым
   // нажатием. Остаётся «Принять» -- взять свою же задачу в работу.
-  if (task.author_id === recipientId) return [[{ text: '✅ Принять', callback_data: `accept:${task.id}` }]];
+  if (task.author_id === recipientId) return [...list, [{ text: '✅ Принять', callback_data: `accept:${task.id}` }]];
   return [
+    ...list,
     [{ text: '✅ Принять', callback_data: `accept:${task.id}` }, { text: '⏳ Не успею', callback_data: `late:${task.id}` }],
     [{ text: '✖ Отказать', callback_data: `decline:${task.id}` }],
   ];
