@@ -5,6 +5,8 @@ import type { ContentBlock, Priority, Task, User } from '../types';
 import { parseContentBlocks } from '../types';
 import { PRIORITY_DOT, PRIORITY_LABEL } from '../lib/priority';
 import { toggleChecklistItem } from '../lib/api';
+import { IntervalSheet } from './IntervalSheet';
+import { TimeSheet } from './TimeSheet';
 import { formatDeadlineDays, isReviewOverdue, isTaskOverdue } from '../lib/overdue';
 import { Lightbox } from './Lightbox';
 import { checklistOf, REPEAT_CHOICES, repeatLabel, STATE_PILL, stateLabel } from '../lib/tasks';
@@ -82,7 +84,8 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
   const [desc, setDesc] = useState(task.description ?? '');
   const [deadline, setDeadline] = useState<string | null>(task.deadline ?? null);
   const [priority, setPriority] = useState<Priority>(task.priority);
-  const [repeat, setRepeat] = useState<number>(task.repeat_days ?? 0);
+  const [repeat, setRepeat] = useState<number>(task.repeat_min ?? 0);
+  const [sheet, setSheet] = useState<null | 'interval' | 'time'>(null);
   // Список живёт своей жизнью: галочка сохраняется сразу, а не по «Сохранить».
   // Человек стоит у полки и отмечает морковку -- лишнее нажатие тут лишнее.
   const [items, setItems] = useState(() => checklistOf(task));
@@ -119,7 +122,7 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
     || desc !== (task.description ?? '')
     || deadline !== (task.deadline ?? null)
     || priority !== task.priority
-    || repeat !== (task.repeat_days ?? 0)
+    || repeat !== (task.repeat_min ?? 0)
     || (single && who !== ((task.assignees ?? [])[0]?.user_id ?? ''));
 
   return (
@@ -269,7 +272,8 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
           </div>
         ) : null}
 
-        <div className="btn-row" style={{ marginTop: 14 }}>
+        <div className="sec-title" style={{ margin: '16px 0 8px' }}>Файлы</div>
+        <div className="btn-row" style={{ marginTop: 0 }}>
           <label className="btn" style={{ position: 'relative', overflow: 'hidden' }}>
             <Paperclip aria-hidden="true" style={{ width: 16, height: 16 }} />Прикрепить файл
             <input type="file" disabled={busy} aria-label="Прикрепить файл" style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%' }}
@@ -320,13 +324,17 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
             <div>
               {/* Повтор -- ряд чипов, а не выпадающий список: вариантов пять,
                   и все они помещаются в строку. */}
-              <div className="sec-title" style={{ margin: '0 0 8px' }}>Повтор</div>
-              <div className="chips" style={{ paddingBottom: 0 }}>
+              <div className="sec-title" style={{ margin: '0 0 8px' }}>Повтор{repeat && !REPEAT_CHOICES.includes(repeat) ? `: ${repeatLabel(repeat).toLowerCase()}` : ''}</div>
+              {/* В две строки, как и срок: в одну пять вариантов не влезают. */}
+              <div className="chips" style={{ paddingBottom: 0, flexWrap: 'wrap', overflowX: 'visible' }}>
                 {REPEAT_CHOICES.map((d) => (
                   <button key={d} type="button" disabled={busy}
                     className={repeat === d ? 'chip on' : 'chip'}
                     onClick={() => setRepeat(d)}>{repeatLabel(d || null)}</button>
                 ))}
+                <button type="button" disabled={busy}
+                  className={repeat && !REPEAT_CHOICES.includes(repeat) ? 'chip on' : 'chip'}
+                  onClick={() => setSheet('interval')}>Свой</button>
               </div>
             </div>
 
@@ -337,6 +345,9 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
                 <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(inDays(1))}>Завтра</button>
                 <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(endOfWeek())}>В конце недели</button>
                 {deadline ? <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(null)}>Убрать</button> : null}
+                {deadline ? (
+                  <button type="button" className="chip" disabled={busy} onClick={() => setSheet('time')}>Время</button>
+                ) : null}
                 <label className="chip" style={{ position: 'relative', overflow: 'hidden' }}>
                   <CalendarDays aria-hidden="true" style={{ width: 14, height: 14 }} />
                   Дата
@@ -354,11 +365,18 @@ export function TaskDetailModal({ task: opened, responsible, onClose, actions }:
                 ...(single && who && who !== (task.assignees ?? [])[0]?.user_id ? { responsible_user_id: who } : {}),
                 deadline,
                 priority,
-                repeat_days: repeat || null,
+                repeat_min: repeat || null,
               }), 'Сохранено')}>
               Сохранить
             </button>
           </div>
+        ) : null}
+
+        {sheet === 'interval' ? (
+          <IntervalSheet value={repeat || null} onPick={setRepeat} onClose={() => setSheet(null)} />
+        ) : null}
+        {sheet === 'time' ? (
+          <TimeSheet iso={deadline} onPick={setDeadline} onClose={() => setSheet(null)} />
         ) : null}
 
         {actions ? <div className="stack" style={{ gap: 8, marginTop: 20 }}>{actions}</div> : null}

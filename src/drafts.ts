@@ -28,8 +28,8 @@ export type DraftRow = {
   deadline: string | null;
   priority: 'urgent' | 'medium' | 'low';
   description: string | null;
-  /** Через сколько дней задача возвращается. NULL -- разовая. */
-  repeat_days: number | null;
+  /** Через сколько МИНУТ задача возвращается. NULL -- разовая. */
+  repeat_min: number | null;
   /** Пункты списка, JSON-массив строк. NULL -- списка нет. */
   checklist: string | null;
   priority_explicit: number;
@@ -45,14 +45,20 @@ export type DraftRow = {
 
 export const PRIORITY_RU: Record<DraftRow['priority'], string> = { urgent: 'высокая', medium: 'средняя', low: 'низкая' };
 
-/** Повтор словами. Числом дней он хранится, а читать его так никто не станет. */
-export function repeatRu(days: number | null): string {
-  if (!days) return 'нет';
-  if (days === 1) return 'каждый день';
-  if (days === 2) return 'через день';
-  if (days === 7) return 'каждую неделю';
-  if (days === 30) return 'каждый месяц';
-  return `каждые ${days} дн.`;
+/** Повтор словами. Хранится минутами, а читать его так никто не станет. */
+export function repeatRu(min: number | null): string {
+  if (!min) return 'нет';
+  if (min % 1440 === 0) {
+    const d = min / 1440;
+    if (d === 1) return 'каждый день';
+    if (d === 2) return 'через день';
+    if (d === 7) return 'каждую неделю';
+    if (d === 30) return 'каждый месяц';
+    return `каждые ${d} дн.`;
+  }
+  if (min % 60 === 0) return `каждые ${min / 60} ч`;
+  if (min < 60) return `каждые ${min} мин`;
+  return `каждые ${Math.floor(min / 60)} ч ${min % 60} мин`;
 }
 
 /** Пункты списка черновика. Битый JSON -- пустой список, а не падение. */
@@ -81,11 +87,11 @@ export async function saveDraft(
   const id = uuid();
   const now = nowIso();
   await env.DB.prepare(
-    `INSERT INTO drafts (id, org_id, author_id, title, description, repeat_days, checklist, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
+    `INSERT INTO drafts (id, org_id, author_id, title, description, repeat_min, checklist, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     id, who.orgId, who.userId, draft.title, draft.description ?? null,
-    draft.repeatDays ?? null, draft.checklist?.length ? JSON.stringify(draft.checklist) : null,
+    draft.repeatMin ?? null, draft.checklist?.length ? JSON.stringify(draft.checklist) : null,
     JSON.stringify(draft.assigneeIds), draft.deadline,
     draft.priority, draft.priorityExplicit ? 1 : 0, draft.kind, heard.slice(0, 1000),
     JSON.stringify(media), draft.source, now, now,
@@ -130,8 +136,8 @@ export type DraftPatch = Partial<{
   deadline: string | null;
   priority: DraftRow['priority'];
   priorityExplicit: boolean;
-  /** Через сколько дней задача возвращается. null снимает повтор. */
-  repeatDays: number | null;
+  /** Через сколько МИНУТ задача возвращается. null снимает повтор. */
+  repeatMin: number | null;
   kind: DraftRow['kind'];
   media: Media[];
   telegramChatId: string;
@@ -147,7 +153,7 @@ export async function patchDraft(env: Env, id: string, patch: DraftPatch): Promi
   if (patch.assigneeIds !== undefined) put('assignee_ids', JSON.stringify(patch.assigneeIds));
   if (patch.deadline !== undefined) put('deadline', patch.deadline);
   if (patch.priority !== undefined) put('priority', patch.priority);
-  if (patch.repeatDays !== undefined) put('repeat_days', patch.repeatDays);
+  if (patch.repeatMin !== undefined) put('repeat_min', patch.repeatMin);
   if (patch.priorityExplicit !== undefined) put('priority_explicit', patch.priorityExplicit ? 1 : 0);
   if (patch.kind !== undefined) put('kind', patch.kind);
   if (patch.media !== undefined) put('media', JSON.stringify(patch.media));
@@ -190,7 +196,7 @@ export async function confirmDraft(env: Env, row: DraftRow): Promise<string | nu
     priorityExplicit: row.priority_explicit === 1,
     kind: row.kind === 'any' ? 'each' : row.kind,
     source: row.source === 'llm' || row.source === 'fallback' ? row.source : 'pattern',
-    repeatDays: row.repeat_days,
+    repeatMin: row.repeat_min,
     checklist: checklistOf(row),
     ambiguous: [],
   };
@@ -242,7 +248,7 @@ export async function draftText(env: Env, row: DraftRow, timeZone: string): Prom
     `📅 <b>Срок:</b> ${row.deadline ? formatWhen(row.deadline, timeZone) : 'не указан'}`,
     `${PRIORITY_DOT[row.priority] ?? '🟡'} <b>Важность:</b> ${PRIORITY_RU[row.priority]}${row.priority_explicit ? '' : ' (не сказана)'}`,
   );
-  if (row.repeat_days) lines.push(`🔁 <b>Повтор:</b> ${repeatRu(row.repeat_days)}`);
+  if (row.repeat_min) lines.push(`🔁 <b>Повтор:</b> ${repeatRu(row.repeat_min)}`);
   const items = checklistOf(row);
   if (items.length) {
     lines.push('', '🧾 <b>Список:</b>');

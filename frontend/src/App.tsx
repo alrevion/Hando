@@ -27,7 +27,10 @@ function AuthenticatedApp() {
   }, []);
 
   if (!user) return null; // AppShell гарантирует пользователя
-  return <MobileShell user={user} deepLinkTask={deepLinkTask} />;
+  // onOpened гасит ссылку: иначе задача, открытая по уведомлению, всплывала
+  // снова при каждой перерисовке оболочки -- человек закрывал карточку, и она
+  // возвращалась сама, будто приложение её навязывает.
+  return <MobileShell user={user} deepLinkTask={deepLinkTask} onLinkOpened={() => setDeepLinkTask(null)} />;
 }
 
 function AppShell() {

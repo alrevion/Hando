@@ -81,14 +81,21 @@ export function checklistOf(task: Task): { t: string; d: string | null }[] {
   } catch { return []; }
 }
 
-/** Повтор словами: хранится числом дней, читать его так никто не станет. */
-export function repeatLabel(days: number | null): string {
-  if (!days) return 'Нет';
-  if (days === 1) return 'Каждый день';
-  if (days === 2) return 'Через день';
-  if (days === 7) return 'Каждую неделю';
-  if (days === 30) return 'Каждый месяц';
-  return `Каждые ${days} дн.`;
+/** Повтор словами: хранится МИНУТАМИ, читать его так никто не станет. */
+export function repeatLabel(min: number | null): string {
+  if (!min) return 'Нет';
+  if (min % 1440 === 0) {
+    const d = min / 1440;
+    if (d === 1) return 'Каждый день';
+    if (d === 2) return 'Через день';
+    if (d === 7) return 'Каждую неделю';
+    if (d === 30) return 'Каждый месяц';
+    return `Каждые ${d} дн.`;
+  }
+  if (min % 60 === 0) return `Каждые ${min / 60} ч`;
+  if (min < 60) return `Каждые ${min} мин`;
+  return `Каждые ${Math.floor(min / 60)} ч ${min % 60} мин`;
 }
 
-export const REPEAT_CHOICES = [0, 1, 2, 7, 30];
+/** Готовые интервалы в минутах. Всё остальное -- через «Свой». */
+export const REPEAT_CHOICES = [0, 1440, 2880, 10080, 43200];

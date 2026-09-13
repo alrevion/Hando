@@ -1,9 +1,11 @@
 import { useRef, useState } from 'react';
-import { CalendarDays, Check, Mic, Paperclip, Square, Trash2, Wand2 } from 'lucide-react';
+import { CalendarDays, Check, Clock, Mic, Paperclip, Repeat, Square, Trash2, Wand2 } from 'lucide-react';
 import type { Priority, User } from '../types';
 import { ApiError, confirmDraft, deleteDraft, refineDraftByPhrase, uploadDraftFile, type DraftEdits, type DraftView } from '../lib/api';
 import { PRIORITIES } from '../lib/priority';
 import { REPEAT_CHOICES, repeatLabel } from '../lib/tasks';
+import { IntervalSheet } from './IntervalSheet';
+import { TimeSheet } from './TimeSheet';
 import { endOfWeek, inDays } from './QuickEdit';
 
 /** Есть ли запись с микрофона: в WebView Telegram бывает и нет. */
@@ -49,7 +51,8 @@ export function DraftCard({
   const [deadline, setDeadline] = useState<string | null>(draft.deadline);
   const [priority, setPriority] = useState<Priority>(draft.priority);
   const [priorityTouched, setTouched] = useState(draft.priority_explicit);
-  const [repeat, setRepeat] = useState<number>(draft.repeat_days ?? 0);
+  const [repeat, setRepeat] = useState<number>(draft.repeat_min ?? 0);
+  const [sheet, setSheet] = useState<null | 'interval' | 'time'>(null);
   const [files, setFiles] = useState(draft.media_count);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -127,7 +130,7 @@ export function DraftCard({
     assignee_ids: who ? [who] : [],
     deadline,
     priority,
-    repeat_days: repeat || null,
+    repeat_min: repeat || null,
   });
 
   return (
@@ -172,13 +175,20 @@ export function DraftCard({
 
       {/* ПОВТОР -- рядом со сроком, а не в глубине правки: «поливать через
           день» это свойство самой задачи, и ставится оно там же, где срок. */}
-      <div className="sec-title" style={{ margin: '4px 0 8px' }}>Повтор</div>
-      <div className="chips" style={{ paddingBottom: 10 }}>
+      <div className="sec-title" style={{ margin: '4px 0 8px' }}>Повтор{repeat && !REPEAT_CHOICES.includes(repeat) ? `: ${repeatLabel(repeat).toLowerCase()}` : ''}</div>
+      {/* В ДВЕ СТРОКИ, как и срок: пять вариантов в одну строку уезжают за
+          край, и последний («Каждый месяц») человек просто не видит. */}
+      <div className="chips" style={{ paddingBottom: 10, flexWrap: 'wrap', overflowX: 'visible' }}>
         {REPEAT_CHOICES.map((d) => (
           <button key={d} type="button" disabled={busy}
             className={repeat === d ? 'chip on' : 'chip'}
             onClick={() => setRepeat(d)}>{repeatLabel(d || null)}</button>
         ))}
+        <button type="button" disabled={busy}
+          className={repeat && !REPEAT_CHOICES.includes(repeat) ? 'chip on' : 'chip'}
+          onClick={() => setSheet('interval')}>
+          <Repeat aria-hidden="true" style={{ width: 14, height: 14 }} />Свой
+        </button>
       </div>
 
       <div className="sec-title" style={{ margin: '4px 0 8px' }}>Срок{deadline ? `: ${when(deadline)}` : ' не указан'}</div>
@@ -187,6 +197,11 @@ export function DraftCard({
         <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(inDays(1))}>Завтра</button>
         <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(endOfWeek())}>В конце недели</button>
         {deadline ? <button type="button" className="chip" disabled={busy} onClick={() => setDeadline(null)}>Убрать</button> : null}
+        {deadline ? (
+          <button type="button" className="chip" disabled={busy} onClick={() => setSheet('time')}>
+            <Clock aria-hidden="true" style={{ width: 14, height: 14 }} />Время
+          </button>
+        ) : null}
         <label className="chip" style={{ position: 'relative', overflow: 'hidden' }}>
           <CalendarDays aria-hidden="true" style={{ width: 14, height: 14 }} />
           Дата
@@ -197,6 +212,8 @@ export function DraftCard({
             style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%' }} />
         </label>
       </div>
+
+      <div className="sec-title" style={{ margin: '4px 0 8px' }}>Файлы</div>
 
       {/* Файл -- единственное, что нельзя отложить до «Создать»: он должен
           уехать в хранилище сразу, иначе его негде держать до подтверждения. */}
@@ -236,6 +253,13 @@ export function DraftCard({
         </div>
         {recording ? <p className="hint">Идёт запись — нажмите квадрат, когда закончите.</p> : null}
       </div>
+
+      {sheet === 'interval' ? (
+        <IntervalSheet value={repeat || null} onPick={setRepeat} onClose={() => setSheet(null)} />
+      ) : null}
+      {sheet === 'time' ? (
+        <TimeSheet iso={deadline} onPick={setDeadline} onClose={() => setSheet(null)} />
+      ) : null}
 
       {/* Что именно услышано -- чтобы «Иве» вместо «Еве» было видно сразу. */}
       {heard ? <p className="hint">Поправка: «{heard}»</p> : draft.heard ? <p className="hint">Услышал: «{draft.heard}»</p> : null}

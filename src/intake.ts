@@ -50,10 +50,10 @@ export async function createFromDraft(
 
   const writes = [
     env.DB.prepare(
-      `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_days, checklist, author_id, kind, source, status, priority, deadline)
+      `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_min, checklist, author_id, kind, source, status, priority, deadline)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?)`,
     ).bind(taskId, who.orgId, projectId, draft.title, description ?? '',
-      draft.repeatDays ?? null,
+      draft.repeatMin ?? null,
       draft.checklist?.length ? JSON.stringify(draft.checklist.map((t) => ({ t, d: null }))) : null,
       who.userId, draft.kind,
       // source различает разбор паттернами и моделью -- это и есть замер для

@@ -42,7 +42,7 @@ const TAB_ICON: Record<string, typeof Users> = {
  * (порядок по роли) · Календарь · Ещё. «Доска» ушла: этапы живут прямо в
  * списках. Внутри «Ещё» -- подэкраны с кнопкой «назад» в шапке.
  */
-export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: Task | null }) {
+export function MobileShell({ user, deepLinkTask, onLinkOpened }: { user: User; deepLinkTask: Task | null; onLinkOpened?: () => void }) {
   const boss = user.role !== 'member';
   const tabs: NavTab[] = [
     ...(boss
@@ -62,7 +62,13 @@ export function MobileShell({ user, deepLinkTask }: { user: User; deepLinkTask: 
   const [linked, setLinked] = useState<Task | null>(null);
 
   // Пришли по ссылке из уведомления -- открываем саму задачу.
-  useEffect(() => { if (deepLinkTask) setLinked(deepLinkTask); }, [deepLinkTask]);
+  // Открываем ОДИН раз и сразу гасим ссылку: она живёт в состоянии выше, и
+  // без этого закрытая карточка возвращалась при следующей перерисовке.
+  useEffect(() => {
+    if (!deepLinkTask) return;
+    setLinked(deepLinkTask);
+    onLinkOpened?.();
+  }, [deepLinkTask, onLinkOpened]);
 
   // «Назад» внутри «Ещё» -- к списку. На Android это ещё и системная кнопка:
   // без неё нажатие закрывало бы приложение целиком.

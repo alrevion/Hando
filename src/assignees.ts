@@ -116,9 +116,9 @@ export function confirmAssignees(env: Env, taskId: string): D1PreparedStatement 
  * просроченной.
  */
 async function respawnRepeating(env: Env, task: Task, actorId: string): Promise<void> {
-  const days = task.repeat_days;
-  if (!days || days < 1) return;
-  const step = days * 24 * 60 * 60 * 1000;
+  const minutes = task.repeat_min;
+  if (!minutes || minutes < 1) return;
+  const step = minutes * 60 * 1000;
   const from = task.deadline ? Date.parse(task.deadline) : Date.now();
   const candidate = from + step;
   const deadline = new Date(candidate > Date.now() ? candidate : Date.now() + step).toISOString();
@@ -134,9 +134,9 @@ async function respawnRepeating(env: Env, task: Task, actorId: string): Promise<
   const fresh = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>() ?? task;
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_days, checklist, author_id, kind, source, status, priority, deadline)
+      `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_min, checklist, author_id, kind, source, status, priority, deadline)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'repeat', 'todo', ?, ?)`,
-    ).bind(id, fresh.org_id, fresh.project_id, fresh.title, fresh.description ?? '', days,
+    ).bind(id, fresh.org_id, fresh.project_id, fresh.title, fresh.description ?? '', minutes,
       // Галочки сбрасываются: список покупок на следующую неделю пустой.
       resetChecklist(fresh.checklist), fresh.author_id, fresh.kind, fresh.priority, deadline),
     env.DB.prepare(

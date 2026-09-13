@@ -29,8 +29,8 @@ export type Person = { id: string; name: string; aliases?: string[] };
 
 export type Draft = {
   title: string;
-  /** Через сколько дней задача возвращается. null -- разовая. */
-  repeatDays?: number | null;
+  /** Через сколько МИНУТ задача возвращается. null -- разовая. */
+  repeatMin?: number | null;
   /** Пункты списка, если фраза их перечисляет. */
   checklist?: string[] | null;
   /** Подробности сверх темы: их отделяет модель, см. splitTitle. */
@@ -558,7 +558,7 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
 
   return {
     title: title[0].toUpperCase() + title.slice(1),
-    repeatDays: repeat.days,
+    repeatMin: repeat.days === null ? null : repeat.days * 1440,
     assigneeIds: assignees,
     deadline: iso,
     priority,

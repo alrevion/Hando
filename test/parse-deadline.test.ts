@@ -72,7 +72,7 @@ describe('повтор из фразы', () => {
   it('слова повтора вычитаются из темы: иначе они остаются в названии', () => {
     const d = parseByPattern('мои цветы поливать через день', [{ id: 'me', name: 'Тимур' }], 'me', NOW, TZ)!;
     expect(d).toBeTruthy();
-    expect(d.repeatDays).toBe(2);
+    expect(d.repeatMin).toBe(2 * 1440);
     expect(d.title.toLowerCase()).not.toContain('через день');
   });
 });

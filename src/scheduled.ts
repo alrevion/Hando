@@ -94,11 +94,11 @@ function queueReminder(
 // Строка адресата со всем, что нужно матрице: задача, человек, график.
 type Row = {
   id: string; due_at: string | null; state: string; user_id: string;
-  task_id: string; title: string; org_id: string; author_id: string | null; kind: string; created_at: string;
+  task_id: string; title: string; org_id: string; author_id: string | null; kind: string; created_at: string; repeat_min: number | null;
   responsible_name: string; remind_before_min: number;
 } & Omit<OrgSchedule, 'id'>;
 
-const ROW_COLS = `a.id, a.due_at, a.state, a.user_id, t.id AS task_id, t.title, t.org_id, t.author_id, t.kind, t.created_at,
+const ROW_COLS = `a.id, a.due_at, a.state, a.user_id, t.id AS task_id, t.title, t.org_id, t.author_id, t.kind, t.created_at, t.repeat_min,
        u.name AS responsible_name, COALESCE(u.remind_before_min, 30) AS remind_before_min, ${scheduleCols('o')}`;
 
 /**
@@ -204,11 +204,15 @@ export async function remindDueSoon(env: Env, now: Date): Promise<void> {
       writes.push(queueReminder(env, r, text, kind, { urgent: true }));
       writes.push(mark(env, r.id, kind, now));
     };
-    if (left > 0 && left <= HOUR_MS && dueNow(log, r.id, 'before_1h', ONCE, now)) {
+    // Повтор чаще суток -- дело минутное: «каждые два часа» с напоминанием за
+    // час до срока напоминало бы почти непрерывно. Для таких задач остаётся
+    // только «срок наступил» и просрочка.
+    const tight = r.repeat_min !== null && r.repeat_min < 24 * 60;
+    if (!tight && left > 0 && left <= HOUR_MS && dueNow(log, r.id, 'before_1h', ONCE, now)) {
       shoot('before_1h', `⏰ Через час срок: «${r.title}»`);
     }
     const n = r.remind_before_min;
-    if (n > 0 && n !== 60 && left > 0 && left <= n * 60 * 1000 && dueNow(log, r.id, 'before_n', ONCE, now)) {
+    if (!tight && n > 0 && n !== 60 && left > 0 && left <= n * 60 * 1000 && dueNow(log, r.id, 'before_n', ONCE, now)) {
       shoot('before_n', `⏰ ${n % 60 === 0 ? `Через ${n / 60} ч` : `Через ${n} мин`} срок: «${r.title}»`);
     }
     if (left <= 0 && -left < HOUR_MS && dueNow(log, r.id, 'at_due', ONCE, now)) {

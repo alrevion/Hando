@@ -1301,3 +1301,74 @@ select.inp {
   border-radius: var(--r-sm);
   font-size: 13px;
 }
+
+/* ===== КОЛЕСО ПРОКРУТКИ (часы, минуты, дни)
+   Перенесено из Ijoda как есть: механика снапа, бесконечной прокрутки и
+   перетаскивания мышью там уже отлажена, и вторая реализация разошлась бы с
+   первой на первой же правке. Отличия только в цветах -- здесь свои токены. */
+.wheel-row {
+  display: flex;
+  gap: 12px;
+}
+.wheel-row > * {
+  flex: 1;
+  min-width: 0;
+}
+.wheel-picker {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r);
+  background: var(--fill2);
+}
+.wheel-picker-highlight {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+.wheel-picker-track {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-y;
+  mask-image: linear-gradient(to bottom, transparent, #000 28%, #000 72%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 28%, #000 72%, transparent);
+}
+.wheel-picker-track::-webkit-scrollbar {
+  display: none;
+}
+.wheel-picker-item {
+  scroll-snap-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--label3);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.15s, font-size 0.15s;
+}
+.wheel-picker-item.active {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 17px;
+}
+.wheel-cap {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--label3);
+  text-align: center;
+}

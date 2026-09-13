@@ -116,8 +116,8 @@ export interface TaskInput {
   responsible_user_id: string;
   deadline: string | null;
   priority: Priority;
-  /** Через сколько дней задача возвращается. null снимает повтор. */
-  repeat_days?: number | null;
+  /** Через сколько МИНУТ задача возвращается. null снимает повтор. */
+  repeat_min?: number | null;
   // Predecessor task (same project) that must be done/archived first. undefined
   // = leave unchanged (edit only), null = no dependency.
   depends_on_task_id?: string | null;
@@ -321,8 +321,8 @@ export interface DraftView {
   priority: Priority;
   /** Важность названа человеком, а не поставлена по умолчанию. */
   priority_explicit: boolean;
-  /** Через сколько дней задача возвращается. null -- разовая. */
-  repeat_days: number | null;
+  /** Через сколько МИНУТ задача возвращается. null -- разовая. */
+  repeat_min: number | null;
   kind: 'single' | 'each' | 'any' | 'ack';
   assignee_ids: string[];
   assignees: string[];
@@ -365,8 +365,8 @@ export type DraftEdits = Partial<{
   assignee_ids: string[];
   deadline: string | null;
   priority: Priority;
-  /** Через сколько дней задача возвращается. null или 0 снимает повтор. */
-  repeat_days: number | null;
+  /** Через сколько МИНУТ задача возвращается. null или 0 снимает повтор. */
+  repeat_min: number | null;
 }>;
 export const deleteDraft = (id: string) => request<{ ok: true }>(`/drafts/${id}`, { method: 'DELETE' });
 

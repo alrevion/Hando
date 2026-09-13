@@ -57,18 +57,18 @@ describe('повтор и список пунктов', () => {
     // прежний срок уже прошёл, отсчёт идёт от «сейчас» -- иначе новая задача
     // родилась бы просроченной (это проверяет следующий тест).
     const before = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
-    await testEnv.DB.prepare("UPDATE tasks SET repeat_days = 2, deadline = ? WHERE id='t1'").bind(before).run();
+    await testEnv.DB.prepare("UPDATE tasks SET repeat_min = 2880, deadline = ? WHERE id='t1'").bind(before).run();
     await testEnv.DB.prepare("UPDATE task_assignees SET due_at = ? WHERE task_id='t1'").bind(before).run();
     await say(env, 'tg-w1', 'подготовить отчёт готово');
     await say(env, 'tg-boss', 'принимаю работу подготовить отчёт');
-    const { results } = await testEnv.DB.prepare("SELECT id, deadline, status, repeat_days FROM tasks WHERE title='Подготовить отчёт' ORDER BY created_at")
-      .all<{ id: string; deadline: string; status: string; repeat_days: number }>();
+    const { results } = await testEnv.DB.prepare("SELECT id, deadline, status, repeat_min FROM tasks WHERE title='Подготовить отчёт' ORDER BY created_at")
+      .all<{ id: string; deadline: string; status: string; repeat_min: number }>();
     expect(results).toHaveLength(2);
     const next = results.find((t) => t.id !== 't1')!;
     // Новый круг: свой срок ровно через два дня от прежнего, снова todo и
     // снова повторяющийся -- иначе цветы политы один раз и навсегда.
     expect(next.status).toBe('todo');
-    expect(next.repeat_days).toBe(2);
+    expect(next.repeat_min).toBe(2880);
     expect(Date.parse(next.deadline) - Date.parse(before)).toBe(2 * 24 * 60 * 60 * 1000);
     // Исполнитель тот же, и строка у него новая.
     const row = await testEnv.DB.prepare('SELECT state FROM task_assignees WHERE task_id = ? AND user_id = ?')
@@ -80,7 +80,7 @@ describe('повтор и список пунктов', () => {
     const env = await world();
     tg();
     // Срок фикстуры уже в прошлом.
-    await testEnv.DB.prepare("UPDATE tasks SET repeat_days = 2 WHERE id='t1'").run();
+    await testEnv.DB.prepare("UPDATE tasks SET repeat_min = 2880 WHERE id='t1'").run();
     await say(env, 'tg-w1', 'подготовить отчёт готово');
     await say(env, 'tg-boss', 'принимаю работу подготовить отчёт');
     const next = (await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE title='Подготовить отчёт' AND id <> 't1'")

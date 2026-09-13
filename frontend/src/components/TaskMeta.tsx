@@ -117,8 +117,8 @@ export function TaskMeta({
 
         {/* Повтор и список -- признаки самой задачи, а не её состояния:
             по ним видно, что она вернётся и что внутри есть пункты. */}
-        {task.repeat_days ? (
-          <span className="pill"><Repeat aria-hidden="true" /><span>{repeatLabel(task.repeat_days).toLowerCase()}</span></span>
+        {task.repeat_min ? (
+          <span className="pill"><Repeat aria-hidden="true" /><span>{repeatLabel(task.repeat_min).toLowerCase()}</span></span>
         ) : null}
         {items.length > 0 ? (
           <span className={items.every((i) => i.d) ? 'pill pill-green' : 'pill'}>

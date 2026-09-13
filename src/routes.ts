@@ -512,7 +512,7 @@ async function draftView(env: Env, row: DraftRow) {
     deadline: row.deadline,
     priority: row.priority,
     priority_explicit: row.priority_explicit === 1,
-    repeat_days: row.repeat_days,
+    repeat_min: row.repeat_min,
     kind: row.kind,
     assignee_ids: ids,
     assignees: ids.map((id) => names.find((n) => n.id === id)?.name ?? '—'),
@@ -584,10 +584,11 @@ async function applyDraftEdits(
     } else if (typeof dl === 'string' && !Number.isNaN(Date.parse(dl))) patch.deadline = new Date(dl).toISOString();
     else return { error: 'bad deadline' };
   }
-  if (b.repeat_days !== undefined) {
-    const r = b.repeat_days === null || b.repeat_days === 0 ? null : Number(b.repeat_days);
-    if (r !== null && (!Number.isInteger(r) || r < 1 || r > 365)) return { error: 'bad repeat' };
-    patch.repeatDays = r;
+  if (b.repeat_min !== undefined) {
+    const r = b.repeat_min === null || b.repeat_min === 0 ? null : Number(b.repeat_min);
+    // Потолок -- год в минутах: интервал больше не повтор, а другая задача.
+    if (r !== null && (!Number.isInteger(r) || r < 1 || r > 365 * 1440)) return { error: 'bad repeat' };
+    patch.repeatMin = r;
   }
   if (b.priority !== undefined) {
     if (!PRIORITIES.includes(String(b.priority))) return { error: 'bad priority' };
@@ -1508,7 +1509,7 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
       responsible_user_id?: string;
       deadline?: string | null;
       content_blocks?: string;
-      repeat_days?: number | null;
+      repeat_min?: number | null;
       priority?: string;
       depends_on_task_id?: string | null;
     }>()
@@ -1535,7 +1536,7 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
   // уходит в applyTransition отдельным шагом ниже.
   await c.env.DB.prepare(
     `UPDATE tasks SET title = COALESCE(?, title), description = COALESCE(?, description),
-       deadline = ?, repeat_days = ?,
+       deadline = ?, repeat_min = ?,
        content_blocks = COALESCE(?, content_blocks), priority = COALESCE(?, priority),
        depends_on_task_id = ?, updated_at = ? WHERE id = ?`,
   )
@@ -1544,7 +1545,7 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
       b.description ?? null,
       b.deadline === undefined ? task.deadline : b.deadline,
       // Повтор снимается передачей null -- COALESCE такого не умеет.
-      b.repeat_days === undefined ? task.repeat_days : (b.repeat_days || null),
+      b.repeat_min === undefined ? task.repeat_min : (b.repeat_min || null),
       b.content_blocks ?? null,
       priority,
       b.depends_on_task_id === undefined ? task.depends_on_task_id : dependency.value,
