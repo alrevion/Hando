@@ -1415,8 +1415,16 @@ apiRoutes.get('/projects/:projectId/tasks', requireProjectAccess('project'), asy
 
 const PRIORITIES = ['urgent', 'medium', 'low'];
 
-// depends_on_task_id must name a task in the SAME project and not itself --
-// the single-level "B can't start until A is done" chain from POST /tasks/:id/move.
+/**
+ * Предшественник для задачи: та же доска, не она сама и -- ОБЯЗАТЕЛЬНО --
+ * ещё не закрытая.
+ *
+ * Проверка «не закрытая» стоит и на черновике, и на голосовой команде. Здесь
+ * её не было, и правило держалось в двух дверях из трёх: через этот маршрут
+ * задаче можно было назначить в предшественники сданную или архивную, и она
+ * молча вставала бы навсегда... точнее, не вставала бы вовсе -- страж пропускает
+ * закрытые, -- но связь висела бы враньём в карточке.
+ */
 async function resolveDependency(
   db: D1Database,
   orgId: string,
@@ -1430,7 +1438,8 @@ async function resolveDependency(
   // org_id избыточен рядом с проверкой project_id -- но только пока проект
   // гарантированно свой. Держим его явно: тело запроса приходит от клиента, и
   // предикат «та же доска» не должен зависеть от чужого предиката.
-  const dep = await db.prepare('SELECT project_id FROM tasks WHERE id = ? AND org_id = ?').bind(dependsOnTaskId, orgId).first<{ project_id: string }>();
+  const dep = await db.prepare("SELECT project_id FROM tasks WHERE id = ? AND org_id = ? AND status IN ('todo','in_progress')")
+    .bind(dependsOnTaskId, orgId).first<{ project_id: string }>();
   if (!dep || dep.project_id !== projectId) return { ok: false };
   return { ok: true, value: dependsOnTaskId };
 }
