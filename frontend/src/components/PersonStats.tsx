@@ -40,7 +40,7 @@ export function PersonStatsSheet({
         </div>
       ) : (
         <>
-          <div className="chips" aria-label="Период" style={{ paddingBottom: 16 }}>
+          <div className="chips" aria-label="Период" style={{ paddingBottom: 16, flexWrap: 'wrap', overflowX: 'visible' }}>
             {(['last30', 'all'] as const).map((p) => (
               <button
                 key={p}

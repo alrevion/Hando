@@ -82,7 +82,7 @@ export function AssignedView({ user }: { user: User }) {
               фильтр списка, и живёт он в том же языке, что остальной экран. */}
           {/* Отступ до списка -- как у заголовка раздела: кнопки этапа не должны
               липнуть к первой карточке. */}
-          <div className="chips" style={{ paddingBottom: 16 }} aria-label="Этап">
+          <div className="chips" style={{ paddingBottom: 16, flexWrap: 'wrap', overflowX: 'visible' }} aria-label="Этап">
             {sections.map((sec, i) => (
               <button key={sec.key} type="button" aria-pressed={i === stage}
                 className={i === stage ? 'chip on' : 'chip'}
