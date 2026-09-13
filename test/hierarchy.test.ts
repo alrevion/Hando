@@ -120,6 +120,26 @@ describe('видимость по дереву', () => {
     expect((await api(env, `/tasks/${id}/move`, 'POST', { to: 'done' }, 'w1', 'member')).status).toBe(403);
   });
 
+  it('«начал» доезжает до приложения догрузкой, а не только полной перезагрузкой', async () => {
+    const env = await world();
+    tg();
+    const r = await api(env, '/projects/p1/tasks', 'POST', { title: 'Полить цветы', responsible_user_id: 'w1' }, 'boss', 'creator');
+    const { id } = await r.json<{ id: string }>();
+    await api(env, `/tasks/${id}/move`, 'POST', { to: 'in_progress' }, 'w1', 'member');
+    // Отодвигаем метку задачи в прошлое ЯВНО: у догрузки есть запас в две
+    // секунды, и на живых часах он прячет ровно ту ошибку, которую ловит тест.
+    await testEnv.DB.prepare("UPDATE tasks SET updated_at = datetime('now','-1 hour') WHERE id = ?").bind(id).run();
+    const mark = new Date().toISOString();
+    await api(env, `/tasks/${id}/move`, 'POST', { to: 'started' }, 'w1', 'member');
+    const delta = await (await api(env, `/org/snapshot?since=${encodeURIComponent(mark)}`, 'GET', undefined, 'w1', 'member'))
+      .json<{ tasks: { id: string; assignees: { user_id: string; started_at: string | null }[] }[] }>();
+    // Начало работы живёт в строке адресата, а догрузка смотрит на задачу:
+    // без касания tasks.updated_at карточка оставалась в «Принято».
+    const seen = delta.tasks.find((t) => t.id === id);
+    expect(seen, 'задача не доехала догрузкой').toBeTruthy();
+    expect(seen!.assignees.find((a) => a.user_id === 'w1')!.started_at).not.toBeNull();
+  });
+
   it('поручать можно только видимым: чужой отдел -- отказ, у владельца -- нет границ', async () => {
     const env = await world();
     tg();

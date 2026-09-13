@@ -269,6 +269,13 @@ export async function startWork(env: Env, task: Task, mine: Assignee, actorId: s
   const now = nowIso();
   await env.DB.batch([
     env.DB.prepare('UPDATE task_assignees SET started_at = ? WHERE id = ? AND started_at IS NULL').bind(now, mine.id),
+    // tasks.updated_at ОБЯЗАТЕЛЬНО, хотя сама задача не меняется.
+    //
+    // Приложение догружает изменения по этой отметке: «отдай всё, что новее
+    // такого-то времени». Начало работы живёт в строке адресата, и без касания
+    // задачи строка до клиента не доезжала -- тост говорил «в работе», а
+    // карточка оставалась в «Принято» до полной перезагрузки.
+    env.DB.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').bind(now, task.id),
     env.DB.prepare(
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, 'assignee', ?, 'started', NULL, NULL, ?)`,
