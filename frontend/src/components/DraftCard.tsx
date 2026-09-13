@@ -35,13 +35,15 @@ function when(iso: string): string {
  * говорит подпись под кнопками.
  */
 export function DraftCard({
-  draft, users, me, mode, onCreated, onDeleted,
+  draft, users, me, mode, flat, onCreated, onDeleted,
 }: {
   draft: DraftView;
   users: User[];
   me: User;
   /** «Мои задачи» -- поручение себе, спрашивать «кому» незачем. */
   mode?: 'mine' | 'assigned';
+  /** Единственный блок в шторке: рамка вокруг всего содержимого не нужна. */
+  flat?: boolean;
   onCreated: (taskId: string) => void;
   onDeleted: () => void;
 }) {
@@ -60,7 +62,6 @@ export function DraftCard({
   // разбирается поверх того, что сейчас на экране, и меняет только названные
   // поля. Записи в базу нет: карточка живёт на устройстве до «Создать».
   const [fix, setFix] = useState('');
-  const [heard, setHeard] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
 
@@ -76,7 +77,12 @@ export function DraftCard({
       title: title.trim(), assignee_ids: who ? [who] : [], deadline, priority,
     }));
     if (!res) return;
-    setHeard(res.heard);
+    // Голос -- это клавиатура, а не отдельная команда: сказанное попадает В
+    // ПОЛЕ, применяет его та же кнопка, что и набранное руками. Раньше запись
+    // молча меняла карточку, а под полем появлялось «Поправка: …» -- человек
+    // видел услышанное, но не понимал, что уже изменилось и почему кнопка не
+    // нажимается (поле-то пустое).
+    if ('audio' in input) { setFix(res.heard); return; }
     if (Object.keys(res.patch).length === 0) {
       setError('Не понял поправку. Скажите, что именно изменить: «срок вторник», «не Азизу, а Беку», «это срочно».');
       return;
@@ -134,7 +140,7 @@ export function DraftCard({
   });
 
   return (
-    <div className="card">
+    <div className={flat ? 'card is-flat' : 'card'}>
       {error ? <div role="alert" className="alert alert-err">{error}</div> : null}
 
       <div className="field">
@@ -262,7 +268,7 @@ export function DraftCard({
       ) : null}
 
       {/* Что именно услышано -- чтобы «Иве» вместо «Еве» было видно сразу. */}
-      {heard ? <p className="hint">Поправка: «{heard}»</p> : draft.heard ? <p className="hint">Услышал: «{draft.heard}»</p> : null}
+      {draft.heard ? <p className="hint">Услышал: «{draft.heard}»</p> : null}
 
       <div className="btn-row">
         <button type="button" className="btn btn-danger" disabled={busy}
