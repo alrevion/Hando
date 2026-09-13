@@ -195,7 +195,7 @@ describe('access control', () => {
     expect(res.status).toBe(403);
   });
 
-  it('a task cannot move to in_progress while its dependency is unfinished, and can once the dependency is done', async () => {
+  it('зависимость держит НАЧАЛО работы, а не согласие: принять можно всегда, взять в работу -- только после предшественника', async () => {
     const data = {
       users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
@@ -206,24 +206,31 @@ describe('access control', () => {
       ],
     };
     const env = await envWith(data);
-    const blocked = await apiRoutes.request(
+    const move = async (to: string) => apiRoutes.request(
       '/tasks/review/move',
-      { method: 'POST', headers: { Cookie: await cookie('a1', 'admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ to: 'in_progress' }) },
+      { method: 'POST', headers: { Cookie: await cookie('a1', 'admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ to }) },
       env,
     );
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ result: { message_id: 1 } }), { status: 200 }));
+
+    // ПРИНЯТЬ можно: согласие взяться зависимость не держит.
+    expect((await move('in_progress')).status).toBe(200);
+
+    // А НАЧАТЬ нельзя, и отказ по-русски -- он доходит до человека тостом.
+    const blocked = await move('started');
     expect(blocked.status).toBe(409);
+    expect(await blocked.json<{ error: string }>()).toMatchObject({ error: expect.stringContaining('Сначала') });
+    const stillWaiting = await testEnv.DB.prepare("SELECT started_at FROM task_assignees WHERE task_id = 'review'").first<{ started_at: string | null }>();
+    expect(stillWaiting!.started_at).toBeNull();
 
     // Предшественник закрывается В БАЗЕ. Прежняя редакция меняла поле
     // JS-объекта фикстуры -- это работало только потому, что подделка читала
     // живой массив, а не таблицу.
     await testEnv.DB.prepare("UPDATE tasks SET status = 'done' WHERE id = 'draft'").run();
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ result: { message_id: 1 } }), { status: 200 }));
-    const allowed = await apiRoutes.request(
-      '/tasks/review/move',
-      { method: 'POST', headers: { Cookie: await cookie('a1', 'admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ to: 'in_progress' }) },
-      env,
-    );
-    expect(allowed.status).toBe(200);
+    expect((await move('started')).status).toBe(200);
+    const started = await testEnv.DB.prepare("SELECT started_at FROM task_assignees WHERE task_id = 'review'").first<{ started_at: string | null }>();
+    expect(started!.started_at).toBeTruthy();
     fetchSpy.mockRestore();
   });
 

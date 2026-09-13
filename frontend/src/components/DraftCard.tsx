@@ -7,6 +7,7 @@ import { REPEAT_CHOICES, repeatLabel } from '../lib/tasks';
 import { IntervalSheet } from './IntervalSheet';
 import { TimeSheet } from './TimeSheet';
 import { endOfWeek, inDays } from './QuickEdit';
+import { useOrgTasks } from '../hooks/useOrgTasks';
 
 /** Есть ли запись с микрофона: в WebView Telegram бывает и нет. */
 function canRecord(): boolean {
@@ -54,6 +55,7 @@ export function DraftCard({
   const [priority, setPriority] = useState<Priority>(draft.priority);
   const [priorityTouched, setTouched] = useState(draft.priority_explicit);
   const [repeat, setRepeat] = useState<number>(draft.repeat_min ?? 0);
+  const [after, setAfter] = useState<string>(draft.depends_on_task_id ?? '');
   const [sheet, setSheet] = useState<null | 'interval' | 'time'>(null);
   const [files, setFiles] = useState(draft.media_count);
   const [busy, setBusy] = useState(false);
@@ -113,6 +115,13 @@ export function DraftCard({
     }
   }
 
+  // Кандидаты в предшественники: «к выполнению», «принято», «в работе».
+  // Сданные и архивные отсеяны -- ждать их нечего.
+  const { tasks: orgTasks } = useOrgTasks();
+  const open = orgTasks
+    .filter(({ task }) => task.status === 'todo' || task.status === 'in_progress')
+    .map(({ task }) => task);
+
   // Люди -- участники организации; автор в списке всегда, даже если справочник
   // ему недоступен (сотрудник видит только себя).
   const people = users.some((u) => u.id === me.id) ? users : [me, ...users];
@@ -137,6 +146,7 @@ export function DraftCard({
     deadline,
     priority,
     repeat_min: repeat || null,
+    depends_on_task_id: after || null,
   });
 
   return (
@@ -166,6 +176,20 @@ export function DraftCard({
           placeholder="Подробности, если нужны: где взять, с кем согласовать, что считать готовым"
           onChange={(e) => setDescription(e.target.value)} />
       </div>
+
+      {/* ПОРЯДОК РАБОТ. В списке только незакрытые задачи: ждать сданную
+          незачем -- связь на неё ничего не держала бы, а понять, почему задача
+          стоит, стало бы труднее. */}
+      {open.length > 0 ? (
+        <div className="field">
+          <label className="lbl" htmlFor={`d-after-${draft.id}`}>Начинать после</label>
+          <select id={`d-after-${draft.id}`} className="inp" value={after} disabled={busy}
+            onChange={(e) => setAfter(e.target.value)}>
+            <option value="">Можно сразу</option>
+            {open.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+          </select>
+        </div>
+      ) : null}
 
       <div className="sec-title" style={{ margin: '4px 0 8px' }}>Важность</div>
       <div className="chips" style={{ paddingBottom: 8 }}>

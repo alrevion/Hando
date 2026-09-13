@@ -50,15 +50,17 @@ export async function createFromDraft(
 
   const writes = [
     env.DB.prepare(
-      `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_min, checklist, author_id, kind, source, status, priority, deadline)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?)`,
+      `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_min, checklist, author_id, kind, source, status, priority, deadline, depends_on_task_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?)`,
     ).bind(taskId, who.orgId, projectId, draft.title, description ?? '',
       draft.repeatMin ?? null,
       draft.checklist?.length ? JSON.stringify(draft.checklist.map((t) => ({ t, d: null }))) : null,
       who.userId, draft.kind,
       // source различает разбор паттернами и моделью -- это и есть замер для
       // порога-гейта шага 4b: сколько фраз обошлось без обращения к сети.
-      media.some((m) => m.hasAudio) ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.priority, draft.deadline),
+      media.some((m) => m.hasAudio) ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.priority, draft.deadline,
+      // Предшественник проверен при подтверждении черновика; здесь только перенос.
+      draft.dependsOn ?? null),
     env.DB.prepare(
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -190,12 +192,17 @@ const RENAME = [
  * поручили ему: команда этапа принадлежит исполнителю, команда правки -- автору,
  * и разделяет их уже вызывающий.
  */
-async function taskInPhrase(env: Env, orgId: string, userId: string, phrase: string): Promise<Task | null> {
+async function taskInPhrase(
+  env: Env, orgId: string, userId: string, phrase: string,
+  /** Только незакрытые: предшественником может быть лишь та задача, которая
+   *  ещё в «к выполнению», «принято» или «в работе». Сданную ждать незачем. */
+  openOnly = false,
+): Promise<Task | null> {
   const q = phrase.toLowerCase();
   const { results } = await env.DB.prepare(
     `SELECT DISTINCT t.* FROM tasks t
      LEFT JOIN task_assignees a ON a.task_id = t.id AND a.user_id = ?
-     WHERE t.org_id = ? AND t.status IN ('todo','in_progress','done')
+     WHERE t.org_id = ? AND t.status IN (${openOnly ? "'todo','in_progress'" : "'todo','in_progress','done'"})
        AND (t.author_id = ? OR a.user_id IS NOT NULL)
      ORDER BY t.updated_at DESC LIMIT 40`,
   ).bind(userId, orgId, userId).all<Task>();
@@ -205,6 +212,77 @@ async function taskInPhrase(env: Env, orgId: string, userId: string, phrase: str
 }
 
 const PRI_RU: Record<string, string> = { urgent: 'высокая', medium: 'средняя', low: 'низкая' };
+
+/**
+ * Незакрытый предшественник -- или null, если путь свободен.
+ *
+ * Держит «ВЗЯТЬ В РАБОТУ», а не «принять». Принять -- это «увидел, берусь»;
+ * запрещать человеку даже увидеть задачу до того, как закроют чужую, значит
+ * прятать от него работу. Владелец так и сказал: «нельзя НАЧАТЬ».
+ */
+export async function blockingPredecessor(env: Env, task: Task, orgId: string): Promise<string | null> {
+  if (!task.depends_on_task_id) return null;
+  const dep = await env.DB.prepare('SELECT title, status FROM tasks WHERE id = ? AND org_id = ?')
+    .bind(task.depends_on_task_id, orgId).first<{ title: string; status: string }>();
+  return dep && dep.status !== 'done' && dep.status !== 'archived' ? dep.title : null;
+}
+
+/**
+ * «Одно после другого» -- разбор ПО КЛЮЧЕВОМУ СЛОВУ, а не регуляркой.
+ *
+ * Регулярка вида `^(.{4,200}?)\s+после\s+(.{4,200})$` на фразе БЕЗ «после»
+ * перебирает все разбиения и на длинном вопросе помощнику уходит в минуты
+ * работы. Здесь два indexOf: находим слово-разделитель и режем строку.
+ *
+ * Порядок в двух формах РАЗНЫЙ: в «X после Y» предшественник назван вторым,
+ * в «сначала Y, потом X» -- первым.
+ */
+function splitByOrder(phrase: string): { waiter: string; pred: string } | null {
+  const low = phrase.toLowerCase();
+
+  // «сначала Y, потом X»
+  if (low.startsWith('сначала ')) {
+    const m = /[\s,.]+(?:а\s+)?(?:потом|затем|после\s+этого)\s+/i.exec(phrase.slice(8));
+    if (m) {
+      const rest = phrase.slice(8);
+      return { pred: rest.slice(0, m.index).trim(), waiter: rest.slice(m.index + m[0].length).trim() };
+    }
+    return null;
+  }
+
+  // «X после Y», «X только после того, как Y»
+  const at = low.indexOf(' после ');
+  if (at < 0) return null;
+  let pred = phrase.slice(at + 7).trim();
+  pred = pred.replace(/^того[,\s]+как\s+/i, '').trim();
+  const waiter = phrase.slice(0, at).replace(/\s+только$/i, '').trim();
+  return waiter.length >= 4 && pred.length >= 4 ? { waiter, pred } : null;
+}
+/**
+ * «Одно после другого»: связывает две НАЗВАННЫЕ задачи. Возвращает null, если
+ * фраза не о связи или одну из задач не удалось узнать, -- тогда она идёт
+ * дальше обычным путём и в худшем случае станет черновиком.
+ */
+async function linkByPhrase(
+  env: Env, who: { userId: string; orgId: string }, phrase: string,
+): Promise<{ taskId: string; text: string } | null> {
+  const parts = splitByOrder(phrase.trim());
+  if (!parts) return null;
+  const waiter = await taskInPhrase(env, who.orgId, who.userId, parts.waiter, true);
+  const pred = await taskInPhrase(env, who.orgId, who.userId, parts.pred, true);
+  if (!waiter || !pred || waiter.id === pred.id) return null;
+  // Порядок работ -- решение того, кто поручил: исполнителю остаётся отказ и
+  // «не успеваю», а не перекладывание очереди.
+  if (waiter.author_id !== who.userId) return null;
+  // Круг из двух звеньев: обе задачи ждали бы друг друга и не начались никогда.
+  if (pred.depends_on_task_id === waiter.id) {
+    return { taskId: waiter.id, text: `⚠️ «${pred.title}» уже ждёт «${waiter.title}» — так они запрут друг друга.` };
+  }
+  await env.DB.prepare('UPDATE tasks SET depends_on_task_id = ?, updated_at = ? WHERE id = ? AND org_id = ?')
+    .bind(pred.id, nowIso(), waiter.id, who.orgId).run();
+  await logEvent(env.DB, { actorId: who.userId, orgId: who.orgId, targetType: 'task', targetId: waiter.id, action: 'linked', comment: pred.title });
+  return { taskId: waiter.id, text: `🔗 «${waiter.title}» — только после «${pred.title}».` };
+}
 
 /**
  * Команда по действующей задаче. Возвращает, что сделано, -- или null, если
@@ -221,6 +299,11 @@ export async function commandTaskByPhrase(
   weekEnd?: number,
   now: Date = new Date(),
 ): Promise<{ taskId: string; text: string } | null> {
+  // СВЯЗЬ -- раньше глаголов этапа: «после» ни одним из них не является, и
+  // проверка на глагол отсекла бы фразу целиком.
+  const linked = await linkByPhrase(env, who, phrase);
+  if (linked) return linked;
+
   const anyVerb = V_ACCEPT.test(phrase) || V_START.test(phrase) || V_DONE.test(phrase) || V_CONFIRM.test(phrase)
     || V_RETURN.test(phrase) || V_DECLINE.test(phrase) || V_LATE.test(phrase) || EDIT_VERB.test(phrase);
   if (!anyVerb) return null;
@@ -282,20 +365,13 @@ export async function commandTaskByPhrase(
   }
   // «Начал» по уже принятой задаче -- отметка времени, а не переход.
   if (mine && V_START.test(phrase) && !V_DONE.test(phrase) && mine.state === 'accepted' && !mine.started_at) {
+    const waits = await blockingPredecessor(env, task, who.orgId);
+    if (waits) return { taskId: task.id, text: `⛔️ Сначала «${waits}» — «${task.title}» ждёт её.` };
     await startWork(env, task, mine, who.userId);
     return { taskId: task.id, text: `🚀 «${task.title}» — в работе.` };
   }
   if (mine && (V_ACCEPT.test(phrase) || V_START.test(phrase) || V_DONE.test(phrase))) {
     const to = V_DONE.test(phrase) ? 'done' : 'accepted';
-    // Зависимость держит старт так же, как в приложении: «проверить договор»
-    // нельзя начать раньше «составить договор».
-    if (to === 'accepted' && task.depends_on_task_id) {
-      const dep = await env.DB.prepare('SELECT title, status FROM tasks WHERE id = ? AND org_id = ?')
-        .bind(task.depends_on_task_id, who.orgId).first<{ title: string; status: string }>();
-      if (dep && dep.status !== 'done' && dep.status !== 'archived') {
-        return { taskId: task.id, text: `⛔️ Сначала «${dep.title}» — «${task.title}» ждёт её.` };
-      }
-    }
     // «Готово» из «не принял» -- две ступени сразу: человек не обязан сперва
     // нажимать «в работу», если он уже всё сделал.
     const steps = to === 'done' && mine.state === 'pending' ? (['accepted', 'done'] as const) : ([to] as const);
@@ -322,6 +398,10 @@ export async function commandTaskByPhrase(
     // начало. Отдельного «примите сначала» человек не поймёт -- он уже сказал,
     // что делает.
     if (to === 'accepted' && V_START.test(phrase)) {
+      // Принять успели выше -- это правильно: согласие зависимость не держит.
+      // А вот начать нельзя, и человеку говорится чего ждать.
+      const waits = await blockingPredecessor(env, task, who.orgId);
+      if (waits) return { taskId: task.id, text: `👌 «${task.title}» принята. Начать можно после «${waits}».` };
       const fresh = await myAssignee(env, task.id, who.userId, who.orgId);
       if (fresh) await startWork(env, task, fresh, who.userId);
       return { taskId: task.id, text: `🚀 «${task.title}» — в работе.` };

@@ -10,7 +10,7 @@ import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
 import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, reassignTask, resetAssignees, startWork, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
 import { drainOutbox } from './outbox';
-import { commandTaskByPhrase, setTaskDeadline } from './intake';
+import { blockingPredecessor, commandTaskByPhrase, setTaskDeadline } from './intake';
 import { toggleItem } from './checklist';
 import {
   assigneesOf, confirmDraft, draftAssignable, getDraft, listDrafts, logMiss, mediaOf, patchDraft, removeDraft, renderCreated, renderDraft,
@@ -513,6 +513,7 @@ async function draftView(env: Env, row: DraftRow) {
     priority: row.priority,
     priority_explicit: row.priority_explicit === 1,
     repeat_min: row.repeat_min,
+    depends_on_task_id: row.depends_on_task_id,
     kind: row.kind,
     assignee_ids: ids,
     assignees: ids.map((id) => names.find((n) => n.id === id)?.name ?? '—'),
@@ -520,6 +521,20 @@ async function draftView(env: Env, row: DraftRow) {
     media_count: mediaOf(row).filter((m) => !m.hasAudio).length,
     created_at: row.created_at,
   };
+}
+
+/**
+ * Годится ли задача в предшественники: она видна этому человеку и ещё не
+ * закрыта. Закрытую ждать незачем -- связь на неё ничего не держала бы и
+ * только мешала бы понять, почему задача стоит.
+ */
+async function isOpenAndVisible(c: Context<AppEnv>, taskId: string): Promise<boolean> {
+  const row = await c.env.DB.prepare(
+    "SELECT id FROM tasks WHERE id = ? AND org_id = ? AND status IN ('todo','in_progress')",
+  ).bind(taskId, c.get('orgId')).first<{ id: string }>();
+  if (!row) return false;
+  const visible = await visibleTasks(c.env, c.get('orgId'), c.get('userId'), c.get('role'));
+  return visible.some((t) => t.id === taskId);
 }
 
 /** Черновик по адресу -- только СВОЙ и в СВОЕЙ организации; иначе 404 без деталей. */
@@ -589,6 +604,13 @@ async function applyDraftEdits(
     // Потолок -- год в минутах: интервал больше не повтор, а другая задача.
     if (r !== null && (!Number.isInteger(r) || r < 1 || r > 365 * 1440)) return { error: 'bad repeat' };
     patch.repeatMin = r;
+  }
+  if (b.depends_on_task_id !== undefined) {
+    const dep = b.depends_on_task_id === null || b.depends_on_task_id === '' ? null : String(b.depends_on_task_id);
+    if (dep !== null && !(await isOpenAndVisible(c, dep))) {
+      return { error: 'Такой задачи нет или она уже закрыта' };
+    }
+    patch.dependsOn = dep;
   }
   if (b.priority !== undefined) {
     if (!PRIORITIES.includes(String(b.priority))) return { error: 'bad priority' };
@@ -1628,6 +1650,11 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
     const mine = await myAssignee(c.env, task.id, userId, orgId);
     if (!mine) return c.json({ error: 'Двигать может только исполнитель' }, 403);
     if (mine.state !== 'accepted') return c.json({ error: 'Сначала примите задачу' }, 409);
+    // Предшественник держит именно НАЧАЛО работы. Принять задачу можно всегда:
+    // «принял» -- это «увидел, берусь», и прятать её до чужого «готово» значит
+    // прятать от человека работу.
+    const waits = await blockingPredecessor(c.env, task, orgId);
+    if (waits) return c.json({ error: `Сначала «${waits}» — эта задача ждёт её`, code: 'BLOCKED' }, 409);
     // УЖЕ начата -- это не ошибка, а отставший клиент: приложение могло не
     // получить отметку (она живёт в строке адресата) и показывать прежний
     // этап. Отвечаем успехом: обновление приведёт карточку в порядок, а
@@ -1657,17 +1684,6 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
       : null;
   if (!rows) return c.json({ error: 'Двигать может только исполнитель' }, 403);
   if (!rows.length) return c.json({ error: `invalid transition ${task.status} -> ${to}` }, 409);
-
-  // "Draft the contract" must be done before "review the contract" can start --
-  // a single predecessor task that has to reach done/archived first.
-  if (target === 'accepted' && task.depends_on_task_id) {
-    const dep = await c.env.DB.prepare('SELECT title, status FROM tasks WHERE id = ? AND org_id = ?')
-      .bind(task.depends_on_task_id, orgId)
-      .first<{ title: string; status: TaskStatus }>();
-    if (dep && dep.status !== 'done' && dep.status !== 'archived') {
-      return c.json({ error: `blocked: "${dep.title}" must be finished first` }, 409);
-    }
-  }
 
   // ЗАДАЧА СЕБЕ проверки не требует. Человек поручил её сам себе, сам сделал --
   // и отдельное «примите работу» у него же спрашивать незачем: очередь «сдано,

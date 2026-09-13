@@ -471,3 +471,77 @@ describe('списки в боте: текущая организация, по 
     expect(edited.reply_markup!.inline_keyboard![0][0]).toMatchObject({ text: '11', web_app: { url: expect.stringContaining('?task=a10') } });
   });
 });
+
+describe('порядок работ: «одно после другого»', () => {
+  const two = () =>
+    envWith({
+      users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }],
+      memberships: [{ project_id: 'p1', user_id: 'boss' }],
+      projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+      tasks: [
+        { id: 'granny', project_id: 'p1', title: 'полить цветы бабули', status: 'todo', responsible_user_id: 'boss', author_id: 'boss', deadline: null },
+        { id: 'larisa', project_id: 'p1', title: 'полить цветы Ларисы', status: 'todo', responsible_user_id: 'boss', author_id: 'boss', deadline: null },
+      ],
+    });
+  const dep = async (id: string) =>
+    (await testEnv.DB.prepare('SELECT depends_on_task_id FROM tasks WHERE id = ?').bind(id).first<{ depends_on_task_id: string | null }>())!.depends_on_task_id;
+  const startedAt = async (taskId: string) =>
+    (await testEnv.DB.prepare("SELECT started_at FROM task_assignees WHERE task_id = ? AND user_id = 'boss'").bind(taskId).first<{ started_at: string | null }>())!.started_at;
+
+  it('«X после Y» связывает две названные задачи', async () => {
+    const env = await two();
+    const spy = tg();
+    await say(env, 'tg-boss', 'полить цветы Ларисы после полить цветы бабули');
+    expect(await dep('larisa')).toBe('granny');
+    expect(sent(spy).at(-1)!.text).toContain('только после');
+  });
+
+  it('«сначала Y, потом X» -- тот же смысл, обратный порядок слов', async () => {
+    const env = await two();
+    tg();
+    await say(env, 'tg-boss', 'сначала полить цветы бабули, потом полить цветы Ларисы');
+    expect(await dep('larisa')).toBe('granny');
+    expect(await dep('granny')).toBeNull();
+  });
+
+  it('связь держит НАЧАЛО, а не согласие: принять можно, взять в работу -- нет', async () => {
+    const env = await two();
+    const spy = tg();
+    await say(env, 'tg-boss', 'полить цветы Ларисы после полить цветы бабули');
+
+    await say(env, 'tg-boss', 'взял в работу полить цветы Ларисы');
+    // Принято -- да, начато -- нет: согласие взяться зависимость не держит.
+    expect(await startedAt('larisa')).toBeNull();
+    // Ответ ищем среди всех сообщений: следом за ним уходит ещё и уведомление
+    // «Принято», и оно оказывается последним.
+    expect(sent(spy).map((m) => m.text).join('\n')).toContain('Начать можно после');
+
+    await testEnv.DB.prepare("UPDATE tasks SET status = 'done' WHERE id = 'granny'").run();
+    await say(env, 'tg-boss', 'взял в работу полить цветы Ларисы');
+    expect(await startedAt('larisa')).toBeTruthy();
+  });
+
+  it('круг из двух звеньев не заводится: иначе обе задачи ждут друг друга вечно', async () => {
+    const env = await two();
+    const spy = tg();
+    await say(env, 'tg-boss', 'полить цветы Ларисы после полить цветы бабули');
+    await say(env, 'tg-boss', 'полить цветы бабули после полить цветы Ларисы');
+    expect(await dep('granny')).toBeNull();
+    expect(sent(spy).at(-1)!.text).toContain('запрут друг друга');
+  });
+
+  it('длинная фраза БЕЗ «после» не уходит в перебор: разбор по ключевому слову, а не регуляркой', async () => {
+    // Ловушка, на которую я наступил: регулярка `^(.{4,200}?)\s+после\s+(.{4,200})$`
+    // на фразе без «после» перебирает все разбиения, и вопрос помощнику висел
+    // минутами. Тест падает по таймауту, если разбор снова станет переборным.
+    const env = await two();
+    tg();
+    const long = 'подскажи пожалуйста что мне сегодня стоит сделать в первую очередь '
+      + 'и на что обратить внимание завтра с учётом того что на этой неделе много дел '
+      + 'и я не очень понимаю за что хвататься сначала а что можно отложить';
+    const began = Date.now();
+    await say(env, 'tg-boss', long);
+    expect(Date.now() - began).toBeLessThan(3000);
+    expect(await dep('larisa')).toBeNull();
+  });
+});

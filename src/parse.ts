@@ -31,6 +31,8 @@ export type Draft = {
   title: string;
   /** Через сколько МИНУТ задача возвращается. null -- разовая. */
   repeatMin?: number | null;
+  /** Задача, без которой эту нельзя начинать. */
+  dependsOn?: string | null;
   /** Пункты списка, если фраза их перечисляет. */
   checklist?: string[] | null;
   /** Подробности сверх темы: их отделяет модель, см. splitTitle. */

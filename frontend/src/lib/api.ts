@@ -323,6 +323,8 @@ export interface DraftView {
   priority_explicit: boolean;
   /** Через сколько МИНУТ задача возвращается. null -- разовая. */
   repeat_min: number | null;
+  /** Задача, без которой эту нельзя начинать. */
+  depends_on_task_id: string | null;
   kind: 'single' | 'each' | 'any' | 'ack';
   assignee_ids: string[];
   assignees: string[];
@@ -367,6 +369,8 @@ export type DraftEdits = Partial<{
   priority: Priority;
   /** Через сколько МИНУТ задача возвращается. null или 0 снимает повтор. */
   repeat_min: number | null;
+  /** Предшественник: только незакрытая задача. null снимает связь. */
+  depends_on_task_id: string | null;
 }>;
 export const deleteDraft = (id: string) => request<{ ok: true }>(`/drafts/${id}`, { method: 'DELETE' });
 

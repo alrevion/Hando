@@ -30,6 +30,7 @@ export type DraftRow = {
   description: string | null;
   /** Через сколько МИНУТ задача возвращается. NULL -- разовая. */
   repeat_min: number | null;
+  depends_on_task_id: string | null;
   /** Пункты списка, JSON-массив строк. NULL -- списка нет. */
   checklist: string | null;
   priority_explicit: number;
@@ -130,6 +131,8 @@ export async function latestDraft(env: Env, authorId: string, orgId: string): Pr
 }
 
 export type DraftPatch = Partial<{
+  /** Предшественник: задача, без которой эту нельзя начинать. */
+  dependsOn: string | null;
   title: string;
   description: string | null;
   assigneeIds: string[];
@@ -154,6 +157,7 @@ export async function patchDraft(env: Env, id: string, patch: DraftPatch): Promi
   if (patch.deadline !== undefined) put('deadline', patch.deadline);
   if (patch.priority !== undefined) put('priority', patch.priority);
   if (patch.repeatMin !== undefined) put('repeat_min', patch.repeatMin);
+  if (patch.dependsOn !== undefined) put('depends_on_task_id', patch.dependsOn);
   if (patch.priorityExplicit !== undefined) put('priority_explicit', patch.priorityExplicit ? 1 : 0);
   if (patch.kind !== undefined) put('kind', patch.kind);
   if (patch.media !== undefined) put('media', JSON.stringify(patch.media));
@@ -197,6 +201,7 @@ export async function confirmDraft(env: Env, row: DraftRow): Promise<string | nu
     kind: row.kind === 'any' ? 'each' : row.kind,
     source: row.source === 'llm' || row.source === 'fallback' ? row.source : 'pattern',
     repeatMin: row.repeat_min,
+    dependsOn: row.depends_on_task_id,
     checklist: checklistOf(row),
     ambiguous: [],
   };
