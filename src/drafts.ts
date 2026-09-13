@@ -130,6 +130,8 @@ export type DraftPatch = Partial<{
   deadline: string | null;
   priority: DraftRow['priority'];
   priorityExplicit: boolean;
+  /** Через сколько дней задача возвращается. null снимает повтор. */
+  repeatDays: number | null;
   kind: DraftRow['kind'];
   media: Media[];
   telegramChatId: string;
@@ -145,6 +147,7 @@ export async function patchDraft(env: Env, id: string, patch: DraftPatch): Promi
   if (patch.assigneeIds !== undefined) put('assignee_ids', JSON.stringify(patch.assigneeIds));
   if (patch.deadline !== undefined) put('deadline', patch.deadline);
   if (patch.priority !== undefined) put('priority', patch.priority);
+  if (patch.repeatDays !== undefined) put('repeat_days', patch.repeatDays);
   if (patch.priorityExplicit !== undefined) put('priority_explicit', patch.priorityExplicit ? 1 : 0);
   if (patch.kind !== undefined) put('kind', patch.kind);
   if (patch.media !== undefined) put('media', JSON.stringify(patch.media));

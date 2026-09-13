@@ -105,6 +105,21 @@ describe('видимость по дереву', () => {
     expect(snap.projects.map((p) => p.id)).toEqual(['p2']);
   });
 
+  it('задачу с чужой доски исполнитель может ДВИГАТЬ, а не только видеть', async () => {
+    const env = await world();
+    tg();
+    // Вика состоит только на p2. Задача на p1 -- доска для неё чужая.
+    const r = await api(env, '/projects/p1/tasks', 'POST', { title: 'Полить цветы', responsible_user_id: 'w2' }, 'boss', 'creator');
+    const { id } = await r.json<{ id: string }>();
+    // Раньше каждое нажатие отвечало «forbidden»: доступ считался только по
+    // доске, а задачу человек уже видел в списке.
+    expect((await api(env, `/tasks/${id}/move`, 'POST', { to: 'in_progress' }, 'w2', 'member')).status).toBe(200);
+    expect((await api(env, `/tasks/${id}/move`, 'POST', { to: 'started' }, 'w2', 'member')).status).toBe(200);
+    expect((await api(env, `/tasks/${id}/move`, 'POST', { to: 'done' }, 'w2', 'member')).status).toBe(200);
+    // А посторонний по-прежнему не может: ни автор, ни исполнитель.
+    expect((await api(env, `/tasks/${id}/move`, 'POST', { to: 'done' }, 'w1', 'member')).status).toBe(403);
+  });
+
   it('поручать можно только видимым: чужой отдел -- отказ, у владельца -- нет границ', async () => {
     const env = await world();
     tg();

@@ -72,6 +72,20 @@ const queued = async () =>
   (await testEnv.DB.prepare('SELECT kind, assignee_id, payload FROM notifications ORDER BY rowid').all<{ kind: string; assignee_id: string; payload: string }>()).results
     .map((r) => ({ kind: r.kind, to: r.assignee_id, p: JSON.parse(r.payload) as { text: string; urgent: boolean; gated: boolean; keyboard: { text: string }[][] } }));
 
+describe('сводка', () => {
+  it('дела БЕЗ срока тоже попадают в сводку: иначе семье утром не приходит ничего', async () => {
+    const env = await world(null); // задача t1 без срока
+    const spy = tg();
+    await sendDigests(env, at('09:30'));
+    // Сводка кладётся в очередь, отправляет её проход outbox.
+    await drainOutbox(env, at('09:30'));
+    const digest = sentTexts(spy).find((m) => m.text.includes('Без срока'))!;
+    expect(digest).toBeTruthy();
+    expect(digest.text).toContain('«Подготовить отчёт»');
+    expect(digest.text).toContain('напоминаний по ним не будет');
+  });
+});
+
 describe('матрица напоминаний: дозировка', () => {
   it('«не принято»: через час, при сроке сегодня -- раз в час; два тика в один час дают одно сообщение', async () => {
     const env = await world(at('17:00').toISOString());

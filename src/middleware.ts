@@ -105,6 +105,8 @@ export const requireProjectAccess = (source: 'project' | 'task' | 'attachment' =
   Object.assign(
     async (c: Parameters<MiddlewareHandler<AppEnv>>[0], next: Parameters<MiddlewareHandler<AppEnv>>[1]) => {
     let projectId: string | null | undefined;
+    // Своя задача открыта человеку, даже если доска чужая -- см. ниже.
+    let ownTask = false;
 
     if (source === 'attachment') {
       const attachmentId = c.req.param('id');
@@ -127,6 +129,17 @@ export const requireProjectAccess = (source: 'project' | 'task' | 'attachment' =
       if (!task) return c.json({ error: 'forbidden' }, 403);
       c.set('task', task);
       projectId = task.project_id;
+      // СВОЯ ЗАДАЧА -- СВОЯ, даже если доска чужая.
+      //
+      // Поручить можно кому угодно, и членом своего отдела адресата это не
+      // делает: задача лежит на доске автора. Пока доступ считался только по
+      // доске, человек видел такую задачу в списке (снимок её отдаёт) и
+      // получал «forbidden» на КАЖДОЕ нажатие -- принять, начать, сдать,
+      // отказаться. Организация уже проверена запросом выше, так что здесь
+      // сравниваются только автор и строки адресатов.
+      ownTask = task.author_id === c.get('userId')
+        || !!(await c.env.DB.prepare('SELECT 1 FROM task_assignees WHERE task_id = ? AND user_id = ? AND org_id = ?')
+          .bind(task.id, c.get('userId'), c.get('orgId')).first());
     } else {
       projectId = c.req.param('projectId');
     }
@@ -141,7 +154,7 @@ export const requireProjectAccess = (source: 'project' | 'task' | 'attachment' =
       .first<{ created_by: string }>();
     if (!project) return c.json({ error: 'forbidden' }, 403);
 
-    if (role === 'creator') return next();
+    if (role === 'creator' || ownTask) return next();
 
     const member = await c.env.DB.prepare('SELECT 1 FROM project_memberships WHERE project_id = ? AND user_id = ? AND org_id = ?')
       .bind(projectId, c.get('userId'), orgId)

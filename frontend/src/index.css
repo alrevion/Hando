@@ -716,6 +716,13 @@ body.kb-open .bottom-nav {
 .btn-icon.is-danger {
   color: var(--tone-red);
 }
+/* Кнопка ростом с поле ввода: в ряду «поправить словами» микрофон и палочка
+   стояли 36px рядом с полем 48px, и ряд выглядел собранным из разных деталей. */
+.btn-icon.is-tall {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+}
 .btn-icon.is-accent {
   background: var(--accent);
   color: var(--accent-fg);
@@ -1078,12 +1085,15 @@ select.inp {
 }
 
 
-/* ---- тосты: одна плашка над доком, без кнопок */
+/* ---- тосты: одна плашка ПОД ШАПКОЙ, без кнопок
+   Сверху, а не снизу: внизу стоят кнопка «+», панель навигации и кнопки
+   действий на карточках -- плашка накрывала то самое место, куда человек
+   только что нажал, и ответ на действие заслонял само действие. */
 .toast-host {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(var(--safe-b) + 84px);
+  top: calc(var(--safe-t) + 58px);
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -1100,7 +1110,8 @@ select.inp {
   animation: toast-in 0.18s ease-out;
 }
 @keyframes toast-in {
-  from { opacity: 0; transform: translateY(8px); }
+  /* Выезжает СВЕРХУ вниз -- оттуда же, где теперь живёт. */
+  from { opacity: 0; transform: translateY(-8px); }
   to { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {

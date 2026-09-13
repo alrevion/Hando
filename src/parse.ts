@@ -643,16 +643,28 @@ export function matchRepeat(text: string): { days: number | null; usedWords: Set
   const used = new Set<string>();
   const take = (m: RegExpMatchArray, days: number) => {
     m[0].trim().split(/\s+/).forEach((w) => used.add(w));
-    return { days, usedWords: used };
+    return { days: Math.max(1, days), usedWords: used };
   };
-  // Порядок от частного к общему: «каждые 3 дня» содержит «кажд».
-  const n = lower.match(/кажд[а-яё]+\s+(\d+)\s*(?:дн[а-яё]*|день)/i);
-  if (n) return take(n, Math.max(1, Number(n[1])));
-  const nw = lower.match(/кажд[а-яё]+\s+(\d+)\s*недел[а-яё]*/i);
-  if (nw) return take(nw, Math.max(1, Number(nw[1])) * 7);
+  // Число словом или цифрой: вслух чаще говорят «раз в три дня», чем «каждые 3».
+  const N: Record<string, number> = {
+    один: 1, одну: 1, два: 2, две: 2, двух: 2, три: 3, трое: 3, трёх: 3, трех: 3,
+    четыре: 4, четырёх: 4, четырех: 4, пять: 5, пяти: 5, шесть: 6, семь: 7, десять: 10, четырнадцать: 14,
+  };
+  const num = (w: string | undefined): number => (w ? (N[w] ?? (Number(w) || 1)) : 1);
+  const COUNT = String.raw`\d+|один|одну|дв[ае]|двух|тр[иоё]е?|трёх|трех|четыре|четыр[её]х|пят[иь]|шесть|семь|десять|четырнадцать`;
+
+  // «каждые 3 дня», «раз в три дня», «через каждые два дня».
+  const nDays = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в|через)\s+(${COUNT})\s*(?:дн[а-яё]*|день|сут[а-яё]+)`, 'i'));
+  if (nDays) return take(nDays, num(nDays[1]));
+  const nWeeks = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в|через)\s+(${COUNT})\s*недел[а-яё]*`, 'i'));
+  if (nWeeks) return take(nWeeks, num(nWeeks[1]) * 7);
+  const nMonths = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в|через)\s+(${COUNT})\s*месяц[а-яё]*`, 'i'));
+  if (nMonths) return take(nMonths, num(nMonths[1]) * 30);
+
+  // Без числа: «через день» -- это раз в два дня, «каждый день» -- раз в день.
   const every2 = lower.match(/(?:^|[\s,])через\s+день/i);
   if (every2) return take(every2, 2);
-  const daily = lower.match(/(?:^|[\s,])(?:кажд[ыои][йе]\s+день|ежедневно|каждодневно)/i);
+  const daily = lower.match(/(?:^|[\s,])(?:кажд[ыои][йе]\s+день|ежедневно|каждодневно|раз\s+в\s+день|ежесуточно)/i);
   if (daily) return take(daily, 1);
   const weekly = lower.match(/(?:^|[\s,])(?:кажд[уы][юе]\s+недел[юя]|еженедельно|раз\s+в\s+неделю)/i);
   if (weekly) return take(weekly, 7);
@@ -676,17 +688,34 @@ const TITLE_WORDS = 6;
  * Не срабатывает -- возвращаем как было: длинная тема хуже короткой, но лучше
  * отказа разобрать.
  */
-export async function splitTitle(env: Env, title: string, model: string): Promise<{ title: string; description: string | null; checklist?: string[] | null }> {
+/**
+ * «Мои», «мне», «у меня» в поручении ДРУГОМУ человеку.
+ *
+ * Автор говорит от себя, а читает адресат: «мои цветы поливать» превращается у
+ * него в загадку -- чьи. Слово от первого лица и есть признак, что фразу надо
+ * переписать именем автора.
+ */
+const FIRST_PERSON = /(?<![а-яёa-zA-Z])(мо[йяёеи]|моих|моим|моег|моей|мне|меня|у\s+меня|нам|наш)/i;
+
+export async function splitTitle(
+  env: Env, title: string, model: string,
+  /** Имя автора, если поручение НЕ себе: им заменяются «мои» и «мне». */
+  authorName?: string | null,
+): Promise<{ title: string; description: string | null; checklist?: string[] | null }> {
   const words = title.trim().split(/\s+/);
   // Перечисление -- тоже повод позвать модель, даже если фраза короткая:
   // «купить свёклу, морковь, молоко» это шесть слов и три пункта списка.
   const enumerated = (title.match(/,/g) ?? []).length >= 2;
-  if ((words.length <= TITLE_WORDS && !enumerated) || !env.GROQ_API_KEY) return { title, description: null };
+  const firstPerson = !!authorName && FIRST_PERSON.test(title);
+  if ((words.length <= TITLE_WORDS && !enumerated && !firstPerson) || !env.GROQ_API_KEY) return { title, description: null };
   const prompt = [
     'Раздели поручение на тему, содержание и список пунктов. Отвечай ТОЛЬКО JSON, без пояснений.',
     'title: суть, 2-5 слов, повелительная форма, без дат, имён и слов о важности.',
     'description: остальные подробности из фразы, одной-двумя фразами; пустая строка, если сверх темы ничего нет.',
     'items: массив строк, ЕСЛИ фраза перечисляет вещи, которые отмечают по одной (покупки, пункты повестки, что взять с собой). Каждый пункт 1-3 слова. Пустой массив, если перечисления нет.',
+    ...(firstPerson
+      ? [`Автор поручения -- ${authorName}, а читать его будет другой человек. Слова «мой», «моя», «мои», «мне», «у меня» замени именем автора в нужном падеже и поставь это в description, а не в title. Пример: «мои цветы поливать» от «Лариса Сергеевна» -> title «Поливать цветы», description «Поливать цветы Ларисы Сергеевны».`]
+      : []),
     `Фраза: ${title}`,
   ].join('\n');
   try {
@@ -739,7 +768,11 @@ export async function parseTask(
   const model = env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b';
   const byPattern = parseByPattern(text, people, selfId, now, timeZone, packId, dayEnd, weekEnd);
   if (byPattern && byPattern.ambiguous.length > 0) return byPattern;
-  if (byPattern) return { ...byPattern, ...(await splitTitle(env, byPattern.title, model)) };
+  // Имя автора нужно ТОЛЬКО когда поручают другому: себе «мои цветы» -- это
+  // нормально и переписывать нечего.
+  const authorName = people.find((p) => p.id === selfId)?.name ?? null;
+  const forOther = (ids: string[]) => (ids.some((id) => id !== selfId) ? authorName : null);
+  if (byPattern) return { ...byPattern, ...(await splitTitle(env, byPattern.title, model, forOther(byPattern.assigneeIds))) };
 
   const byLlm = env.GROQ_API_KEY ? await parseByLlm(env, text, people, model, packId, selfId) : null;
   if (byLlm) return byLlm;
@@ -750,6 +783,7 @@ export async function parseTask(
   const bare = buildTitle(text.trim(), [priorityWords]);
   const raw = (bare.length >= 3 ? bare[0].toUpperCase() + bare.slice(1) : text.trim()).slice(0, 200) || 'Без названия';
   return {
+    // Запасной путь -- всегда задача себе, так что переписывать «мои» не надо.
     ...(await splitTitle(env, raw, model)),
     assigneeIds: [selfId],
     deadline: null,

@@ -321,6 +321,8 @@ export interface DraftView {
   priority: Priority;
   /** Важность названа человеком, а не поставлена по умолчанию. */
   priority_explicit: boolean;
+  /** Через сколько дней задача возвращается. null -- разовая. */
+  repeat_days: number | null;
   kind: 'single' | 'each' | 'any' | 'ack';
   assignee_ids: string[];
   assignees: string[];
@@ -363,6 +365,8 @@ export type DraftEdits = Partial<{
   assignee_ids: string[];
   deadline: string | null;
   priority: Priority;
+  /** Через сколько дней задача возвращается. null или 0 снимает повтор. */
+  repeat_days: number | null;
 }>;
 export const deleteDraft = (id: string) => request<{ ok: true }>(`/drafts/${id}`, { method: 'DELETE' });
 

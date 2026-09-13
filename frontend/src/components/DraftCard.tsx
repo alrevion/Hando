@@ -3,6 +3,7 @@ import { CalendarDays, Check, Mic, Paperclip, Square, Trash2, Wand2 } from 'luci
 import type { Priority, User } from '../types';
 import { ApiError, confirmDraft, deleteDraft, refineDraftByPhrase, uploadDraftFile, type DraftEdits, type DraftView } from '../lib/api';
 import { PRIORITIES } from '../lib/priority';
+import { REPEAT_CHOICES, repeatLabel } from '../lib/tasks';
 import { endOfWeek, inDays } from './QuickEdit';
 
 /** Есть ли запись с микрофона: в WebView Telegram бывает и нет. */
@@ -48,6 +49,7 @@ export function DraftCard({
   const [deadline, setDeadline] = useState<string | null>(draft.deadline);
   const [priority, setPriority] = useState<Priority>(draft.priority);
   const [priorityTouched, setTouched] = useState(draft.priority_explicit);
+  const [repeat, setRepeat] = useState<number>(draft.repeat_days ?? 0);
   const [files, setFiles] = useState(draft.media_count);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -125,6 +127,7 @@ export function DraftCard({
     assignee_ids: who ? [who] : [],
     deadline,
     priority,
+    repeat_days: repeat || null,
   });
 
   return (
@@ -165,6 +168,17 @@ export function DraftCard({
           </button>
         ))}
         {priorityTouched ? null : <span className="muted" style={{ alignSelf: 'center', fontSize: 12.5 }}>не сказана</span>}
+      </div>
+
+      {/* ПОВТОР -- рядом со сроком, а не в глубине правки: «поливать через
+          день» это свойство самой задачи, и ставится оно там же, где срок. */}
+      <div className="sec-title" style={{ margin: '4px 0 8px' }}>Повтор</div>
+      <div className="chips" style={{ paddingBottom: 10 }}>
+        {REPEAT_CHOICES.map((d) => (
+          <button key={d} type="button" disabled={busy}
+            className={repeat === d ? 'chip on' : 'chip'}
+            onClick={() => setRepeat(d)}>{repeatLabel(d || null)}</button>
+        ))}
       </div>
 
       <div className="sec-title" style={{ margin: '4px 0 8px' }}>Срок{deadline ? `: ${when(deadline)}` : ' не указан'}</div>
@@ -210,12 +224,12 @@ export function DraftCard({
             onChange={(e) => { setFix(e.target.value); setError(null); }}
             onKeyDown={(e) => { if (e.key === 'Enter' && fix.trim()) { e.preventDefault(); void sendFix({ text: fix.trim() }); } }} />
           {canRecord() ? (
-            <button type="button" className={recording ? 'btn-icon is-danger' : 'btn-icon'} disabled={busy && !recording}
+            <button type="button" className={recording ? 'btn-icon is-tall is-danger' : 'btn-icon is-tall'} disabled={busy && !recording}
               aria-label={recording ? 'Остановить запись' : 'Наговорить поправку'} onClick={() => void toggleFixRecording()}>
               {recording ? <Square aria-hidden="true" /> : <Mic aria-hidden="true" />}
             </button>
           ) : null}
-          <button type="button" className="btn-icon is-accent" disabled={busy || !fix.trim()}
+          <button type="button" className="btn-icon is-tall is-accent" disabled={busy || !fix.trim()}
             aria-label="Применить поправку" onClick={() => void sendFix({ text: fix.trim() })}>
             <Wand2 aria-hidden="true" />
           </button>

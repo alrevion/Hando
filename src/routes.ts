@@ -512,6 +512,7 @@ async function draftView(env: Env, row: DraftRow) {
     deadline: row.deadline,
     priority: row.priority,
     priority_explicit: row.priority_explicit === 1,
+    repeat_days: row.repeat_days,
     kind: row.kind,
     assignee_ids: ids,
     assignees: ids.map((id) => names.find((n) => n.id === id)?.name ?? '—'),
@@ -582,6 +583,11 @@ async function applyDraftEdits(
       patch.deadline = atDayEnd(dl, sched);
     } else if (typeof dl === 'string' && !Number.isNaN(Date.parse(dl))) patch.deadline = new Date(dl).toISOString();
     else return { error: 'bad deadline' };
+  }
+  if (b.repeat_days !== undefined) {
+    const r = b.repeat_days === null || b.repeat_days === 0 ? null : Number(b.repeat_days);
+    if (r !== null && (!Number.isInteger(r) || r < 1 || r > 365)) return { error: 'bad repeat' };
+    patch.repeatDays = r;
   }
   if (b.priority !== undefined) {
     if (!PRIORITIES.includes(String(b.priority))) return { error: 'bad priority' };

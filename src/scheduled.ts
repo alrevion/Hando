@@ -310,35 +310,48 @@ export async function sendDigests(env: Env, now: Date): Promise<number> {
          AND u.telegram_user_id IS NOT NULL AND (m.digest_sent_on IS NULL OR m.digest_sent_on <> ?)`,
     ).bind(s.id, dayKey).all<{ mid: string; user_id: string; telegram_user_id: string }>();
     for (const m of members) {
+      // БЕЗ СРОКА -- тоже часть сводки. Раньше выбирались только строки с
+      // due_at, и семья, которая сроков не ставит вовсе, не получала утром
+      // НИЧЕГО: сводка молчала, хотя дел полный список. Открытые дела без
+      // срока идут отдельным разделом и заодно напоминают, что срок стоит
+      // поставить -- без него не будет ни одного напоминания.
       const { results: rows } = await env.DB.prepare(
         `SELECT t.id, t.title, t.priority, a.due_at
          FROM task_assignees a
          JOIN tasks t ON t.id = a.task_id
          JOIN projects p ON p.id = t.project_id
-         WHERE a.user_id = ? AND a.org_id = ? AND a.due_at IS NOT NULL AND p.archived_at IS NULL
+         WHERE a.user_id = ? AND a.org_id = ? AND p.archived_at IS NULL
            AND a.state IN ('pending','accepted','rejected')
            AND t.status NOT IN ('archived','done')`,
-      ).bind(m.user_id, s.id).all<{ id: string; title: string; priority: string; due_at: string }>();
+      ).bind(m.user_id, s.id).all<{ id: string; title: string; priority: string; due_at: string | null }>();
       const today = rows
-        .filter((r) => sameLocalDay(r.due_at, now, s.timezone))
-        .sort((a, b) => (PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]) || (Date.parse(a.due_at) - Date.parse(b.due_at)));
+        .filter((r) => r.due_at !== null && sameLocalDay(r.due_at, now, s.timezone))
+        .sort((a, b) => (PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]) || (Date.parse(a.due_at!) - Date.parse(b.due_at!)));
+      const undated = rows.filter((r) => r.due_at === null)
+        .sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
       const drafts = await listDrafts(env, m.user_id, s.id);
       const writes = [env.DB.prepare('UPDATE org_memberships SET digest_sent_on = ? WHERE id = ?').bind(dayKey, m.mid)];
-      if (today.length > 0) {
+      if (today.length > 0 || undated.length > 0) {
         const time = (iso: string) => new Intl.DateTimeFormat('ru-RU', { timeZone: s.timezone, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
         const lines = [
           `📰 ${new Intl.DateTimeFormat('ru-RU', { timeZone: s.timezone, weekday: 'long', day: 'numeric', month: 'long' }).format(now)}`,
-          ...today.map((r, i) => `${i + 1}. «${r.title}» — ${time(r.due_at)}${PRIORITY_RU[r.priority] ? ` · ${PRIORITY_RU[r.priority]}` : ''}`),
+          ...today.map((r, i) => `${i + 1}. «${r.title}» — ${time(r.due_at!)}${PRIORITY_RU[r.priority] ? ` · ${PRIORITY_RU[r.priority]}` : ''}`),
         ];
+        if (undated.length > 0) {
+          if (today.length > 0) lines.push('');
+          lines.push(`Без срока (${undated.length}) — напоминаний по ним не будет:`);
+          lines.push(...undated.slice(0, 5).map((r) => `• «${r.title}»`));
+          if (undated.length > 5) lines.push(`…и ещё ${undated.length - 5}`);
+        }
         if (drafts.length) lines.push('', `Черновиков без подтверждения: ${drafts.length} — ниже.`);
         // Через outbox (членство, адрес, клейм -- всё там). task_id -- первая
         // задача сводки: у строки очереди задача обязательна.
-        writes.push(queueReminder(env, { task_id: today[0].id, org_id: s.id, user_id: m.user_id }, lines.join('\n'), 'digest', {}));
+        writes.push(queueReminder(env, { task_id: (today[0] ?? undated[0]).id, org_id: s.id, user_id: m.user_id }, lines.join('\n'), 'digest', {}));
       }
       await env.DB.batch(writes);
       // Черновики -- карточками с их кнопками: Создать · Изменить · Отменить.
       for (const d of drafts.slice(0, 5)) await renderDraft(env, d, m.telegram_user_id, s.timezone, true);
-      if (today.length > 0 || drafts.length > 0) sent++;
+      if (today.length > 0 || undated.length > 0 || drafts.length > 0) sent++;
     }
   }
   return sent;
