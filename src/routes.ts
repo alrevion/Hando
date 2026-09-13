@@ -1099,7 +1099,11 @@ async function attachAssignees(env: Env, orgId: string, tasks: Record<string, un
   const byTask = new Map<string, unknown[]>();
   for (const r of rows) {
     const list = byTask.get(r.task_id);
-    const one = { user_id: r.user_id, user_name: r.user_name, state: r.state, due_at: r.due_at };
+    // started_at ОБЯЗАТЕЛЕН в этом объекте: по нему приложение отличает
+    // «принято» от «в работе». Он был в запросе и в типе, но не в том, что
+    // уезжает клиенту, -- и этап не менялся ни после нажатия, ни после
+    // перезагрузки, сколько бы раз человек ни жал стрелку.
+    const one = { user_id: r.user_id, user_name: r.user_name, state: r.state, started_at: r.started_at, due_at: r.due_at };
     if (list) list.push(one);
     else byTask.set(r.task_id, [one]);
   }

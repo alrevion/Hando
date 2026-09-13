@@ -137,7 +137,9 @@ describe('видимость по дереву', () => {
     // без касания tasks.updated_at карточка оставалась в «Принято».
     const seen = delta.tasks.find((t) => t.id === id);
     expect(seen, 'задача не доехала догрузкой').toBeTruthy();
-    expect(seen!.assignees.find((a) => a.user_id === 'w1')!.started_at).not.toBeNull();
+    // toBeTruthy, а НЕ not.toBeNull: undefined «не null», и на пропущенном в
+    // ответе поле прежняя проверка проходила, ничего не проверяя.
+    expect(seen!.assignees.find((a) => a.user_id === 'w1')!.started_at).toBeTruthy();
   });
 
   it('повторное «начал» -- не ошибка, а отставший клиент', async () => {
