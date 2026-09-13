@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ShowMore, usePaging } from './ShowMore';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import type { Task, User } from '../types';
 import { useOrgTasks, useOrgUsers, type OrgTask } from '../hooks/useOrgTasks';
 import { PRIORITY_DOT } from '../lib/priority';
@@ -8,9 +8,14 @@ import { isTaskOverdue } from '../lib/overdue';
 import { TaskDetailModal } from './TaskDetailModal';
 import { TaskMeta } from './TaskMeta';
 import { assigneeKey } from '../lib/tasks';
+import { MonthSheet } from './MonthSheet';
 
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const MAX_DOTS_PER_DAY = 3;
+/** Сколько месяцев рисуется по обе стороны от выбранного. */
+const SPAN = 6;
+/** Ключ месяца для прокрутки к нему: «2026-09». */
+const monthKey = (y: number, m: number) => `${y}-${String(m + 1).padStart(2, '0')}`;
 
 // Ключ дня -- первые 10 символов самой строки срока, а не Date. Сроки хранятся
 // как YYYY-MM-DD, и new Date('2026-09-04') -- это полночь UTC: в западных
@@ -55,7 +60,13 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
     [allTasks, scope, currentUser.id],
   );
   const { users } = useOrgUsers();
-  const [cursor, setCursor] = useState(() => new Date());
+  // ЯКОРЬ ленты и ВИДИМЫЙ месяц -- разные вещи, и в этом весь фокус. Якорь
+  // задают только прыжки (шторка, «Сегодня»): вокруг него рисуется окно
+  // месяцев, и только его смена прокручивает ленту. Видимый месяц меняет сама
+  // прокрутка -- он живёт в подписи шапки. Будь это одно состояние, прокрутка
+  // пересобирала бы окно и тут же отбрасывала палец в его середину.
+  const [anchor, setAnchor] = useState(() => new Date());
+  const [visible, setVisible] = useState(() => ({ y: anchor.getFullYear(), m: anchor.getMonth() }));
   const [viewing, setViewing] = useState<Task | null>(null);
   // Выбранный день: по умолчанию сегодня. Сетка на телефоне слишком узкая для
   // названий задач, поэтому в клетке -- только точки, а список -- под сеткой.
@@ -68,8 +79,45 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
     [users, currentUser],
   );
 
-  const year = cursor.getFullYear();
-  const month = cursor.getMonth();
+  const [picking, setPicking] = useState(false);
+  const scroller = useRef<HTMLDivElement>(null);
+
+  // Год назад и год вперёд от якоря. Не бесконечная лента: дальше года мотать
+  // пальцем дольше, чем выбрать месяц в шторке, а лишние сотни клеток в
+  // разметке -- это лишние сотни клеток в разметке.
+  const months = useMemo(
+    () => Array.from({ length: SPAN * 2 + 1 }, (_, i) => {
+      const d = new Date(anchor.getFullYear(), anchor.getMonth() - SPAN + i, 1);
+      return { y: d.getFullYear(), m: d.getMonth() };
+    }),
+    [anchor],
+  );
+
+  const scrollTo = useCallback((y: number, m: number) => {
+    const box = scroller.current;
+    const target = box?.querySelector<HTMLElement>(`[data-month="${monthKey(y, m)}"]`);
+    if (box && target) box.scrollTop = target.offsetTop - box.offsetTop;
+    setVisible({ y, m });
+  }, []);
+
+  // Лента открывается на якорном месяце. Без плавности: это не переход, а
+  // начальное положение.
+  useEffect(() => {
+    scrollTo(anchor.getFullYear(), anchor.getMonth());
+  }, [anchor, scrollTo]);
+
+  // Прыжок на месяц. Если он уже нарисован -- просто домотать: перестраивать
+  // окно незачем. Если нет -- сменить якорь, и домотает useEffect.
+  //
+  // Разделение обязательное, а не красивое: «Сегодня» после прокрутки на
+  // ноябрь оставляло ленту в ноябре. Якорь-то не менялся -- прокрутка его и не
+  // трогает, -- а раз не менялся, то и эффект не срабатывал.
+  const goto = (d: Date) => {
+    const y = d.getFullYear();
+    const m = d.getMonth();
+    if (months.some((x) => x.y === y && x.m === m)) scrollTo(y, m);
+    else setAnchor(d);
+  };
 
   const byDay = useMemo(() => {
     const map = new Map<string, OrgTask[]>();
@@ -85,14 +133,15 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
 
   const undated = tasks.filter(({ task }) => !task.deadline).length;
 
-  // Понедельник -- первый столбец: getDay() считает от воскресенья, поэтому сдвиг.
-  const offset = (new Date(year, month, 1).getDay() + 6) % 7;
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const cells: (number | null)[] = [
-    ...Array.from({ length: offset }, () => null),
-    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
-  ];
   const todayKey = localDayKey(new Date());
+
+  // Место выбранного дня в сетке месяца -- или null, если выбор не здесь.
+  // Номер клетки, а не число: первая неделя сдвинута на день недели первого.
+  const selIn = (y: number, m: number): number | null => {
+    const [sy, sm, sd] = selected.split('-').map(Number);
+    if (sy !== y || sm - 1 !== m) return null;
+    return ((new Date(y, m, 1).getDay() + 6) % 7) + sd - 1;
+  };
 
   const selectedTasks = byDay.get(selected) ?? [];
   // Счёт начинается заново на каждый выбранный день.
@@ -118,48 +167,87 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
 
       <div className="card" style={{ padding: '12px 10px 10px' }}>
         <div className="t-row" style={{ alignItems: 'center', marginBottom: 6, padding: '0 4px' }}>
-          <span className="grow" style={{ fontSize: 17, fontWeight: 700 }}>
-            {cap(new Date(year, month, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }))}
-          </span>
-          {/* «Сегодня» -- в начале строки навигации, слева от «Предыдущего месяца»
-              (владелец просил переставить сюда из шапки экрана). Подсвечена, когда
-              выбран сегодняшний день -- кнопка тогда показывает ещё и состояние. */}
+          {/* Заголовок -- КНОПКА: месяц и год выбираются колёсами, а не
+              двенадцатью нажатиями на стрелку. Стрелок больше нет вовсе --
+              месяцы листаются вниз, как лента. */}
+          <button type="button" className="cal-jump grow" onClick={() => setPicking(true)}>
+            {cap(new Date(visible.y, visible.m, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }))}
+            <ChevronDown aria-hidden="true" />
+          </button>
+          {/* «Сегодня» возвращает и выбор, и прокрутку ленты. */}
           <button
             type="button"
             className={`btn btn-sm${selected === todayKey ? ' on' : ''}`}
-            onClick={() => { const d = new Date(); setCursor(d); setSelected(localDayKey(d)); }}
+            onClick={() => { const d = new Date(); goto(d); setSelected(localDayKey(d)); }}
           >
             Сегодня
           </button>
-          <button type="button" aria-label="Предыдущий месяц" className="btn-icon" onClick={() => setCursor(new Date(year, month - 1, 1))}>
-            <ChevronLeft aria-hidden="true" />
-          </button>
-          <button type="button" aria-label="Следующий месяц" className="btn-icon" onClick={() => setCursor(new Date(year, month + 1, 1))}>
-            <ChevronRight aria-hidden="true" />
-          </button>
         </div>
 
-        <div className="cal">
+        {/* Дни недели стоят НАД лентой и не уезжают с ней: подписи столбцов
+            одни и те же во всех месяцах, и повторять их в каждом -- шум. */}
+        <div className="cal cal-head">
           {WEEKDAYS.map((label) => <div key={label} className="cal-wd">{label}</div>)}
-          {cells.map((day, index) => {
-            if (day === null) return <div key={`pad-${index}`} />;
-            const key = localDayKey(new Date(year, month, day));
-            const dayTasks = byDay.get(key) ?? [];
-            const cls = ['cal-day', key === todayKey ? 'is-today' : '', key === selected ? 'is-sel' : ''].filter(Boolean).join(' ');
-            return (
-              <button key={key} type="button" className={cls} aria-pressed={key === selected} onClick={() => setSelected(key)}>
-                <span className="cal-n">{day}</span>
-                <span className="cal-dots" aria-hidden="true">
-                  {dayTasks.slice(0, MAX_DOTS_PER_DAY).map(({ task }) => (
-                    <span key={task.id} className={`dot ${isTaskOverdue(task) ? 'bg-red-500' : PRIORITY_DOT[task.priority]}`} />
-                  ))}
-                  {dayTasks.length > MAX_DOTS_PER_DAY ? <span className="cal-more">+</span> : null}
-                </span>
-              </button>
-            );
-          })}
+        </div>
+
+        <div className="cal-scroll" ref={scroller} onScroll={(e) => {
+          // Заголовок показывает тот месяц, что сейчас в ленте: иначе прокрутка
+          // на три месяца вперёд оставляла бы в шапке старое название.
+          const box = e.currentTarget;
+          const mid = box.scrollTop + box.clientHeight / 3;
+          for (const el of box.querySelectorAll<HTMLElement>('[data-month]')) {
+            if (el.offsetTop - box.offsetTop + el.offsetHeight > mid) {
+              const [y, m] = el.dataset.month!.split('-').map(Number);
+              setVisible((prev) => (prev.y === y && prev.m === m - 1 ? prev : { y, m: m - 1 }));
+              break;
+            }
+          }
+        }}>
+          {months.map(({ y, m }) => (
+            <div key={monthKey(y, m)} data-month={monthKey(y, m)} className="cal-month">
+              {/* Подпись месяца, чьё имя сейчас стоит в шапке, прячется -- но
+                  занимает своё место: убери её из потока, и лента дёргалась бы
+                  на высоту строки при каждом переходе через границу месяца. */}
+              <div className="cal-cap" style={visible.y === y && visible.m === m ? { visibility: 'hidden' } : undefined}>
+                {cap(new Date(y, m, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }))}
+              </div>
+              <div className="cal">
+                {/* Пилюля -- отдельный элемент, который ЕЗЖАЕТ между клетками:
+                    заливка у самой клетки переехать не может, она либо есть,
+                    либо нет. Рисуется только в том месяце, где стоит выбор, --
+                    прыжок через полгода ленты анимировать нечего. */}
+                {selIn(y, m) !== null ? (
+                  <div className="cal-pill" aria-hidden="true"
+                    style={{ ['--c' as string]: selIn(y, m)! % 7, ['--r' as string]: Math.floor(selIn(y, m)! / 7) }} />
+                ) : null}
+                {Array.from({ length: (new Date(y, m, 1).getDay() + 6) % 7 }, (_, i) => <div key={`pad-${i}`} />)}
+                {Array.from({ length: new Date(y, m + 1, 0).getDate() }, (_, i) => i + 1).map((day) => {
+                  const key = localDayKey(new Date(y, m, day));
+                  const dayTasks = byDay.get(key) ?? [];
+                  const cls = ['cal-day', key === todayKey ? 'is-today' : '', key === selected ? 'is-sel' : ''].filter(Boolean).join(' ');
+                  return (
+                    <button key={key} type="button" className={cls} aria-pressed={key === selected} onClick={() => setSelected(key)}>
+                      <span className="cal-n">{day}</span>
+                      <span className="cal-dots" aria-hidden="true">
+                        {dayTasks.slice(0, MAX_DOTS_PER_DAY).map(({ task }) => (
+                          <span key={task.id} className={`dot ${isTaskOverdue(task) ? 'bg-red-500' : PRIORITY_DOT[task.priority]}`} />
+                        ))}
+                        {dayTasks.length > MAX_DOTS_PER_DAY ? <span className="cal-more">+</span> : null}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
+
+      {picking ? (
+        <MonthSheet year={visible.y} month={visible.m}
+          onPick={(y, m) => goto(new Date(y, m, 1))}
+          onClose={() => setPicking(false)} />
+      ) : null}
 
       <h2 className="sec-title">
         {cap(selectedDate.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }))}

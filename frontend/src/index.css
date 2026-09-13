@@ -944,6 +944,7 @@ select.inp {
 
 /* ----- календарь ----- */
 .cal {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 4px;
@@ -957,8 +958,37 @@ select.inp {
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
+/* Лента месяцев вместо перелистывания стрелками. Высота -- ровно шесть недель
+   плюс подпись месяца: на любой месяц хватает, и следующий чуть выглядывает
+   снизу -- видно, что ленту можно тянуть. */
+.cal-scroll {
+  max-height: 330px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: y proximity;
+}
+.cal-scroll::-webkit-scrollbar {
+  display: none;
+}
+.cal-month {
+  scroll-snap-align: start;
+}
+.cal-cap {
+  padding: 10px 4px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label2);
+}
+.cal-head {
+  border-bottom: 0.5px solid var(--hair);
+  margin-bottom: 2px;
+}
 .cal-day {
-  aspect-ratio: 1;
+  /* Выше, чем шире: выбранный день -- вертикальная пилюля вокруг числа И точек
+     под ним, а не кружок вокруг одного числа. Кружок либо резал точки, либо
+     оставлял их снаружи выделения, и день с задачами выглядел «полувыбранным». */
+  aspect-ratio: 0.74;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -972,31 +1002,97 @@ select.inp {
   cursor: pointer;
   transition: background 0.12s, transform 0.12s;
 }
+.cal-day {
+  /* Поверх пилюли: она лежит в разметке раньше и потому ниже. */
+  position: relative;
+}
 .cal-day:active {
   transform: scale(0.94);
 }
-.cal-day.is-sel {
-  /* Выбранный день -- ЗАЛИВКОЙ, а не рамкой. */
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+/* Пилюля выбранного дня ЕЗДИТ между клетками -- это отдельный элемент, а не
+   заливка у клетки: заливка не может переехать, она либо есть, либо нет. Тот
+   же приём, что у бегунка сегментного переключателя и у пилюли навигации.
+
+   Цвет НЕЙТРАЛЬНЫЙ, а не акцентный, по двум причинам. Акцент занят
+   сегодняшним днём -- два зелёных пятна в одной сетке не различить. И точки
+   важности остаются читаемыми: зелёная точка на зелёной пилюле исчезает. */
+/* Без @property эти две переменные -- просто текст, и transform, собранный из
+   них, меняется скачком: интерполировать нечего. Регистрация делает их
+   числами, и тогда едет уже сама переменная -- а с ней и пилюля.
+   В старых WebKit правило неизвестно, переменные остаются текстом, и пилюля
+   просто переставляется без анимации -- ровно как было. */
+@property --c {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 0;
+}
+@property --r {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 0;
+}
+.cal-pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: calc((100% - 24px) / 7);
+  aspect-ratio: 0.74;
+  border-radius: 999px;
+  background: var(--label);
+  /* 100% здесь -- собственный размер пилюли, плюс зазор сетки. */
+  transform: translate(calc((100% + 4px) * var(--c, 0)), calc((100% + 4px) * var(--r, 0)));
+  /* Едут ПЕРЕМЕННЫЕ, а не transform: transform пересчитывается из них и сам по
+     себе интерполироваться не может. */
+  transition: --c 0.28s cubic-bezier(0.32, 0.72, 0, 1), --r 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cal-pill {
+    transition: none;
+  }
 }
 .cal-day.is-sel .cal-n {
-  color: var(--accent);
+  color: var(--bg);
   font-weight: 700;
 }
 .cal-n {
-  width: 28px;
-  height: 28px;
-  line-height: 28px;
+  min-width: 28px;
+  line-height: 26px;
   text-align: center;
-  border-radius: 50%;
   font-size: 15px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
+/* Сегодня -- цветом числа, без второй заливки: заливка теперь значит «выбран». */
 .cal-day.is-today .cal-n {
-  background: var(--accent);
-  color: var(--accent-fg);
+  color: var(--accent);
   font-weight: 700;
+}
+.cal-day.is-today.is-sel .cal-n {
+  color: var(--bg);
+}
+/* Заголовок-кнопка: месяц и год открывают колёса. */
+.cal-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--label);
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.12s;
+}
+.cal-jump:active {
+  transform: scale(0.97);
+}
+.cal-jump svg {
+  width: 16px;
+  height: 16px;
+  color: var(--label3);
 }
 .cal-dots {
   display: flex;
@@ -1291,8 +1387,9 @@ select.inp {
   left: 3px;
   width: calc((100% - 6px) / var(--n, 2));
   border-radius: calc(var(--r-sm) - 3px);
-  background: var(--bg2);
-  box-shadow: var(--card-ring);
+  /* Акцентом, а не серым: выбранное в системе везде зелёное -- чип, вкладка,
+     «Сегодня». Серый бегунок читался как «выключено». */
+  background: var(--accent);
   transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
   /* will-change ЗДЕСЬ НЕТ намеренно. Он поднимал бегунок на свой слой
      композитора, и пока шторка играла своё появление (transform + opacity на
@@ -1324,7 +1421,7 @@ select.inp {
   transform: scale(0.95);
 }
 .segmented-btn.on {
-  color: var(--label);
+  color: var(--accent-fg);
 }
 @media (prefers-reduced-motion: reduce) {
   .segmented-indicator {
