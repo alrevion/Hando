@@ -336,18 +336,20 @@ async function deleteDrafts(env: Env, who: AskWho, question: string): Promise<st
   // \b НЕ РАБОТАЕТ по-русски: в JS граница слова определена по [A-Za-z0-9_],
   // и между «е» и пробелом её нет -- /\bвсе\b/ не совпадает никогда. Границу
   // задаём сами, как в EDGE ниже.
-  const all = /(?<![а-яёa-zA-Z])вс[её](?![а-яёa-zA-Z])/i.test(q) || rows.length === 1;
-  const doomed = named.length > 0 ? named : all ? rows : [];
+  // \b НЕ РАБОТАЕТ по-русски -- см. комментарий выше.
+  const all = /(?<![а-яёa-zA-Z])вс[её](?![а-яёa-zA-Z])/i.test(q);
 
-  if (doomed.length === 0) {
-    return ['Какой именно черновик удалить? Сейчас их несколько:',
-      ...rows.slice(0, 10).map((r) => `• ${r.title.trim() || 'без темы'}`),
-      '', 'Назовите тему — или скажите «удали все черновики».'].join('\n');
-  }
+  // Без уточнений -- ПОСЛЕДНИЙ созданный (список идёт от нового к старому).
+  // Решение владельца: переспрос ради одного лишнего черновика дороже, чем
+  // изредка удалить не тот. Поэтому тема удалённого называется в ответе -- это
+  // единственный способ заметить промах, отмены у удаления нет.
+  const doomed = named.length > 0 ? named : all ? rows : rows.slice(0, 1);
+
   for (const r of doomed) await removeDraft(env, r.id);
-  return doomed.length === rows.length && rows.length > 1
-    ? `Удалил все черновики — ${doomed.length}.`
-    : `Удалено: ${doomed.map((r) => `«${r.title.trim() || 'без темы'}»`).join(', ')}.`;
+  const rest = rows.length - doomed.length;
+  if (doomed.length === rows.length && rows.length > 1) return `Удалил все черновики — ${doomed.length}.`;
+  const what = `Удалено: ${doomed.map((r) => `«${r.title.trim() || 'без темы'}»`).join(', ')}.`;
+  return rest > 0 ? `${what} Осталось ещё ${rest} — скажите «удали все черновики», если не нужны.` : what;
 }
 
 export async function askAssistant(env: Env, who: AskWho, question: string, history: AskTurn[] = []): Promise<string> {

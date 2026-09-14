@@ -6,6 +6,7 @@ import { botApp } from '../src/bot';
 import { apiRoutes } from '../src/routes';
 import { askAssistant, classifyIntent, plain } from '../src/assistant';
 import { cookie, envWith, ORG_A, stubTelegram } from './fixture';
+import { setState } from '../src/menu';
 import type { Env } from '../src/types';
 
 let restore: { mockRestore(): void } | null = null;
@@ -329,33 +330,47 @@ describe('просьба к боту не рассыпается на полпу
     expect(await tasks()).not.toContain('Удали все черновики');
   });
 
+  // Состояние ставим напрямую: какой именно вопрос задаст помощник, решает
+  // модель, а правило проверяется одно -- «предыдущая реплика кончилась
+  // вопросительным знаком».
+  const botAsked = (env: Env, question: string) => setState(env, 'boss', {
+    askAt: new Date().toISOString(),
+    ask: [{ role: 'user' as const, text: 'удали черновик' }, { role: 'assistant' as const, text: question }],
+  });
+
   it('ответ «все» на вопрос бота остаётся разговором, а не становится задачей', async () => {
     const env = await world();
-    const spy = tg();
-    await say(env, 'tg-boss', 'Азизу купить свёклу завтра');
-    await say(env, 'tg-boss', 'Азизу полить цветы в пятницу');
+    tg();
+    await botAsked(env, 'Какой именно черновик удалить?');
 
-    // Бот спрашивает, какой именно черновик удалить (их несколько, тема не названа).
-    await say(env, 'tg-boss', 'удали черновик');
-    expect(sent(spy).at(-1)!.text).toContain('Какой именно');
-
-    // Ответ на этот вопрос НЕ должен заводить задачу с темой «Все» --
-    // ровно то, на что жаловался владелец.
-    const before = await tasks();
+    // Ровно то, на что жаловался владелец: «все» становилось задачей с темой «Все».
+    const before = await drafts();
     await say(env, 'tg-boss', 'все');
-    expect(await tasks()).toEqual(before);
+    expect(await drafts()).toEqual(before);
   });
 
   it('названный человек сильнее вопроса: после переспроса «Азизу …» -- всё равно поручение', async () => {
     const env = await world();
-    const spy = tg();
-    await say(env, 'tg-boss', 'Азизу купить свёклу завтра');
-    await say(env, 'tg-boss', 'Азизу полить цветы в пятницу');
-    await say(env, 'tg-boss', 'удали черновик');
-    expect(sent(spy).at(-1)!.text).toContain('Какой именно');
+    tg();
+    await botAsked(env, 'Какой именно черновик удалить?');
 
     await say(env, 'tg-boss', 'Азизу сдать табель в понедельник');
     expect(await drafts()).toContain('Сдать табель');
+  });
+
+  it('«удали черновик» без уточнений сносит ПОСЛЕДНИЙ и называет его', async () => {
+    const env = await world();
+    const spy = tg();
+    await say(env, 'tg-boss', 'Азизу купить свёклу завтра');
+    await say(env, 'tg-boss', 'Азизу полить цветы в пятницу');
+
+    await say(env, 'tg-boss', 'удали черновик');
+
+    // Последним создан «Полить цветы» -- он и уходит; первый остаётся.
+    expect(await drafts()).toEqual(['Купить свёклу']);
+    const reply = sent(spy).at(-1)!.text;
+    expect(reply).toContain('Полить цветы');
+    expect(reply).toContain('Осталось ещё 1');
   });
 
   it('черновиков нет -- так и говорит, а не молчит и не заводит задачу', async () => {
