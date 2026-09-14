@@ -38,7 +38,7 @@ export function OrgView({ user }: { user: User }) {
     setBusy(true);
     try { await updateOrgSettings(org.id, patch); toast(done); load(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(false); }
   }
-  if (!org) return <div className="lg:p-6"><h1 className="h1">Организация</h1><p className="muted">Загрузка…</p></div>;
+  if (!org) return <div className="lg:p-6"><h1 className="h1">Пространство</h1><p className="muted">Загрузка…</p></div>;
   const days = new Set(org.work_days.split(',').map(Number));
   const pack = packs.find((p) => p.id === org.industry_pack);
   // Отделы владелец видел «сверху вниз наоборот»: список приходит с сервера
@@ -54,13 +54,13 @@ export function OrgView({ user }: { user: User }) {
 
   return (
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
-      <h1 className="h1">Организация</h1>
+      <h1 className="h1">Пространство</h1>
 
       {/* Карточки идут в .stack -- без него они склеивались без отступа друг
           на друга, и экран выглядел «криво». */}
       <div className="stack">
       <div className="card">
-        <div className="sec-title" style={{ marginTop: 0 }}>Организация</div>
+        <div className="sec-title" style={{ marginTop: 0 }}>Пространство</div>
         {owner ? (
           <form className="field" style={{ marginBottom: 0 }} onSubmit={async (e) => { e.preventDefault(); if (!name.trim() || name.trim() === org.name) return; setBusy(true); try { await renameOrg(org.id, name.trim()); toast('Переименовано'); setUser((await getMe()).user); load(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Не получилось.'); } finally { setBusy(false); } }}>
             <label className="lbl" htmlFor="org-title">Название</label>
@@ -96,7 +96,7 @@ export function OrgView({ user }: { user: User }) {
               </div>
             </>
           ) : <p className="muted">Загрузка…</p>}
-          {owner && org.join_code ? <p className="hint"><Link2 aria-hidden="true" style={{ width: 13, height: 13, verticalAlign: '-2px' }} /> Общий код организации: <b>{org.join_code}</b> — заявки по нему приходят вам.</p> : null}
+          {owner && org.join_code ? <p className="hint"><Link2 aria-hidden="true" style={{ width: 13, height: 13, verticalAlign: '-2px' }} /> Общий код пространства: <b>{org.join_code}</b> — заявки по нему приходят вам.</p> : null}
         </div>
       ) : null}
 
@@ -180,7 +180,7 @@ export function OrgView({ user }: { user: User }) {
             <div className="sec-title" style={{ marginTop: 0 }}>Сводка на день</div>
             <label className="card card-tap" style={{ display: 'flex', gap: 10, alignItems: 'center', boxShadow: 'none', background: 'var(--fill2)' }}>
               <input type="checkbox" checked={org.digest_enabled === 1} disabled={busy} onChange={(e) => save({ digest_enabled: e.target.checked ? 1 : 0 })} />
-              <span className="grow"><span className="t-title">Присылать сводку</span><span className="t-meta"><span>Задачи со сроком сегодня и черновики — каждому в организации.</span></span></span>
+              <span className="grow"><span className="t-title">Присылать сводку</span><span className="t-meta"><span>Задачи со сроком сегодня и черновики — каждому в пространстве.</span></span></span>
             </label>
             {org.digest_enabled ? (
               <label className="field" style={{ marginTop: 10, marginBottom: 0 }}><span className="lbl">Час сводки (пусто — начало рабочего дня)</span>
@@ -195,9 +195,9 @@ export function OrgView({ user }: { user: User }) {
 
           <div className="card">
             <div className="sec-title" style={{ marginTop: 0 }}>Удаление</div>
-            <p className="hint" style={{ marginTop: 0 }}>Задачи и история сохранятся, но организация исчезнет у всех её сотрудников. Для подтверждения нужно ввести её название.</p>
+            <p className="hint" style={{ marginTop: 0 }}>Задачи и история сохранятся, но пространство исчезнет у всех его участников. Для подтверждения нужно ввести её название.</p>
             <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
-              <Trash2 aria-hidden="true" style={{ width: 16, height: 16 }} />Удалить организацию
+              <Trash2 aria-hidden="true" style={{ width: 16, height: 16 }} />Удалить пространство
             </button>
           </div>
         </>
@@ -207,14 +207,14 @@ export function OrgView({ user }: { user: User }) {
       {confirmDelete ? (
         <Confirm
           title={`Удалить «${org.name}»?`}
-          text="Задачи и история сохранятся, но организация исчезнет у всех её сотрудников."
+          text="Задачи и история сохранятся, но пространство исчезнет у всех его участников."
           confirmLabel="Удалить"
           confirmWord={org.name}
           onConfirm={async () => {
             await deleteOrg(org.id);
             setUser((await getMe()).user);
             await refresh();
-            toast('Организация удалена');
+            toast('Пространство удалено');
           }}
           onClose={() => setConfirmDelete(false)}
         />

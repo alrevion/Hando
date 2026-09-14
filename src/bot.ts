@@ -90,7 +90,7 @@ async function applyInvite(env: Env, userId: string, chatId: string, code: strin
   const res = await joinByInvite(env, userId, code);
   if (!res.ok) {
     await sendMessage(env, chatId,
-      res.reason === 'already_member' ? 'Вы уже в этой организации.'
+      res.reason === 'already_member' ? 'Вы уже в этом пространстве.'
       : res.reason === 'already_pending' ? 'Заявка уже подана, ждём подтверждения.'
       : 'Ссылка не подошла. Попросите новую у того, кто приглашал.');
     return;
@@ -993,7 +993,7 @@ botApp.post('/webhook', async (c) => {
       return c.json({ ok: true });
     }
     if (st.await === 'pack') {
-      const orgDraft = st.draft ?? 'Моя организация';
+      const orgDraft = st.draft ?? 'Моё пространство';
       // «Назад» с экрана отраслей -- к категориям.
       if (text === BTN.back) {
         await show(c.env, chatId, userId, categoryScreen(orgDraft));
@@ -1012,13 +1012,13 @@ botApp.post('/webhook', async (c) => {
       }
       const orgName = orgDraft;
       if (!(await canCreateOrg(c.env, userId))) {
-        await sendMessage(c.env, chatId, 'У Вас уже много организаций. Удалите ненужную, чтобы создать новую.');
+        await sendMessage(c.env, chatId, 'У Вас уже много пространств. Удалите ненужное, чтобы создать новое.');
         await show(c.env, chatId, userId, mainScreen(myName, orgs));
         return c.json({ ok: true });
       }
       const { code, departments } = await createOrg(c.env, userId, orgName, chosen.id);
       await sendMessage(c.env, chatId, [
-        `Организация «${orgName}» создана. Вы её владелец.`,
+        `Пространство «${orgName}» создано. Вы его владелец.`,
         `Профиль: ${chosen.title}`,
         `Отделы: ${departments.join(', ')}`,
         '',
@@ -1046,7 +1046,7 @@ botApp.post('/webhook', async (c) => {
     if (!res.ok) {
       await sendMessage(c.env, chatId,
         res.reason === 'unknown_code' ? 'Код не подошёл. Проверьте у того, кто его дал.'
-        : res.reason === 'already_member' ? 'Вы уже в этой организации.'
+        : res.reason === 'already_member' ? 'Вы уже в этом пространстве.'
         : 'Заявка уже подана, ждём подтверждения.');
       await show(c.env, chatId, userId, mainScreen(myName, orgs));
       return c.json({ ok: true });
@@ -1081,12 +1081,12 @@ botApp.post('/webhook', async (c) => {
     case BTN.create:
     case BTN.createShort:
       await setState(c.env, userId, { await: 'new', screen: st.screen });
-      await sendMessage(c.env, chatId, 'Как назвать организацию?');
+      await sendMessage(c.env, chatId, 'Как назвать пространство?');
       return c.json({ ok: true });
     case BTN.join:
     case BTN.joinShort:
       await setState(c.env, userId, { await: 'join', screen: st.screen });
-      await sendMessage(c.env, chatId, 'Пришлите код организации.');
+      await sendMessage(c.env, chatId, 'Пришлите код пространства.');
       return c.json({ ok: true });
     case BTN.back:
       // «Назад» зависит от экрана: из настроек -- в организации, иначе на главный.

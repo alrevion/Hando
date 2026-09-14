@@ -19,8 +19,8 @@ import { digestAt, loadSchedule, scheduleCols, type OrgSchedule } from './schedu
 export const BTN = {
   tasks: '📋 Мои задачи',
   assigned: '📤 Мои поручения',
-  orgs: '🏢 Организации',
-  create: '➕ Создать организацию',
+  orgs: '🏢 Пространства',
+  create: '➕ Создать пространство',
   join: '🔑 Вступить по коду',
   createShort: '➕ Создать',
   joinShort: '🔑 Вступить',
@@ -154,7 +154,7 @@ export function mainScreen(name: string, orgs: OrgRow[], pending = false): Scree
       // сделал ровно то, что от него требовалось, и ждёт чужого действия.
       text: pending
         ? `${name}, заявка отправлена. Как только её подтвердят, задачи появятся здесь.`
-        : `${name}, чтобы начать — создайте организацию или вступите в существующую по коду.`,
+        : `${name}, чтобы начать — создайте пространство или вступите в существующее по коду.`,
       keyboard: kb([[{ text: BTN.create }], [{ text: BTN.join }]]),
       state: { screen: 'main' },
     };
@@ -189,7 +189,7 @@ export function orgsScreen(orgs: OrgRow[], pending = 0, canInvite = false): Scre
   if (canInvite) rows.push([{ text: BTN.invite }]);
   if (orgs.length > 0) rows.push([{ text: BTN.settings }]);
   rows.push([{ text: BTN.createShort }, { text: BTN.joinShort }], exitRow);
-  const lines = [orgs.length ? 'Ваши организации. Текущая отмечена ● — нажмите на другую, чтобы переключиться.' : 'У Вас пока нет организаций.'];
+  const lines = [orgs.length ? 'Ваши пространства. Текущее отмечено ● — нажмите на другое, чтобы переключиться.' : 'У Вас пока нет пространств.'];
   if (pending > 0) lines.push(`Заявок на вступление: ${pending}`);
   return { text: lines.join('\n'), keyboard: kb(rows), state: { screen: 'orgs' } };
 }
@@ -260,7 +260,7 @@ export function settingsScreen(prefs: NotifyPrefs, org: OrgSchedule & { name: st
   const lines = [
     `Настройки · «${org.name}»`,
     '',
-    `Уведомления: ${prefs.notify_mode === 'all' ? 'сразу из всех организаций' : 'по графику каждой организации'}`,
+    `Уведомления: ${prefs.notify_mode === 'all' ? 'сразу из всех пространств' : 'по графику каждого пространства'}`,
     `Напоминать до срока: за ${prefs.remind_before_min} мин`,
   ];
   if (isOwner) {
@@ -268,7 +268,7 @@ export function settingsScreen(prefs: NotifyPrefs, org: OrgSchedule & { name: st
       ? 'График: 24/7'
       : `График: ${org.work_start}–${org.work_end}${org.lunch_start && org.lunch_end ? `, обед ${org.lunch_start}–${org.lunch_end}` : ''}`);
     lines.push(`Сводка: ${org.digest_enabled ? `в ${digestAt(org)}` : 'выключена'}`);
-    lines.push('', 'График работы меняется в приложении: Ещё → Организация.');
+    lines.push('', 'График работы меняется в приложении: Ещё → Пространство.');
   }
   const rows: { text: string }[][] = [
     [{ text: prefs.notify_mode === 'all' ? BTN.notifySchedule : BTN.notifyAll }],

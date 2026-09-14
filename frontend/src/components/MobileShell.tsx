@@ -26,7 +26,7 @@ function initials(name: string): string {
 }
 
 const ROLE_LABEL: Record<string, string> = { creator: 'Владелец', super_admin: 'Руководитель', admin: 'Руководитель отдела', member: 'Участник' };
-const SUB_TITLE: Record<MoreSub, string> = { people: 'Люди', org: 'Организация', drafts: 'Черновики', all: 'Все задания', archive: 'Архив', notify: 'Уведомления', ask: 'Вопрос' };
+const SUB_TITLE: Record<MoreSub, string> = { people: 'Люди', org: 'Пространство', drafts: 'Черновики', all: 'Все задания', archive: 'Архив', notify: 'Уведомления', ask: 'Вопрос' };
 // Иконка экрана в шапке -- ТА ЖЕ, что у вкладки внизу и у строки в «Ещё».
 // Человек пришёл сюда по иконке и должен увидеть её же над содержимым:
 // заголовок словом отвечает «где я», иконка -- «как я сюда попал».
@@ -129,7 +129,7 @@ export function MobileShell({ user, deepLinkTask, onLinkOpened }: { user: User; 
         <div className="topbar-r">
           <span className="topbar-role">{user.position || ROLE_LABEL[user.role] || ''}</span>
           <button type="button" className="avatar" style={{ border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-            onClick={() => setProfileOpen(true)} title={user.org_name ? `${user.name} · ${user.org_name}` : user.name} aria-label="Профиль и организации">
+            onClick={() => setProfileOpen(true)} title={user.org_name ? `${user.name} · ${user.org_name}` : user.name} aria-label="Профиль и пространства">
             {initials(user.name) || '·'}
           </button>
         </div>

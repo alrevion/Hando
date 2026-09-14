@@ -30,9 +30,9 @@ export function NotifyView({ user }: { user: User }) {
     <div className="lg:h-full lg:overflow-y-auto lg:p-6">
       <h1 className="h1">Уведомления</h1>
       <div className="card">
-        <div className="sec-title" style={{ marginTop: 0 }}>Из нескольких организаций</div>
+        <div className="sec-title" style={{ marginTop: 0 }}>Из нескольких пространств</div>
         <div className="stack" style={{ gap: 6 }}>
-          {([['all', 'Сразу из всех', 'Переходы по задачам приходят сразу, ночью — утром.'], ['schedule', 'По расписанию', 'Рабочие — в рабочее время организации, семейные — когда у семьи «рабочее» время (24/7).']] as const).map(([v, t, d]) => (
+          {([['all', 'Сразу из всех', 'Переходы по задачам приходят сразу, ночью — утром.'], ['schedule', 'По расписанию', 'Рабочие — в рабочее время пространства, семейные — когда у семьи «рабочее» время (24/7).']] as const).map(([v, t, d]) => (
             <label key={v} className="card card-tap" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', boxShadow: 'none', background: 'var(--fill2)' }}>
               <input type="radio" name="mode" checked={mode === v} disabled={busy} onChange={() => { setMode(v); void save({ notify_mode: v }); }} style={{ marginTop: 3 }} />
               <span className="grow"><span className="t-title">{t}</span><span className="t-meta"><span>{d}</span></span></span>

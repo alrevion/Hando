@@ -317,7 +317,7 @@ describe('заморозка и удаление', () => {
     // его больше нет -- письмо не ушло бы никогда, и задачи просто исчезли бы
     // у человека без объяснений.
     expect(sent(spy).some((m) => m.text.includes('Вас исключили'))).toBe(true);
-    expect((await inbox()).some((n) => n.kind === 'returned' && JSON.parse(n.payload).text.includes('Удалён из организации: Азиз Каримов'))).toBe(true);
+    expect((await inbox()).some((n) => n.kind === 'returned' && JSON.parse(n.payload).text.includes('Удалён из пространства: Азиз Каримов'))).toBe(true);
     const m = await testEnv.DB.prepare('SELECT left_at FROM org_memberships WHERE org_id = ? AND user_id = ?').bind(ORG_A, 'w1').first<{ left_at: string | null }>();
     expect(m!.left_at).not.toBeNull();
     expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM tasks WHERE id='t1'").first<{ n: number }>())!.n).toBe(1);

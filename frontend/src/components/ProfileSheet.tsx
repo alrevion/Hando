@@ -20,7 +20,7 @@ const ROLE_NAME: Record<string, string> = {
 
 const JOIN_ERROR: Record<string, string> = {
   unknown_code: 'Код не подошёл. Проверьте у того, кто его дал.',
-  already_member: 'Вы уже в этой организации.',
+  already_member: 'Вы уже в этом пространстве.',
   already_pending: 'Заявка уже подана, ждём подтверждения.',
 };
 
@@ -130,7 +130,7 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
         )}
 
         {/* ---- организации ---- */}
-        <h3 className="sec-title">Организации</h3>
+        <h3 className="sec-title">Пространства</h3>
         {firstLoad && orgs.length === 0 ? <p className="muted">Загрузка…</p> : null}
         <ul className="stack">
           {orgs.map((org) => {
@@ -198,7 +198,7 @@ export function ProfileSheet({ user, onClose }: { user: User; onClose: () => voi
         {confirmDelete ? (
           <Confirm
             title={`Удалить «${confirmDelete.name}»?`}
-            text="Задачи и история сохранятся, но организация исчезнет у всех её сотрудников."
+            text="Задачи и история сохранятся, но пространство исчезнет у всех его участников."
             confirmLabel="Удалить"
             confirmWord={confirmDelete.name}
             onConfirm={async () => {

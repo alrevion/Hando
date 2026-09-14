@@ -166,7 +166,7 @@ export function PeopleView() {
       {/* Заявки выше списка: это единственное, что здесь требует решения. */}
       {pending.length > 0 ? (
         <>
-          <h2 className="sec-title" style={{ marginTop: 0 }}>Просятся в организацию</h2>
+          <h2 className="sec-title" style={{ marginTop: 0 }}>Просятся в пространство</h2>
           <ul className="stack" style={{ marginBottom: 6 }}>
             {pending.map((p) => {
               const c = choice[p.user_id] ?? { role: 'member' as Role };
@@ -244,7 +244,7 @@ export function PeopleView() {
               );
             })}
           </ul>
-          <h2 className="sec-title">В организации</h2>
+          <h2 className="sec-title">В пространстве</h2>
         </>
       ) : null}
 
@@ -252,8 +252,8 @@ export function PeopleView() {
         <p className="muted">Загрузка…</p>
       ) : rows.length === 0 ? (
         <div className="empty">
-          <b>В организации пока никого нет</b>
-          Пришлите сотруднику код организации из бота — он появится здесь.
+          <b>В пространстве пока никого нет</b>
+          Пришлите сотруднику код пространства из бота — он появится здесь.
         </div>
       ) : (
         <>
@@ -387,7 +387,7 @@ export function PeopleView() {
       {confirmAction ? (
         <Confirm
           title={
-            confirmAction.kind === 'delete' ? `Удалить ${confirmAction.user.name} из организации?`
+            confirmAction.kind === 'delete' ? `Удалить ${confirmAction.user.name} из пространства?`
               : confirmAction.kind === 'freeze' ? `Заморозить ${confirmAction.user.name}?`
               : `Разморозить ${confirmAction.user.name}?`
           }

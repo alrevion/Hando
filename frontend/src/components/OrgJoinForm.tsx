@@ -3,7 +3,7 @@ import { ApiError, createOrg, getPacks, joinOrgByCode, type OrgPack } from '../l
 
 const JOIN_ERROR: Record<string, string> = {
   unknown_code: 'Код не подошёл. Проверьте у того, кто его дал.',
-  already_member: 'Вы уже в этой организации.',
+  already_member: 'Вы уже в этом пространстве.',
   already_pending: 'Заявка уже подана, ждём подтверждения.',
 };
 
@@ -128,7 +128,7 @@ export function OrgJoinForm({ onDone, onCancel }: { onDone: (kind: 'created' | '
       ) : (
         <>
           <div className="field">
-            <label className="lbl" htmlFor="org-code">Код организации</label>
+            <label className="lbl" htmlFor="org-code">Код пространства</label>
             <input id="org-code" className="inp" autoFocus value={code} placeholder="Шесть символов" onChange={(e) => setCode(e.target.value)} />
             <p className="hint">Код даёт тот, кто вас зовёт. Или перейдите по его ссылке-приглашению в Telegram.</p>
           </div>

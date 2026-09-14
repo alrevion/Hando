@@ -31,7 +31,7 @@ export function NoOrgScreen({ user }: { user: User }) {
       <div style={{ padding: '32px 16px 40px', maxWidth: 520, margin: '0 auto', width: '100%' }}>
         <h1 className="h1">Здравствуйте, {user.name.split(' ')[0]}</h1>
         <p className="muted" style={{ marginBottom: 16 }}>
-          Hando записывает поручения голосом, напоминает и принимает работу. Чтобы начать, нужна организация — своя фирма, школа или просто семья.
+          Hando записывает поручения голосом, напоминает и принимает работу. Чтобы начать, нужно пространство — своя фирма, школа или просто семья.
         </p>
         {info ? <div role="status" className="alert alert-ok">{info}</div> : null}
         {pending.length > 0 ? (

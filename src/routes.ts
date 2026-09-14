@@ -472,7 +472,7 @@ apiRoutes.post('/tasks/dictate', async (c) => {
   // догадки по фразе. Чужой идентификатор -- отказ, а не молчаливое
   // игнорирование: иначе устаревший выбор в форме тихо уехал бы не тому.
   if (forced) {
-    if (!roster.some((p) => p.id === forced)) return c.json({ error: 'Такого человека нет в организации' }, 400);
+    if (!roster.some((p) => p.id === forced)) return c.json({ error: 'Такого человека нет в пространстве' }, 400);
     draft.assigneeIds = [forced];
   }
   if (priorityOverride) draft.priority = priorityOverride;
@@ -585,7 +585,7 @@ async function applyDraftEdits(
     const ids = (b.assignee_ids as unknown[]).map(String);
     // Только те, кому этот человек вправе поручать (дерево): чужой id -- отказ.
     if (!(await canAssign(c.env, c.get('orgId'), c.get('userId'), c.get('role'), ids))) {
-      return { error: 'Такого человека нет в организации' };
+      return { error: 'Такого человека нет в пространстве' };
     }
     patch.assigneeIds = [...new Set(ids)];
   }
@@ -847,7 +847,7 @@ apiRoutes.get('/org/positions', async (c) => {
 });
 
 apiRoutes.post('/orgs', async (c) => {
-  if (!(await canCreateOrg(c.env, c.get('userId')))) return c.json({ error: 'Слишком много организаций', code: 'ORG_CAP' }, 429);
+  if (!(await canCreateOrg(c.env, c.get('userId')))) return c.json({ error: 'Слишком много пространств', code: 'ORG_CAP' }, 429);
   const { name, pack } = await c.req.json<{ name?: string; pack?: string }>().catch(() => ({}) as Record<string, undefined>);
   if (!name?.trim()) return c.json({ error: 'name required' }, 400);
   const { orgId, code } = await createOrg(c.env, c.get('userId'), name.trim(), pack ?? 'generic');
@@ -1346,7 +1346,7 @@ apiRoutes.delete('/orgs/:orgId/members/:userId', requireRole('admin', 'super_adm
 
   // История остаётся (иначе рассыпается аналитика); открытые поручения --
   // авторам с кнопками переназначения, ДО отзыва: очередь проверяет членство.
-  await returnOpenTasks(c.env, orgId, userId, c.get('userId'), 'Удалён из организации');
+  await returnOpenTasks(c.env, orgId, userId, c.get('userId'), 'Удалён из пространства');
   // Человеку сообщаем САМИ, а не через очередь: очередь проверяет членство при
   // отправке, а его больше нет -- письмо никогда бы не ушло. Молчание тут
   // хуже всего: задачи просто исчезают, и человек думает, что сломалось.
@@ -1354,7 +1354,7 @@ apiRoutes.delete('/orgs/:orgId/members/:userId', requireRole('admin', 'super_adm
   const org = await c.env.DB.prepare('SELECT name FROM orgs WHERE id = ?').bind(orgId).first<{ name: string }>();
   if (gone?.telegram_user_id) {
     await sendMessage(c.env, gone.telegram_user_id,
-      `Вас исключили из «${org?.name ?? 'организации'}». Её задачи больше не видны, история сохранена. Если это ошибка -- напишите тому, кто вас приглашал.`);
+      `Вас исключили из «${org?.name ?? 'пространства'}». Его задачи больше не видны, история сохранена. Если это ошибка -- напишите тому, кто вас приглашал.`);
   }
   await drainOutbox(c.env);
   await c.env.DB.prepare('UPDATE org_memberships SET left_at = ? WHERE org_id = ? AND user_id = ? AND left_at IS NULL')
