@@ -1335,13 +1335,27 @@ botApp.post('/webhook', async (c) => {
   }
 
   const named = matchPeople(phrase, roster).ids.length > 0;
-  if (await classifyIntent(c.env, phrase, named) === 'ask') {
+
+  // Разговор живёт двадцать минут. Вчерашние реплики -- не контекст, а помеха:
+  // они меняют смысл сегодняшнего вопроса и закрывают ему память ответов,
+  // потому что продолжение диалога из общей памяти брать нельзя.
+  const fresh = st.askAt ? Date.now() - Date.parse(st.askAt) < 20 * 60 * 1000 : false;
+  const history = fresh ? (st.ask ?? []) : [];
+
+  // ОТВЕТ НА ВОПРОС БОТА -- продолжение разговора, а не новая фраза.
+  //
+  // Бот спросил «какие именно?», человек ответил «все» -- и это становилось
+  // задачей с темой «Все». Классификатор смотрит на одну фразу и не знает, что
+  // её у человека только что спросили; сама по себе «все» на поручение и
+  // правда похожа больше, чем на вопрос.
+  //
+  // Названный человек отменяет правило: «Азизу подготовить отчёт» -- поручение,
+  // даже если бот перед этим что-то спрашивал.
+  const lastSaid = history.at(-1);
+  const answering = !named && lastSaid?.role === 'assistant' && /\?\s*$/.test(lastSaid.text.trim());
+
+  if (answering || await classifyIntent(c.env, phrase, named) === 'ask') {
     const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
-    // Разговор живёт двадцать минут. Вчерашние реплики -- не контекст, а помеха:
-    // они меняют смысл сегодняшнего вопроса и закрывают ему память ответов,
-    // потому что продолжение диалога из общей памяти брать нельзя.
-    const fresh = st.askAt ? Date.now() - Date.parse(st.askAt) < 20 * 60 * 1000 : false;
-    const history = fresh ? (st.ask ?? []) : [];
     const answer = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
     await sendMessage(c.env, chat, answer, { inline_keyboard: [[{ text: '📌 Это поручение', callback_data: 'as_task' }]] });
     await setState(c.env, userId, {
@@ -1352,6 +1366,28 @@ botApp.post('/webhook', async (c) => {
   }
 
   // ------------------------------------------------ новый черновик
+
+  // ОТВЕТ НА «КОГО ИМЕННО?»: разбираем ЗАПОМНЕННУЮ фразу, а адресата берём из
+  // ответа. Так «Азизу подготовить отчёт» + «Каримов» даёт поручение целиком,
+  // а не черновик с темой «Каримов».
+  const whomFresh = st.whomAt ? Date.now() - Date.parse(st.whomAt) < 20 * 60 * 1000 : false;
+  const clarified = whomFresh && st.whom ? matchPeople(phrase, roster) : null;
+  if (st.whom && clarified && clarified.ids.length === 1 && clarified.ambiguous.length === 0) {
+    // Разбираем с СОКРАЩЁННЫМ списком людей: двойника в нём уже нет, и потому
+    // «Азизу» в старой фразе теперь однозначен. Иначе разбор снова упёрся бы в
+    // ту же неоднозначность и по-честному вернул бы ПУСТУЮ тему (parse.ts:543).
+    //
+    // Оставляем и тех, кого фраза назвала однозначно: у рассылки на двоих
+    // второй адресат не должен пропасть из-за чужого тёзки.
+    const keep = new Set([...matchPeople(st.whom, roster).ids, ...clarified.ids]);
+    const narrowed = roster.filter((p) => keep.has(p.id));
+    const back = await parseTask(c.env, st.whom, narrowed, who.userId, tz, new Date(), org?.industry_pack, dayEnd(sched), weekEndDay(sched));
+    await setState(c.env, userId, { ...st, whom: undefined, whomAt: undefined });
+    const row = await saveDraft(c.env, who, { ...back, assigneeIds: back.assigneeIds.length ? back.assigneeIds : clarified.ids, ambiguous: [] }, st.whom, media ? [media] : []);
+    await renderDraft(c.env, row, chat, tz);
+    return c.json({ ok: true });
+  }
+
   const draft = await parseTask(c.env, phrase, roster, who.userId, tz, new Date(), org?.industry_pack, dayEnd(sched), weekEndDay(sched));
 
   // Черновик БЕЗ ТЕМЫ ждёт ответа на свой же вопрос «чего это касается?».
@@ -1375,8 +1411,11 @@ botApp.post('/webhook', async (c) => {
   }
 
   // Неоднозначное имя -- ПЕРЕСПРОС, а не догадка. Поручение, ушедшее не тому,
-  // дороже одного вопроса.
+  // дороже одного вопроса. Фраза при этом ЗАПОМИНАЕТСЯ: раньше она пропадала
+  // целиком, и на ответ «Каримов» бот заводил черновик с темой «Каримов», а
+  // продиктованное поручение приходилось наговаривать заново.
   if (draft.ambiguous.length > 0) {
+    await setState(c.env, userId, { ...st, whom: phrase, whomAt: nowIso() });
     await sendMessage(c.env, chat, `Кого именно вы имели в виду: «${draft.ambiguous.join('», «')}»? Уточните фамилию.`);
     return c.json({ ok: true });
   }

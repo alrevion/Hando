@@ -9,6 +9,7 @@ import { loadSchedule } from './schedule';
 import { applyTransition } from './transition';
 import { drainOutbox } from './outbox';
 import { recallAnswer, rememberAnswer } from './semantic';
+import { listDrafts, removeDraft } from './drafts';
 import type { Task } from './types';
 
 const GROQ = 'https://api.groq.com/openai/v1';
@@ -303,7 +304,51 @@ function isGeneral(answer: string, tasks: TaskLine[]): boolean {
   return true;
 }
 
+/** Просьба про ЧЕРНОВИКИ, а не про задачи: «удали все черновики». */
+const DRAFTS_ASK = /черновик/i;
+
+/**
+ * Удаление черновиков -- БЕЗ модели и без переспроса.
+ *
+ * Модели черновики не показывают вовсе: в её контексте только задачи. Поэтому
+ * на «удали все черновики» она честно не находила, что удалять, и спрашивала
+ * «какие именно?» -- а ответ «все» классификатор уже разбирал как новую фразу
+ * и заводил из него задачу с темой «Все».
+ *
+ * Здесь просьба выполняется сразу: «все черновики» -- однозначная фраза, и
+ * спрашивать по ней нечего.
+ */
+async function deleteDrafts(env: Env, who: AskWho, question: string): Promise<string | null> {
+  if (!DELETE_ASK.test(question) || !DRAFTS_ASK.test(question)) return null;
+  const rows = await listDrafts(env, who.userId, who.orgId);
+  if (rows.length === 0) return 'Черновиков нет — удалять нечего.';
+
+  const q = question.toLowerCase();
+  // Названный дословно -- только он. «Удали черновик про цветы» не должно
+  // сносить остальные семь.
+  const named = rows.filter((r) => r.title.trim().length >= 4 && q.includes(r.title.toLowerCase()));
+  // \b НЕ РАБОТАЕТ по-русски: в JS граница слова определена по [A-Za-z0-9_],
+  // и между «е» и пробелом её нет -- /\bвсе\b/ не совпадает никогда. Границу
+  // задаём сами, как в EDGE ниже.
+  const all = /(?<![а-яёa-zA-Z])вс[её](?![а-яёa-zA-Z])/i.test(q) || rows.length === 1;
+  const doomed = named.length > 0 ? named : all ? rows : [];
+
+  if (doomed.length === 0) {
+    return ['Какой именно черновик удалить? Сейчас их несколько:',
+      ...rows.slice(0, 10).map((r) => `• ${r.title.trim() || 'без темы'}`),
+      '', 'Назовите тему — или скажите «удали все черновики».'].join('\n');
+  }
+  for (const r of doomed) await removeDraft(env, r.id);
+  return doomed.length === rows.length && rows.length > 1
+    ? `Удалил все черновики — ${doomed.length}.`
+    : `Удалено: ${doomed.map((r) => `«${r.title.trim() || 'без темы'}»`).join(', ')}.`;
+}
+
 export async function askAssistant(env: Env, who: AskWho, question: string, history: AskTurn[] = []): Promise<string> {
+  // Черновики -- раньше всего остального: они не задачи, модель их не видит.
+  const drafts = await deleteDrafts(env, who, question);
+  if (drafts) return drafts;
+
   const tasks = await myTasks(env, who);
 
   // ПАМЯТЬ ПО СМЫСЛУ. Вопрос про устройство Hando один и тот же у всех, сколько

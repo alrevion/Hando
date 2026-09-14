@@ -306,3 +306,95 @@ describe('обучение: /start', () => {
     expect(sent(spy).filter((m) => m.text.startsWith('Что умеет Hando'))).toHaveLength(2);
   });
 });
+
+describe('просьба к боту не рассыпается на полпути', () => {
+  const drafts = async () =>
+    (await testEnv.DB.prepare("SELECT title FROM drafts WHERE author_id = 'boss'").all<{ title: string }>()).results.map((r) => r.title);
+  const tasks = async () =>
+    (await testEnv.DB.prepare("SELECT title FROM tasks WHERE author_id = 'boss'").all<{ title: string }>()).results.map((r) => r.title);
+
+  it('«удали все черновики» выполняется сразу, без переспроса', async () => {
+    const env = await world();
+    const spy = tg();
+    // Два черновика: наговорены, но не подтверждены.
+    await say(env, 'tg-boss', 'Азизу купить свёклу завтра');
+    await say(env, 'tg-boss', 'Азизу полить цветы в пятницу');
+    expect(await drafts()).toHaveLength(2);
+
+    await say(env, 'tg-boss', 'удали все черновики');
+
+    expect(await drafts()).toHaveLength(0);
+    expect(sent(spy).at(-1)!.text).toContain('Удалил все черновики');
+    // И ГЛАВНОЕ: просьба не превратилась в задачу «Удали все черновики».
+    expect(await tasks()).not.toContain('Удали все черновики');
+  });
+
+  it('ответ «все» на вопрос бота остаётся разговором, а не становится задачей', async () => {
+    const env = await world();
+    const spy = tg();
+    await say(env, 'tg-boss', 'Азизу купить свёклу завтра');
+    await say(env, 'tg-boss', 'Азизу полить цветы в пятницу');
+
+    // Бот спрашивает, какой именно черновик удалить (их несколько, тема не названа).
+    await say(env, 'tg-boss', 'удали черновик');
+    expect(sent(spy).at(-1)!.text).toContain('Какой именно');
+
+    // Ответ на этот вопрос НЕ должен заводить задачу с темой «Все» --
+    // ровно то, на что жаловался владелец.
+    const before = await tasks();
+    await say(env, 'tg-boss', 'все');
+    expect(await tasks()).toEqual(before);
+  });
+
+  it('названный человек сильнее вопроса: после переспроса «Азизу …» -- всё равно поручение', async () => {
+    const env = await world();
+    const spy = tg();
+    await say(env, 'tg-boss', 'Азизу купить свёклу завтра');
+    await say(env, 'tg-boss', 'Азизу полить цветы в пятницу');
+    await say(env, 'tg-boss', 'удали черновик');
+    expect(sent(spy).at(-1)!.text).toContain('Какой именно');
+
+    await say(env, 'tg-boss', 'Азизу сдать табель в понедельник');
+    expect(await drafts()).toContain('Сдать табель');
+  });
+
+  it('черновиков нет -- так и говорит, а не молчит и не заводит задачу', async () => {
+    const env = await world();
+    const spy = tg();
+    await say(env, 'tg-boss', 'удали все черновики');
+    expect(sent(spy).at(-1)!.text).toContain('Черновиков нет');
+    expect(await drafts()).toHaveLength(0);
+  });
+});
+
+describe('переспрос «кого именно?» не съедает фразу', () => {
+  // Два Азиза: имени мало, нужна фамилия. Ровно тот случай, ради которого
+  // переспрос и написан.
+  const twoAziz = () => envWith({
+    users: [
+      { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
+      { id: 'a1', phone: '+2', name: 'Азиз Каримов', role: 'member' },
+      { id: 'a2', phone: '+3', name: 'Азиз Юсупов', role: 'member' },
+    ],
+    memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'a1' }, { project_id: 'p1', user_id: 'a2' }],
+    projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+    tasks: [],
+  });
+
+  it('ответ фамилией достраивает ЗАПОМНЕННУЮ фразу, а не заводит черновик с темой «Каримов»', async () => {
+    const env = await twoAziz();
+    const spy = tg();
+    await say(env, 'tg-boss', 'Азизу подготовить отчёт по кассе до пятницы');
+    expect(sent(spy).at(-1)!.text).toContain('Кого именно');
+
+    await say(env, 'tg-boss', 'Каримов');
+
+    const rows = (await testEnv.DB.prepare("SELECT title, assignee_ids FROM drafts WHERE author_id = 'boss'")
+      .all<{ title: string; assignee_ids: string }>()).results;
+    expect(rows).toHaveLength(1);
+    // Тема -- из ПЕРВОЙ фразы, адресат -- из ответа.
+    expect(rows[0].title).toContain('отчёт');
+    expect(rows[0].title).not.toBe('Каримов');
+    expect(JSON.parse(rows[0].assignee_ids)).toEqual(['a1']);
+  });
+});
