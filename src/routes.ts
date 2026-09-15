@@ -8,7 +8,7 @@ import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESS
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
-import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, reassignTask, resetAssignees, startWork, transitionAssignee, type Assignee, type AssigneeState, type TaskKind } from './assignees';
+import { buildAssignees, canTransition, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, reassignTask, resetAssignees, startWork, transitionAssignee, type Assignee, type AssigneeState, type TaskKind, initialStatus } from './assignees';
 import { drainOutbox } from './outbox';
 import { blockingPredecessor, commandTaskByPhrase, setTaskDeadline } from './intake';
 import { toggleItem } from './checklist';
@@ -1496,9 +1496,10 @@ apiRoutes.post('/projects/:projectId/tasks', requireProjectAccess('project'), as
   await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO tasks (id, org_id, project_id, title, description, kind, author_id, source, status, deadline, content_blocks, priority, depends_on_task_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
-    ).bind(id, orgId, projectId, b.title, b.description ?? '', kind, c.get('userId'), 'ui', b.deadline ?? null, b.content_blocks ?? null, priority, dependency.value),
-    ...buildAssignees(c.env, created, assignees, b.deadline ?? null),
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(id, orgId, projectId, b.title, b.description ?? '', kind, c.get('userId'), 'ui',
+      initialStatus(kind, assignees, c.get('userId')), b.deadline ?? null, b.content_blocks ?? null, priority, dependency.value),
+    ...buildAssignees(c.env, created, assignees, b.deadline ?? null, c.get('userId')),
     // Форма и порядок бинда совпадают с logEvent (db.ts) намеренно: INSERT в
     // events существует в трёх местах, и расхождение здесь читалось бы как
     // «в этой таблице колонки означают разное в зависимости от вызывающего».

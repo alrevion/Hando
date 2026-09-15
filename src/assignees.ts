@@ -165,15 +165,16 @@ async function respawnRepeating(env: Env, task: Task, actorId: string): Promise<
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_min, checklist, author_id, kind, source, status, priority, deadline)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'repeat', 'todo', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'repeat', ?, ?, ?)`,
     ).bind(id, fresh.org_id, fresh.project_id, fresh.title, fresh.description ?? '', minutes,
       // Галочки сбрасываются: список покупок на следующую неделю пустой.
-      resetChecklist(fresh.checklist), fresh.author_id, fresh.kind, fresh.priority, deadline),
+      resetChecklist(fresh.checklist), fresh.author_id, fresh.kind,
+      initialStatus(fresh.kind as TaskKind, live.map((a) => a.user_id), fresh.author_id), fresh.priority, deadline),
     env.DB.prepare(
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, 'task', ?, 'created', 'повтор', NULL, ?)`,
     ).bind(uuid(), actorId, fresh.org_id, id, nowIso()),
-    ...buildAssignees(env, { id, org_id: fresh.org_id }, live.map((a) => a.user_id), deadline),
+    ...buildAssignees(env, { id, org_id: fresh.org_id, kind: fresh.kind }, live.map((a) => a.user_id), deadline, fresh.author_id),
   ]);
 
   // Карточка новому кругу -- каждому, кроме того, кто её сам и закрыл.
@@ -241,12 +242,41 @@ export async function myAssignee(env: Env, taskId: string, userId: string, orgId
 }
 
 /** Операторы вставки адресатов -- отдаются вызывающему, чтобы лечь в его batch. */
-export function buildAssignees(env: Env, task: { id: string; org_id: string }, userIds: string[], dueAt: string | null) {
-  return userIds.map((userId) =>
-    env.DB.prepare(
-      'INSERT INTO task_assignees (id, task_id, user_id, org_id, state, due_at) VALUES (?, ?, ?, ?, ?, ?)',
-    ).bind(uuid(), task.id, userId, task.org_id, 'pending', dueAt),
-  );
+/**
+ * С чего начинается строка адресата. Поручил САМ СЕБЕ -- строка рождается
+ * принятой: принимать своё незачем, человек только что сам это и продиктовал.
+ *
+ * Раньше такая строка рождалась «не принято», и отсюда тянулась цепочка:
+ * напоминание раз в час «примите» (для задачи себе его текст пришлось
+ * переписывать в «Ещё не начато»), кнопка «Принять» у своей же задачи и
+ * «🚀 Принято, кто: Яков» -- автору о нём самом. Лечить надо было не текст, а
+ * начальное состояние: у принятой строки нет ни повода для напоминания, ни
+ * перехода, о котором извещать.
+ *
+ * Правило построчное: в «мне и Азизу» принята только своя строка, Азиз
+ * принимает сам.
+ *
+ * Рассылка «ознакомиться» (ack) -- исключение: там принятие и есть закрытие, и
+ * родиться принятой значило бы родиться закрытой.
+ */
+export function initialState(userId: string, authorId: string | null | undefined, kind: TaskKind): AssigneeState {
+  return kind !== 'ack' && authorId && userId === authorId ? 'accepted' : 'pending';
+}
+
+/** Статус новой задачи -- свёртка начальных строк, а не константа 'todo'. */
+export function initialStatus(kind: TaskKind, userIds: string[], authorId: string | null | undefined): TaskStatus {
+  return rollup(kind, userIds.map((u) => initialState(u, authorId, kind)));
+}
+
+export function buildAssignees(env: Env, task: { id: string; org_id: string; kind?: string | null }, userIds: string[], dueAt: string | null, authorId: string | null | undefined) {
+  const now = nowIso();
+  const kind = (task.kind ?? 'single') as TaskKind;
+  return userIds.map((userId) => {
+    const state = initialState(userId, authorId, kind);
+    return env.DB.prepare(
+      'INSERT INTO task_assignees (id, task_id, user_id, org_id, state, due_at, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).bind(uuid(), task.id, userId, task.org_id, state, dueAt, state === 'accepted' ? now : null);
+  });
 }
 
 /** Стирает журнал напоминаний задачи: у нового срока свои напоминания. */

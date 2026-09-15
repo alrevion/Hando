@@ -178,3 +178,50 @@ describe('«каждый месяц» -- календарный, а не плю�
     expect(next.toISOString()).toBe('2026-09-17T10:00:00.000Z');
   });
 });
+
+// Жалоба владельца: «Я же создал для самого себя задачу, напоминание. Зачем
+// мне принимать?» Бот слал раз в час «Ещё не начато» с кнопкой, а после
+// нажатия -- «🚀 Принято, кто: Яков», то есть ему о нём самом.
+describe('задача СЕБЕ рождается принятой', () => {
+  const world = () => envWith({
+    users: [
+      { id: 'boss', phone: '+1', name: 'Тимур Абдуллаев', role: 'creator' },
+      { id: 'w1', phone: '+2', name: 'Азиз Каримов', role: 'member' },
+    ],
+    memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'w1' }],
+    projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+    tasks: [],
+  });
+  const say = (env: Env, text: string) =>
+    botApp.request('/webhook', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'tg-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: { chat: { id: 'tg-boss', type: 'private' }, from: { id: 'tg-boss', first_name: 'Т' }, text } }) }, env);
+  const confirm = async (env: Env) => {
+    const id = (await testEnv.DB.prepare('SELECT id FROM drafts ORDER BY created_at DESC LIMIT 1').first<{ id: string }>())!.id;
+    await botApp.request('/webhook', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'tg-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query: { id: 'cb', from: { id: 'tg-boss', first_name: 'Т' }, data: `dc:${id}`, message: { chat: { id: 'tg-boss' }, message_id: 1 } } }) }, env);
+  };
+  const rows = async () => (await testEnv.DB.prepare(
+    `SELECT t.title, t.status, a.user_id, a.state, a.accepted_at FROM tasks t JOIN task_assignees a ON a.task_id = t.id ORDER BY a.user_id`,
+  ).all<{ title: string; status: string; user_id: string; state: string; accepted_at: string | null }>()).results;
+
+  it('своя строка принята сразу, статус задачи -- свёртка, а не «todo»', async () => {
+    const env = await world();
+    restore = stubTelegram();
+    await say(env, 'Мне оплатить Ucell каждого 18 числа');
+    await confirm(env);
+
+    const [r] = await rows();
+    expect(r).toMatchObject({ user_id: 'boss', state: 'accepted', status: 'in_progress' });
+    expect(r.accepted_at).toBeTruthy();
+  });
+
+  it('поручение ДРУГОМУ по-прежнему ждёт его «Принять»', async () => {
+    const env = await world();
+    restore = stubTelegram();
+    await say(env, 'Азизу оплатить Ucell каждого 18 числа');
+    await confirm(env);
+
+    const [r] = await rows();
+    expect(r).toMatchObject({ user_id: 'w1', state: 'pending', status: 'todo' });
+  });
+});

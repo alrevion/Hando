@@ -35,10 +35,16 @@ export function assigneeKey(task: Task): string {
  */
 export type Stage = 'pending' | 'accepted' | 'started' | 'done' | 'other';
 
-export function stageOf(a: Assignee | undefined): Stage {
+export function stageOf(a: Assignee | undefined, authorId?: string | null): Stage {
   if (!a) return 'other';
   if (a.state === 'pending') return 'pending';
-  if (a.state === 'accepted' || a.state === 'rejected') return a.started_at ? 'started' : 'accepted';
+  if (a.state === 'accepted' || a.state === 'rejected') {
+    if (a.started_at) return 'started';
+    // Задача СЕБЕ рождается принятой: принимать своё незачем. Но «Принято» у
+    // неё читалось бы как «принял сам у себя» -- поэтому до начала работы она
+    // стоит там же, где любое несделанное, в «К выполнению».
+    return a.state === 'accepted' && authorId && a.user_id === authorId ? 'pending' : 'accepted';
+  }
   if (a.state === 'done') return 'done';
   return 'other';
 }

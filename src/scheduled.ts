@@ -149,7 +149,11 @@ export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
      JOIN orgs o ON o.id = t.org_id
      JOIN projects p ON p.id = t.project_id
      WHERE a.state = 'pending' AND p.archived_at IS NULL AND o.archived_at IS NULL
-       AND t.status NOT IN ('archived','done')`,
+       AND t.status NOT IN ('archived','done')
+       -- Своя строка «не принято» не напоминается: принимать своё незачем.
+       -- Новые такие строки не рождаются вовсе (initialState), это страховка
+       -- от любой будущей двери, которая заведёт строку в обход неё.
+       AND (t.author_id IS NULL OR a.user_id <> t.author_id)`,
   ).all<Row>();
   const log = await sentLog(env, results.map((r) => r.id));
   const writes: D1PreparedStatement[] = [];
@@ -163,12 +167,8 @@ export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
     // Останавливает это сам человек -- «Принять», «Не успею» или «Отказать»:
     // любое из трёх уводит строку из pending, и выборка её больше не видит.
     if (working(r, now) && dueNow(log, r.id, 'not_accepted', HOURLY_MS, now)) {
-      // Задача себе: «примите или откажитесь -- автор ждёт» здесь ложь, автор
-      // и есть получатель. Повод остаётся тот же -- час прошёл, а работа не
-      // начата, -- но называется своим именем.
-      const own = r.author_id === r.user_id;
       writes.push(queueReminder(env, r,
-        `⏳ ${own ? 'Ещё не начато' : 'Не принято'}: «${r.title}»${r.due_at ? `\nСрок: ${formatWhen(r.due_at, r.timezone)}` : ''}\n${own ? 'Возьмите в работу, когда начнёте.' : 'Примите или откажитесь — автор ждёт.'}`,
+        `⏳ Не принято: «${r.title}»${r.due_at ? `\nСрок: ${formatWhen(r.due_at, r.timezone)}` : ''}\nПримите или откажитесь — автор ждёт.`,
         'not_accepted', { gated: true, buttons: assigneeButtons({ id: r.task_id, kind: r.kind, author_id: r.author_id }, r.user_id) }));
       writes.push(mark(env, r.id, 'not_accepted', now));
     }

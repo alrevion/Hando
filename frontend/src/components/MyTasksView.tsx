@@ -46,7 +46,7 @@ export function MyTasksView({ user }: { user: User }) {
   // ЧЕТЫРЕ этапа, а не три: «принял» -- это согласие, «в работе» -- что человек
   // за неё сел. Разные вещи, и владелец попросил их развести, согласившись на
   // лишнее нажатие.
-  const at = (stage: string) => sort(mine.filter(({ task }) => stageOf(myRow(task, user.id)) === stage));
+  const at = (stage: string) => sort(mine.filter(({ task }) => stageOf(myRow(task, user.id), task.author_id) === stage));
   const sections: Section[] = [
     { key: 'todo', title: 'К выполнению', rows: at('pending') },
     { key: 'accepted', title: 'Принято', rows: at('accepted') },
@@ -115,17 +115,19 @@ export function MyTasksView({ user }: { user: User }) {
             {visible.map(({ task, projectName }) => {
               const dep = task.depends_on_task_id ? byId.get(task.depends_on_task_id) : undefined;
               const blockedBy = dep && dep.status !== 'done' && dep.status !== 'archived' ? dep.title : undefined;
-              const stage = stageOf(myRow(task, user.id));
-              // Стрелка ведёт по цепочке: принять -> начал -> сдать.
-              const next = stage === 'pending'
+              const stage = stageOf(myRow(task, user.id), task.author_id);
+              // Задача себе: «не успею» и «отказать» адресованы автору, а он
+              // здесь тот же человек -- отпрашиваться не у кого. И принимать
+              // её не нужно: она рождается принятой.
+              const selfTask = task.author_id === user.id;
+              // Стрелка ведёт по цепочке: принять -> начал -> сдать. У задачи
+              // себе шага «принять» нет: из «К выполнению» -- сразу в работу.
+              const next = stage === 'pending' && !selfTask
                 ? { to: 'in_progress' as const, label: 'Принять', done: 'Принято' }
-                : stage === 'accepted'
+                : stage === 'accepted' || stage === 'pending'
                   ? { to: 'started' as const, label: 'Взять в работу', done: 'В работе' }
                   : { to: 'done' as const, label: 'Сдать на проверку', done: 'Сдано' };
               const isBusy = busy.has(task.id);
-              // Задача себе: «не успею» и «отказать» адресованы автору, а он
-              // здесь тот же человек -- отпрашиваться не у кого.
-              const selfTask = task.author_id === user.id;
               return (
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
                   <div className="card-head">
@@ -139,7 +141,7 @@ export function MyTasksView({ user }: { user: User }) {
                         каждой карточке, и повторять его словами в каждой строке
                         -- шум. Смысл читается из этапа, на котором стоит задача. */}
                     {current.key !== 'review' ? (
-                      <button type="button" className="btn-icon is-accent" disabled={isBusy || (stage === 'pending' && !!blockedBy)}
+                      <button type="button" className="btn-icon is-accent" disabled={isBusy || (next.to === 'started' && !!blockedBy)}
                         aria-label={next.label} title={next.label}
                         onClick={() => act(task, () => moveTask(task.id, next.to), next.done)}>
                         <ArrowRight aria-hidden="true" />

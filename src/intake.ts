@@ -8,7 +8,7 @@ import type { Env, Task } from './types';
 import { nowIso, uuid } from './db';
 import { logEvent } from './db';
 import { formatWhen, matchDeadline, matchPriority, type Draft } from './parse';
-import { buildAssignees, clearReminders, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, startWork, transitionAssignee, type Assignee } from './assignees';
+import { buildAssignees, clearReminders, initialStatus, type TaskKind, confirmWork, declineAssignee, lateAssignee, loadAssignees, myAssignee, startWork, transitionAssignee, type Assignee } from './assignees';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
 import { storeByFileId, type Media } from './media';
 import { ensureDefaultProject } from './signup';
@@ -51,21 +51,22 @@ export async function createFromDraft(
   const writes = [
     env.DB.prepare(
       `INSERT INTO tasks (id, org_id, project_id, title, description, repeat_min, checklist, author_id, kind, source, status, priority, deadline, depends_on_task_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(taskId, who.orgId, projectId, draft.title, description ?? '',
       draft.repeatMin ?? null,
       draft.checklist?.length ? JSON.stringify(draft.checklist.map((t) => ({ t, d: null }))) : null,
       who.userId, draft.kind,
       // source различает разбор паттернами и моделью -- это и есть замер для
       // порога-гейта шага 4b: сколько фраз обошлось без обращения к сети.
-      media.some((m) => m.hasAudio) ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot', draft.priority, draft.deadline,
+      media.some((m) => m.hasAudio) ? 'voice' : draft.source === 'llm' ? 'bot_llm' : 'bot',
+      initialStatus(draft.kind as TaskKind, draft.assigneeIds, who.userId), draft.priority, draft.deadline,
       // Предшественник проверен при подтверждении черновика; здесь только перенос.
       draft.dependsOn ?? null),
     env.DB.prepare(
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(uuid(), who.userId, who.orgId, 'task', taskId, 'created', rawPhrase.slice(0, 500), null, now),
-    ...buildAssignees(env, task, draft.assigneeIds, draft.deadline),
+    ...buildAssignees(env, task, draft.assigneeIds, draft.deadline, who.userId),
   ];
 
   // Уведомление каждому адресату, кроме самого автора: он только что это и

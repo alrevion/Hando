@@ -107,17 +107,14 @@ describe('матрица напоминаний: дозировка', () => {
     expect(q.find((n) => n.kind === 'author_not_accepted')!.p.keyboard.flat().map((b) => b.text)).toEqual(['👤 Переназначить', '📱 Открыть']);
   });
 
-  it('«не принято» по задаче СЕБЕ -- другой текст и одна кнопка', async () => {
+  it('«не принято» по задаче СЕБЕ не напоминается вовсе: принимать своё незачем', async () => {
     const env = await world(at('17:00').toISOString());
-    // Автор и исполнитель -- один человек: отпрашиваться не у кого.
+    // Строка «не принято» у задачи себе -- так рождались задачи до правки.
+    // Миграция 0032 их переводит, но напоминание обязано молчать и без неё.
     await testEnv.DB.prepare("UPDATE tasks SET author_id = 'w1' WHERE id = 't1'").run();
     await createdAgo(120);
     await remindNotAccepted(env, NOW);
-    const n = (await queued()).find((x) => x.kind === 'not_accepted')!;
-    expect(n.p.text).toContain('Ещё не начато: «Подготовить отчёт»');
-    expect(n.p.text).toContain('Возьмите в работу, когда начнёте.');
-    expect(n.p.text).not.toContain('автор ждёт');
-    expect(n.p.keyboard.flat().map((b) => b.text)).toEqual(['✅ Принять', '📱 Открыть']);
+    expect((await queued()).filter((x) => x.kind === 'not_accepted')).toHaveLength(0);
   });
 
   it('«не принято» -- КАЖДЫЙ час, даже когда срок не сегодня и когда его нет', async () => {
