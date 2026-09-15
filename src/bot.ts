@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import type { Env, Role, Task } from './types';
 import { nowIso } from './db';
 import { confirmWork, myAssignee, startWork, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
-import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, sendTyping, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
+import { answerCallbackQuery, deleteMessage, editMessageReplyMarkup, sendMessage, sendTyping, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
 import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, hasPendingJoin, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
@@ -1301,7 +1301,30 @@ botApp.post('/webhook', async (c) => {
     // не делал, а без знаменателя метрика точности не считается.
     if (Object.keys(patch).length > 0) await logMiss(c.env, who.userId, who.orgId);
     if (st.await === 'fix') await setState(c.env, userId, { ...st, await: undefined, fix: undefined });
-    if (updated) await renderDraft(c.env, updated, chat, tz);
+
+    // НЕ ПОНЯЛИ -- так и говорим. Раньше карточка молча перерисовывалась той же,
+    // и человек не знал, дошла ли поправка вообще.
+    if (Object.keys(patch).length === 0) {
+      await sendMessage(c.env, chat, 'Не понял, что поправить. Скажите, например: «не Азизу, а Беку», «срок вторник», «в содержании не USEL, а Ucell».');
+      return c.json({ ok: true });
+    }
+
+    // Поправка пришла ОТДЕЛЬНЫМ сообщением -- значит, человек смотрит в НИЗ
+    // чата, а не на карточку выше. Правка на месте была невидима: карточка
+    // менялась где-то наверху, а внизу -- тишина, и выглядело так, будто бот не
+    // ответил вовсе (владелец: «отправил сообщение, а бот не отвечает» -- хотя
+    // тема уже была исправлена). Поэтому старая карточка уходит, а исправленная
+    // приходит заново -- прямо под поправкой. Двух карточек одного черновика с
+    // живыми кнопками быть не должно: старую удаляем до отправки новой.
+    //
+    // Кнопки под карточкой по-прежнему правят её НА МЕСТЕ: там человек смотрит
+    // ровно на неё.
+    if (updated) {
+      if (updated.telegram_chat_id === chat && updated.telegram_message_id) {
+        await deleteMessage(c.env, chat, updated.telegram_message_id);
+      }
+      await renderDraft(c.env, updated, chat, tz, true);
+    }
     return c.json({ ok: true });
   }
 

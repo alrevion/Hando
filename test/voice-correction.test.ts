@@ -98,6 +98,48 @@ describe('поправка голосом БЕЗ ответа на карточ�
     expect(rows[0].description).toBe('Оплачивать абонентскую плату за интернет');
   });
 
+  // Жалоба владельца: «Правда не Usel а Ucell» -- без запятой, с «правда» в
+  // начале. Поправка применилась, но карточку исправили ВЫШЕ, на месте, и внизу
+  // была тишина: «отправил сообщение, а бот не отвечает».
+  it('исправленная карточка приходит ЗАНОВО под поправкой, а старая удаляется', async () => {
+    const env = await world();
+    const spy = stubTelegram();
+    restore = spy;
+    await say(env, 'За USEL нужно платить каждое 18 число');
+    expect((await drafts())[0].title).toContain('USEL');
+    spy.mockClear();
+
+    await say(env, 'Правда не Usel а Ucell');
+
+    const calls = (spy.mock.calls as unknown as [string, { body?: string }][]).map(([u, i]) => ({ u, body: String(i?.body ?? '') }));
+    // Старая карточка удалена...
+    expect(calls.some((c) => c.u.includes('/deleteMessage'))).toBe(true);
+    // ...и НОВАЯ отправлена, а не отредактирована на месте.
+    expect(calls.some((c) => c.u.includes('/editMessageText'))).toBe(false);
+    const card = calls.filter((c) => c.u.includes('/sendMessage')).map((c) => JSON.parse(c.body).text as string).at(-1)!;
+    expect(card).toContain('Черновик');
+    expect(card).toContain('Ucell');
+    expect((await drafts())).toHaveLength(1);
+    expect((await drafts())[0].title).toContain('Ucell');
+  });
+
+  it('поправку не поняли -- бот так и говорит, а не молчит', async () => {
+    const env = await world();
+    const spy = stubTelegram();
+    restore = spy;
+    await say(env, 'Тимуру оплатить интернет каждого 18 числа');
+    const msgId = (await testEnv.DB.prepare("SELECT telegram_message_id AS m FROM drafts").first<{ m: string }>())!.m;
+    spy.mockClear();
+
+    // Ответ на карточку, но понять в нём нечего.
+    await botApp.request('/webhook', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'tg-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: { chat: { id: 'tg-boss', type: 'private' }, from: { id: 'tg-boss', first_name: 'Т' }, text: 'это неправильно', reply_to_message: { message_id: Number(msgId) } } }) }, env);
+
+    const texts = (spy.mock.calls as unknown as [string, { body?: string }][])
+      .filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)).text as string);
+    expect(texts.at(-1)).toContain('Не понял, что поправить');
+  });
+
   it('обычное поручение с «заменить» чужой черновик НЕ трогает', async () => {
     const env = await world();
     restore = stubTelegram();
