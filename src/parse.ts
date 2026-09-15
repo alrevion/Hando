@@ -364,7 +364,10 @@ export function matchDeadline(
   }
 
   if (!base) {
-    const dom = lower.match(/(?:до|к)\s+(\d{1,2})[-\s]*(?:го|числ[а-яё]*)/i);
+    // «до 5-го», «к 18 числу» -- и без предлога, если сказано «числа»: «каждого
+    // 18 числа». Голое «18» без «числа» НЕ берём: это и количество, и час.
+    const dom = lower.match(/(?:до|к)\s+(\d{1,2})[-\s]*(?:го|числ[а-яё]*)/i)
+      ?? lower.match(/(?:^|[\s,])(?:кажд[а-яё]+\s+)?(\d{1,2})[-\s]*(?:го|е)?\s+числ[а-яё]*/i);
     if (dom) {
       const day = Number(dom[1]);
       const d = new Date(midnight);
@@ -670,8 +673,15 @@ export function matchRepeat(text: string): { days: number | null; usedWords: Set
   if (daily) return take(daily, 1);
   const weekly = lower.match(/(?:^|[\s,])(?:кажд[уы][юе]\s+недел[юя]|еженедельно|раз\s+в\s+неделю)/i);
   if (weekly) return take(weekly, 7);
-  const monthly = lower.match(/(?:^|[\s,])(?:кажд[ыи][йе]\s+месяц|ежемесячно|раз\s+в\s+месяц)/i);
+  // «каждый месяц», но и «КАЖДОГО месяца» -- вслух падеж любой. Прежний шаблон
+  // знал только «каждый/каждые», и «каждого 18 числа каждого месяца» теряло
+  // повтор целиком.
+  const monthly = lower.match(/(?:^|[\s,])(?:кажд[а-яё]+\s+месяц[а-яё]*|ежемесячно|раз\s+в\s+месяц)/i);
   if (monthly) return take(monthly, 30);
+  // «каждого 18 числа», «18-го числа каждого месяца» -- тоже месяц: число месяца
+  // повторяется только помесячно.
+  const dayOfMonth = lower.match(/(?:^|[\s,])кажд[а-яё]+\s+\d{1,2}[-\s]*(?:го|е)?\s*числ[а-яё]*/i);
+  if (dayOfMonth) return take(dayOfMonth, 30);
   return { days: null, usedWords: used };
 }
 
@@ -827,6 +837,8 @@ export async function transcribe(env: Env, audio: Blob, filename: string): Promi
 
 export type DraftFields = {
   title: string;
+  /** Содержание. Необязательно: правка словами раньше его не видела вовсе. */
+  description?: string | null;
   assigneeIds: string[];
   deadline: string | null;
   priority: Draft['priority'];
@@ -838,6 +850,50 @@ export type DraftFields = {
 // не становится новой темой -- без этого «Ивия это Ева» превратилось бы в
 // поручение с темой «Ивия это».
 const EDIT_MARKERS = /(?:^|[\s,])(?:это|вместо|не\s+\S+,?\s+а|замени[а-яё]*|исправ[а-яё]*|поменя[а-яё]*|измени[а-яё]*|пусть будет)(?:$|[\s,])/i;
+
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * «Не оппонентскую плату, а абонентскую плату» -- ЗАМЕНА СЛОВА в тексте.
+ *
+ * Самая частая поправка голосом -- исправить ослышку распознавания. Человек
+ * называет неверное слово и верное, и заменить надо ровно его, там, где оно
+ * стоит: в теме или в содержании. Раньше правка словами содержания не видела
+ * вовсе, а «Не оппонентскую плату, а абонентскую» становилось новой задачей с
+ * темой «Изменить содержание».
+ *
+ * Сначала фразой целиком. Если так не нашлось -- по словам на тех же местах:
+ * в «оппонентскую плату -> абонентскую плату» второе слово совпадает, и меняется
+ * только первое. Заглавная буква исходного слова сохраняется.
+ *
+ * null -- если поправка не такого вида или заменить нечего.
+ */
+export function swapWords(correction: string, text: string): string | null {
+  if (!text) return null;
+  const m = correction.match(/(?:^|[\s,.!?])не\s+(.{2,60}?)\s*,?\s+а\s+(.{2,60}?)\s*[.!?]*$/i);
+  if (!m) return null;
+  const from = m[1].trim();
+  const to = m[2].trim();
+  if (from.toLowerCase() === to.toLowerCase()) return null;
+  const keepCase = (found: string, repl: string) =>
+    (/^[А-ЯЁA-Z]/.test(found) ? repl[0].toUpperCase() + repl.slice(1) : repl);
+  const edge = (w: string) => new RegExp(`(?<![а-яёa-z])${escapeRe(w)}(?![а-яёa-z])`, 'i');
+
+  const whole = edge(from);
+  if (whole.test(text)) return text.replace(whole, (f) => keepCase(f, to));
+
+  const fw = from.split(/\s+/);
+  const tw = to.split(/\s+/);
+  if (fw.length !== tw.length) return null;
+  let out = text;
+  let changed = false;
+  fw.forEach((w, i) => {
+    if (w.toLowerCase() === tw[i].toLowerCase()) return;
+    const re = edge(w);
+    if (re.test(out)) { out = out.replace(re, (f) => keepCase(f, tw[i])); changed = true; }
+  });
+  return changed ? out : null;
+}
 
 /**
  * Поправка к черновику -- частичное обновление полей.
@@ -859,6 +915,14 @@ export async function refineDraft(
   weekEnd?: number,
 ): Promise<Partial<DraftFields>> {
   const clean = correction.replace(LEAD_NOISE, '').trim();
+
+  // Замена слова -- первой и НЕПЕРЕКРЫВАЕМОЙ: это самое точное, что можно
+  // понять из поправки, и модель ниже не должна переписать это своей темой.
+  const swapped: Partial<DraftFields> = {};
+  const newTitle = swapWords(clean, current.title);
+  if (newTitle) swapped.title = newTitle;
+  const newDesc = swapWords(clean, current.description ?? '');
+  if (newDesc) swapped.description = newDesc;
   // «не Азизу, а Беку»: тот, кто после «не», -- прежний адресат, его ищем
   // НЕ надо, иначе черновик получил бы обоих.
   const who = matchPeople(clean.replace(/(?:^|\s)не\s+\S+,?(?=\s+а\s)/i, ' '), people);
@@ -893,6 +957,9 @@ export async function refineDraft(
     patch.title = rest[0].toUpperCase() + rest.slice(1);
   }
 
+  // Слово заменили -- поправка понята целиком, модель спрашивать не о чем.
+  if (Object.keys(swapped).length > 0) return { ...patch, ...swapped };
+
   if (env.GROQ_API_KEY) {
     const byLlm = await refineByLlm(env, current, correction, people, env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b');
     if (byLlm) return { ...patch, ...byLlm };
@@ -916,8 +983,9 @@ async function refineByLlm(
   const names = current.assigneeIds.map((id) => people.find((p) => p.id === id)?.name ?? id).join(', ');
   const prompt = [
     'Есть черновик поручения. Человек прислал поправку. Верни JSON ТОЛЬКО с полями, которые надо изменить; остальные не включай.',
-    'Возможные поля: title (2-6 слов, повелительная форма, без имён и дат), assignee_ids (массив id из списка), deadline (ISO 8601 или null), priority ("urgent"|"medium"|"low").',
-    `Черновик: title="${current.title}"; кому=${names || '—'}; deadline=${current.deadline ?? 'null'}; priority=${current.priority}.`,
+    'Возможные поля: title (2-6 слов, повелительная форма, без имён и дат), description (подробности одной-двумя фразами), assignee_ids (массив id из списка), deadline (ISO 8601 или null), priority ("urgent"|"medium"|"low").',
+    'Если поправка про содержание («в содержании…», «допиши…») -- меняй description, а title не трогай.',
+    `Черновик: title="${current.title}"; description="${current.description ?? ''}"; кому=${names || '—'}; deadline=${current.deadline ?? 'null'}; priority=${current.priority}.`,
     `Люди: ${roster}`,
     `Поправка: ${correction}`,
   ].join('\n');
@@ -931,9 +999,10 @@ async function refineByLlm(
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const raw = data.choices?.[0]?.message?.content;
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { title?: string; assignee_ids?: string[]; deadline?: string | null; priority?: string };
+    const parsed = JSON.parse(raw) as { title?: string; description?: string; assignee_ids?: string[]; deadline?: string | null; priority?: string };
     const out: Partial<DraftFields> = {};
     if (typeof parsed.title === 'string' && parsed.title.trim().length >= 3) out.title = parsed.title.trim();
+    if (typeof parsed.description === 'string') out.description = parsed.description.trim() || null;
     if (Array.isArray(parsed.assignee_ids)) {
       const known = new Set(people.map((p) => p.id));
       const ids = parsed.assignee_ids.filter((id) => known.has(id));

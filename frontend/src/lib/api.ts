@@ -395,13 +395,13 @@ export const askByVoice = (audio: Blob) => {
  */
 export type DraftPatchView = {
   heard: string;
-  patch: Partial<{ title: string; assignee_ids: string[]; deadline: string | null; priority: Priority }>;
+  patch: Partial<{ title: string; description: string | null; assignee_ids: string[]; deadline: string | null; priority: Priority }>;
 };
 
 export function refineDraftByPhrase(
   id: string,
   input: { text: string } | { audio: Blob },
-  current: { title: string; assignee_ids: string[]; deadline: string | null; priority: Priority },
+  current: { title: string; description: string; assignee_ids: string[]; deadline: string | null; priority: Priority },
 ): Promise<DraftPatchView> {
   if ('audio' in input) {
     const form = new FormData();

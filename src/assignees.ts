@@ -115,13 +115,43 @@ export function confirmAssignees(env: Env, taskId: string): D1PreparedStatement 
  * позже), отсчёт идёт от текущего момента -- иначе новая задача родилась бы
  * просроченной.
  */
+/** Повтор «каждый месяц» в минутах: 30 суток. Им помечен КАЛЕНДАРНЫЙ месяц. */
+export const MONTH_MIN = 30 * 1440;
+
+/**
+ * Срок следующего захода.
+ *
+ * Месяц -- КАЛЕНДАРНЫЙ, а не «плюс 30 суток». «Каждого 18 числа» при шаге в 30
+ * суток уползало бы с 18-го: за год на пять дней раньше. Поэтому ровно
+ * MONTH_MIN читается как «то же число следующего месяца». Число, которого в
+ * месяце нет (31-е в сентябре), прижимается к последнему дню месяца, а не
+ * переезжает на 1 октября.
+ *
+ * Если старый срок далеко позади, отсчёт идёт от «сейчас» -- иначе новый заход
+ * родился бы просроченным. Шагаем, пока не окажемся в будущем.
+ */
+export function nextRound(fromMs: number, minutes: number, nowMs: number): Date {
+  const step = (ms: number): number => {
+    if (minutes !== MONTH_MIN) return ms + minutes * 60_000;
+    const d = new Date(ms);
+    const day = d.getUTCDate();
+    d.setUTCDate(1);
+    d.setUTCMonth(d.getUTCMonth() + 1);
+    const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+    d.setUTCDate(Math.min(day, last));
+    return d.getTime();
+  };
+  let at = step(fromMs);
+  // Потолок -- страховка от бесконечного цикла на испорченной строке.
+  for (let i = 0; at <= nowMs && i < 1000; i++) at = step(at);
+  return new Date(at);
+}
+
 async function respawnRepeating(env: Env, task: Task, actorId: string): Promise<void> {
   const minutes = task.repeat_min;
   if (!minutes || minutes < 1) return;
-  const step = minutes * 60 * 1000;
   const from = task.deadline ? Date.parse(task.deadline) : Date.now();
-  const candidate = from + step;
-  const deadline = new Date(candidate > Date.now() ? candidate : Date.now() + step).toISOString();
+  const deadline = nextRound(from, minutes, Date.now()).toISOString();
 
   // Кто делал, тот и делает дальше: список адресатов копируется как есть, без
   // отказавшихся -- они уже сказали, что этим не занимаются.

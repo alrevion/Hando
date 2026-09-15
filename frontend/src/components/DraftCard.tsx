@@ -67,8 +67,10 @@ export function DraftCard({
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
 
-  function applyPatch(p: { title?: string; assignee_ids?: string[]; deadline?: string | null; priority?: Priority }) {
+  function applyPatch(p: { title?: string; description?: string | null; assignee_ids?: string[]; deadline?: string | null; priority?: Priority }) {
     if (p.title !== undefined) setTitle(p.title);
+    // Содержание правится словами тоже: «не оппонентскую плату, а абонентскую».
+    if (p.description !== undefined) setDescription(p.description ?? '');
     if (p.assignee_ids !== undefined) setWho(p.assignee_ids[0] ?? '');
     if (p.deadline !== undefined) setDeadline(p.deadline);
     if (p.priority !== undefined) { setPriority(p.priority); setTouched(true); }
@@ -76,7 +78,7 @@ export function DraftCard({
 
   async function sendFix(input: { text: string } | { audio: Blob }) {
     const res = await run(() => refineDraftByPhrase(draft.id, input, {
-      title: title.trim(), assignee_ids: who ? [who] : [], deadline, priority,
+      title: title.trim(), description, assignee_ids: who ? [who] : [], deadline, priority,
     }));
     if (!res) return;
     // Голос -- это клавиатура, а не отдельная команда: сказанное попадает В

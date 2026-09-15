@@ -31,7 +31,7 @@ import {
   askNameScreen, BTN, getState, isOnboarded, categoryScreen, industryScreen, mainScreen, myOrgs, orgsScreen, setDisplayName,
   setState, switchOrg, type Screen, notifyPrefs, setNotifyPrefs, settingsScreen, updateOrgSettings, isOrgOwner, START_TIPS } from './menu';
 import { download, extractMedia } from './media';
-import { formatWhen, learnAlias, parseTask, refineDraft, transcribe, localIso, localToday, matchPeople } from './parse';
+import { formatWhen, learnAlias, parseTask, refineDraft, swapWords, transcribe, localIso, localToday, matchPeople } from './parse';
 import { dayEnd, hm, loadSchedule, localHm, weekEndDay, type OrgSchedule } from './schedule';
 import { askAssistant, classifyIntent } from './assistant';
 import { assignableMembers } from './hierarchy';
@@ -1262,6 +1262,25 @@ botApp.post('/webhook', async (c) => {
   const replyTo = msg.reply_to_message?.message_id;
   let target = st.await === 'fix' && st.fix ? await getDraft(c.env, st.fix) : null;
   if (!target && replyTo) target = await draftByMessage(c.env, chat, String(replyTo));
+
+  // ПОПРАВКА БЕЗ ОТВЕТА НА КАРТОЧКУ.
+  //
+  // Бот понимал поправку только ответом на сообщение -- а голосом «ответить на
+  // сообщение» никто не делает. «Надо в содержании изменить: не оппонентскую
+  // плату, а абонентскую» уходило новым черновиком с темой «Изменить
+  // содержание», а исправляемый оставался с ошибкой.
+  //
+  // Правило УЗКОЕ, иначе «заменить картридж» стало бы правкой чужого черновика.
+  // Поправкой считается только то, что без черновика смысла не имеет: названо
+  // поле («в содержании», «в теме») ИЛИ заменяемое слово реально стоит в
+  // свежем черновике. И только свежем -- через полчаса это уже другой разговор.
+  if (!target && phrase) {
+    const last = await latestDraft(c.env, who.userId, who.orgId);
+    const age = last ? Date.now() - Date.parse(last.updated_at ?? last.created_at) : Infinity;
+    const namesField = /(?:^|[\s,])(?:в|во)\s+(?:содержани|тем[еуы]|назван|описани)[а-яё]*/i.test(phrase);
+    const swaps = last ? (swapWords(phrase, last.title) ?? swapWords(phrase, last.description ?? '')) : null;
+    if (last && age < 30 * 60_000 && (namesField || swaps)) target = last;
+  }
   if (target && target.author_id === who.userId) {
     const patch: DraftPatch = {};
     // Голос поправки -- не вложение: вложение это фото и документ.
@@ -1269,7 +1288,7 @@ botApp.post('/webhook', async (c) => {
     const before = assigneesOf(target);
     if (phrase) {
       Object.assign(patch, await refineDraft(c.env, {
-        title: target.title, assigneeIds: before, deadline: target.deadline,
+        title: target.title, description: target.description, assigneeIds: before, deadline: target.deadline,
         priority: target.priority, priorityExplicit: target.priority_explicit === 1,
       }, phrase, roster, tz, org?.industry_pack, new Date(), dayEnd(sched), weekEndDay(sched)));
       // Адресата сменили -- значит человека назвали словом, которого правила не

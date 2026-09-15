@@ -706,6 +706,8 @@ apiRoutes.post('/drafts/:id/refine', async (c) => {
   // За основу -- то, что на экране; чего экран не прислал, берём из строки.
   const current = {
     title: typeof seen.title === 'string' ? seen.title : row.title,
+    // Содержание -- тоже то, что на экране: его правят руками прямо в карточке.
+    description: typeof seen.description === 'string' ? seen.description : row.description,
     assigneeIds: Array.isArray(seen.assignee_ids) ? (seen.assignee_ids as unknown[]).map(String) : assigneesOf(row),
     deadline: seen.deadline === null || typeof seen.deadline === 'string' ? (seen.deadline as string | null) : row.deadline,
     priority: (PRIORITIES.includes(String(seen.priority)) ? String(seen.priority) : row.priority) as DraftRow['priority'],
@@ -729,6 +731,7 @@ apiRoutes.post('/drafts/:id/refine', async (c) => {
     heard: phrase,
     patch: {
       ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
       ...(patch.assigneeIds !== undefined ? { assignee_ids: patch.assigneeIds } : {}),
       ...(patch.deadline !== undefined ? { deadline: patch.deadline } : {}),
       ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
