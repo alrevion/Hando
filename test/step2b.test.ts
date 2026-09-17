@@ -12,9 +12,9 @@ let restore: { mockRestore(): void } | null = null;
 afterEach(() => { restore?.mockRestore(); restore = null; });
 const tg = () => (restore = stubTelegram());
 
-const boss = { id: 's1', phone: '+1', name: 'Босс', role: 'creator' };
-const teacher = { id: 'm1', phone: '+2', name: 'Учитель', role: 'member' };
-const admin = { id: 'a1', phone: '+3', name: 'Завуч', role: 'admin' };
+const boss = { id: 's1', name: 'Босс', role: 'creator' };
+const teacher = { id: 'm1', name: 'Учитель', role: 'member' };
+const admin = { id: 'a1', name: 'Завуч', role: 'admin' };
 const team = {
   users: [boss, teacher, admin],
   memberships: [
@@ -41,13 +41,10 @@ describe('шаг 2b: пересборка не потеряла целостно
     expect(cols).not.toContain('role');
     expect(cols).toContain('current_org_id');
     // telegram_username ОСТАЁТСЯ здесь: это атрибут идентичности, один на
-    // человека независимо от организации -- как и телефон.
+    // человека независимо от организации.
     expect(cols).toContain('telegram_username');
-
-    const phone = results.find((r) => r.name === 'phone') as unknown as { notnull: number } | undefined;
-    void phone;
-    const info = await testEnv.DB.prepare("SELECT \"notnull\" AS nn FROM pragma_table_info('users') WHERE name='phone'").first<{ nn: number }>();
-    expect(info!.nn).toBe(0);
+    // Телефона нет вовсе с 0034.
+    expect(cols).not.toContain('phone');
   });
 });
 
@@ -56,30 +53,27 @@ describe('шаг 2b: роль member', () => {
     const env = await envWith({ ...team, tasks: [] });
     const asMember = await apiRoutes.request('/users', { headers: { Cookie: await cookie('m1', 'member', ORG_A) } }, env);
     // Раздел 19: участник видит людей СВОИХ досок, а не всю организацию и не
-    // ничего. Телефонов -- по-прежнему нет.
+    // ничего.
     expect(asMember.status).toBe(200);
-    const list = await asMember.json<{ id: string; phone?: string }[]>();
-    expect(list.every((u) => u.phone === undefined)).toBe(true);
+    const list = await asMember.json<{ id: string }[]>();
     expect(list.some((u) => u.id === 'm1')).toBe(true);
 
     const asAdmin = await apiRoutes.request('/users', { headers: { Cookie: await cookie('a1', 'admin', ORG_A) } }, env);
     expect(asAdmin.status).toBe(200);
   });
 
-  it('member не получает телефонов в списке людей доски', async () => {
+  it('member не получает username в списке людей доски', async () => {
     const env = await envWith({ ...team, tasks: [] });
     const res = await apiRoutes.request('/projects/p1/members', { headers: { Cookie: await cookie('m1', 'member', ORG_A) } }, env);
     expect(res.status).toBe(200);
-    const text = await res.text();
-    expect(text).not.toContain('phone');
-    expect(text).not.toContain('+1');
+    expect(await res.text()).not.toContain('telegram_username');
   });
 
   it('member ведёт свою задачу: двигает её по доске как все', async () => {
     const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'm1' }] });
     tg();
     // R1-1 снял правило «поручает только директор», и member -- полноценный
-    // исполнитель. Роль ограничивает справочник и телефоны, а не работу.
+    // исполнитель. Роль ограничивает справочник, а не работу.
     const res = await apiRoutes.request('/tasks/t1/move', {
       method: 'POST', headers: { Cookie: await cookie('m1', 'member', ORG_A), 'Content-Type': 'application/json' },
       body: JSON.stringify({ to: 'in_progress' }),
@@ -87,14 +81,9 @@ describe('шаг 2b: роль member', () => {
     expect(res.status).toBe(200);
   });
 
-  it('member не заводит людей и не правит роли', async () => {
+  it('member не правит роли', async () => {
     const env = await envWith({ ...team, tasks: [] });
     const c = await cookie('m1', 'member', ORG_A);
-    const create = await apiRoutes.request('/users', {
-      method: 'POST', headers: { Cookie: c, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: '+9', name: 'x', role: 'member' }),
-    }, env);
-    expect(create.status).toBe(403);
 
     const patch = await apiRoutes.request('/users/a1', {
       method: 'PATCH', headers: { Cookie: c, 'Content-Type': 'application/json' },

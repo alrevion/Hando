@@ -27,9 +27,9 @@ const labels = (m: Sent) => (m.reply_markup?.inline_keyboard ?? []).flat().map((
 const world = () =>
   envWith({
     users: [
-      { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-      { id: 'w1', phone: '+2', name: 'Азиз Каримов', role: 'admin' },
-      { id: 'w2', phone: '+3', name: 'Бек Юсупов', role: 'admin' },
+      { id: 'boss', name: 'Директор', role: 'creator' },
+      { id: 'w1', name: 'Азиз Каримов', role: 'admin' },
+      { id: 'w2', name: 'Бек Юсупов', role: 'admin' },
     ],
     memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'w1' }, { project_id: 'p1', user_id: 'w2' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
@@ -438,9 +438,9 @@ describe('списки в боте: текущая организация, по 
   it('«Мои задачи»: 12 задач -- две страницы; чужая организация не примешивается', async () => {
     const env = await envWith({
       users: [
-        { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-        { id: 'w1', phone: '+2', name: 'Азиз Каримов', role: 'member', orgs: [ORG_A, 'org-b'] },
-        { id: 'bb', phone: '+3', name: 'Босс Б', role: 'creator', orgs: ['org-b'] },
+        { id: 'boss', name: 'Директор', role: 'creator' },
+        { id: 'w1', name: 'Азиз Каримов', role: 'member', orgs: [ORG_A, 'org-b'] },
+        { id: 'bb', name: 'Босс Б', role: 'creator', orgs: ['org-b'] },
       ],
       memberships: [{ project_id: 'p1', user_id: 'w1' }, { project_id: 'pb', user_id: 'w1', org_id: 'org-b' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100111', created_by: 'boss' }, { id: 'pb', telegram_chat_id: '-100222', created_by: 'bb', org_id: 'org-b' }],
@@ -475,7 +475,7 @@ describe('списки в боте: текущая организация, по 
 describe('порядок работ: «одно после другого»', () => {
   const two = () =>
     envWith({
-      users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }],
+      users: [{ id: 'boss', name: 'Директор', role: 'creator' }],
       memberships: [{ project_id: 'p1', user_id: 'boss' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
       tasks: [

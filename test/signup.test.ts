@@ -68,7 +68,7 @@ describe('код вступления', () => {
     // должен увидеть раньше рассказа о продукте, а звать его создавать
     // организацию после поданной заявки -- бессмысленно.
     const env = await envWith({
-      users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }],
+      users: [{ id: 'boss', name: 'Директор', role: 'creator' }],
       memberships: [{ project_id: 'p1', user_id: 'boss' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
       tasks: [],
@@ -118,12 +118,12 @@ describe('создание своей организации', () => {
     expect(await resolveOrgId(testEnv.DB, uid)).toBe(orgId);
   });
 
-  it('телефон не спрашивается вовсе', async () => {
+  it('телефон не спрашивается и не хранится: человек -- это его Telegram', async () => {
     const env = await blank();
     const uid = await ensureUser(env, 'tg-2', 'Сотрудник', null);
-    const row = await testEnv.DB.prepare('SELECT phone FROM users WHERE id = ?').bind(uid).first<{ phone: string | null }>();
-    // Ради этого phone и стал nullable на шаге 2b.
-    expect(row!.phone).toBeNull();
+    const row = await testEnv.DB.prepare('SELECT * FROM users WHERE id = ?').bind(uid).first<Record<string, unknown>>();
+    expect(row!.telegram_user_id).toBe('tg-2');
+    expect(Object.keys(row!)).not.toContain('phone');
   });
 });
 

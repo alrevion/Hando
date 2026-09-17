@@ -54,12 +54,12 @@ const tg = () => (restore = stubTelegram()) as ReturnType<typeof stubTelegram>;
 
 // Два арендатора. `both` состоит в обеих организациях -- это и есть фикстура,
 // без которой тест изоляции обесценен.
-const both = { id: 'both', phone: '+1', name: 'Двойной', role: 'creator', orgs: [ORG_A, ORG_B] };
-const aOnly = { id: 'a1', phone: '+2', name: 'Только А', role: 'admin', orgs: [ORG_A] };
-const bOnly = { id: 'b1', phone: '+3', name: 'Только Б', role: 'creator', orgs: [ORG_B] };
+const both = { id: 'both', name: 'Двойной', role: 'creator', orgs: [ORG_A, ORG_B] };
+const aOnly = { id: 'a1', name: 'Только А', role: 'admin', orgs: [ORG_A] };
+const bOnly = { id: 'b1', name: 'Только Б', role: 'creator', orgs: [ORG_B] };
 // Рядовой сотрудник в ОБЕИХ организациях. Нужен отдельно от `both`: тот creator,
 // а у creator'а в списках досок своя ветка -- ветка «участник» без него слепа.
-const worker = { id: 'w', phone: '+4', name: 'Сотрудник', role: 'admin', orgs: [ORG_A, ORG_B] };
+const worker = { id: 'w', name: 'Сотрудник', role: 'admin', orgs: [ORG_A, ORG_B] };
 
 // Мир: у каждой организации своя доска, задача, вложение и черновик.
 const world = async () => {
@@ -120,7 +120,6 @@ const FIXTURES: Record<string, Probe> = {
   'GET /projects': { path: '/projects', skip: 'списочный: проверяется отдельным тестом на содержимое' },
   'GET /projects/archived': { path: '/projects/archived', skip: 'списочный: проверяется отдельным тестом на содержимое' },
   'POST /projects': { path: '/projects', method: 'POST', body: { name: 'x', telegram_group_id: '111' }, skip: 'создаёт в своей организации; чужих идентификаторов не принимает' },
-  'POST /users': { path: '/users', method: 'POST', body: { phone: '+3', name: 'x', role: 'admin' }, skip: 'штатно добавляет членство существующему телефону -- см. отдельный тест' },
 
   'GET /memberships/pending': { path: '/memberships/pending', skip: 'списочный: организация берётся из сессии, идентификаторов не принимает' },
   'GET /org/snapshot': { path: '/org/snapshot', skip: 'списочный: организация берётся из сессии; содержимое проверяется отдельным тестом' },
@@ -424,9 +423,12 @@ describe('шаг 2a: формы записи, а не только бэкфил�
 
     // Человек -> проект -> членство -> задача -> вложение -> событие -> ПЕРЕХОД.
     // Переход обязателен: без него не родится строка в notifications.
-    const u = await apiRoutes.request('/users', { method: 'POST', ...json({ phone: '+77', name: 'Новый', role: 'admin' }) }, env);
-    expect(u.status).toBe(201);
-    const { id: newUser } = await u.json<{ id: string }>();
+    // Человек приходит через бота (signup.ts), а не заводится по API.
+    const newUser = 'newbie';
+    await testEnv.DB.batch([
+      testEnv.DB.prepare("INSERT INTO users (id, name, telegram_user_id, current_org_id) VALUES ('newbie', 'Новый', 'tg-newbie', ?)").bind(ORG_A),
+      testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES ('m-newbie', ?, 'newbie', 'admin', datetime('now'))").bind(ORG_A),
+    ]);
 
     const pr = await apiRoutes.request('/projects', { method: 'POST', ...json({ name: 'Новая доска', telegram_group_id: '999' }) }, env);
     expect(pr.status).toBe(201);
@@ -499,20 +501,16 @@ describe('шаг 2a: предикаты, до которых загрузчик 
     expect(body.user.org_name).toBe(ORG_B);
   });
 
-  it('чужого человека по телефону НЕ присоединить: это была цепочка захвата аккаунта', async () => {
+  it('людей по API не заводят и не присоединяют: маршрута нет вовсе', async () => {
     const env = await world();
-    // b1 существует и состоит только в Б. Раньше здесь молча создавалось
-    // членство в А -- и этого хватало, чтобы пройти гейт PATCH /users/:id,
-    // переписать ГЛОБАЛЬНЫЙ телефон жертвы на свой, войти под ней и оказаться
-    // в ЕЁ организациях. Согласия жертвы не спрашивали, уведомления не было.
+    // Раньше POST /users присоединял человека по телефону, и это была цепочка
+    // захвата аккаунта. Теперь телефонов нет, а люди приходят сами -- по
+    // приглашению в бота.
     const res = await apiRoutes.request('/users', {
       method: 'POST', headers: { Cookie: await asA(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: '+3', name: 'Только Б', role: 'admin' }),
+      body: JSON.stringify({ name: 'Только Б', role: 'admin' }),
     }, env);
-    expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({ code: 'INVITE_REQUIRED' });
-
-    // Членства не появилось.
+    expect(res.status).toBe(404);
     const { results } = await testEnv.DB.prepare("SELECT org_id FROM org_memberships WHERE user_id='b1'").all<{ org_id: string }>();
     expect(results.map((r) => r.org_id)).toEqual([ORG_B]);
   });
@@ -524,10 +522,10 @@ describe('шаг 2a: предикаты, до которых загрузчик 
     // проверял бы не то.
     const res = await apiRoutes.request('/users/w', {
       method: 'PATCH', headers: { Cookie: await cookie('b1', 'creator', ORG_B), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: '+79990000000' }),
+      body: JSON.stringify({ name: 'Чужое имя' }),
     }, env);
     expect(res.status).toBe(403);
-    expect((await testEnv.DB.prepare("SELECT phone FROM users WHERE id='w'").first<{ phone: string }>())!.phone).toBe('+4');
+    expect((await testEnv.DB.prepare("SELECT name FROM users WHERE id='w'").first<{ name: string }>())!.name).toBe('Сотрудник');
 
     // А роль -- правит: она org-скоупная, и в чужую организацию не протекает.
     const role = await apiRoutes.request('/users/w', {
@@ -539,24 +537,12 @@ describe('шаг 2a: предикаты, до которых загрузчик 
     expect(results).toEqual([{ org_id: ORG_A, role: 'admin' }, { org_id: ORG_B, role: 'member' }]);
   });
 
-  it('своего отозванного сотрудника вернуть по телефону МОЖНО: согласие уже было', async () => {
-    const env = await world();
-    await testEnv.DB.prepare("UPDATE org_memberships SET left_at='2026-01-01' WHERE user_id='w' AND org_id=?").bind(ORG_A).run();
-    const res = await apiRoutes.request('/users', {
-      method: 'POST', headers: { Cookie: await asA(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: '+4', name: 'Сотрудник', role: 'admin' }),
-    }, env);
-    expect(res.status).toBe(201);
-    const m = await testEnv.DB.prepare("SELECT left_at FROM org_memberships WHERE user_id='w' AND org_id=?").bind(ORG_A).first<{ left_at: string | null }>();
-    expect(m!.left_at).toBeNull();
-  });
-
   it('понижение роли меняет членство ТОЛЬКО в текущей организации', async () => {
     const env = await world();
     // both -- creator в обеих. Понижаем его в А от лица creator'а Б? Нет:
     // роль правит creator организации А, а цель -- человек с двумя членствами.
     // Для этого нужен второй creator в А.
-    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, current_org_id) VALUES ('boss','+9','Босс А',?)").bind(ORG_A).run();
+    await testEnv.DB.prepare("INSERT INTO users (id, name, current_org_id) VALUES ('boss','Босс А',?)").bind(ORG_A).run();
     await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES ('m-boss',?, 'boss','creator',datetime('now'))").bind(ORG_A).run();
 
     const res = await apiRoutes.request('/users/a1', {
@@ -621,7 +607,7 @@ describe('шаг 2a: ветка «участник» и записи по чле
 
   it('понижение роли человека двух организаций не трогает вторую', async () => {
     const env = await world();
-    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, current_org_id) VALUES ('boss2','+91','Босс',?)").bind(ORG_A).run();
+    await testEnv.DB.prepare("INSERT INTO users (id, name, current_org_id) VALUES ('boss2','Босс',?)").bind(ORG_A).run();
     await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES ('m-boss2',?,'boss2','creator',datetime('now'))").bind(ORG_A).run();
 
     const res = await apiRoutes.request('/users/w', {
@@ -660,21 +646,6 @@ describe('шаг 2a: ветка «участник» и записи по чле
     // Контекст обязан остаться нетронутым: человек не должен «переехать» из-за
     // события в организации, где он и не находился.
     expect((await testEnv.DB.prepare("SELECT current_org_id FROM users WHERE id='w'").first<{ current_org_id: string }>())!.current_org_id).toBe(ORG_B);
-  });
-
-  it('воскрешение отозванного членства не переписывает роль в другой организации', async () => {
-    const env = await world();
-    await testEnv.DB.prepare("UPDATE org_memberships SET left_at='2026-01-01' WHERE user_id='w' AND org_id=?").bind(ORG_A).run();
-    // Добавляем его в А заново -- по телефону, как это делает владелец.
-    const res = await apiRoutes.request('/users', {
-      method: 'POST', headers: { Cookie: await cookie('both', 'creator', ORG_A), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: '+4', name: 'Сотрудник', role: 'super_admin' }),
-    }, env);
-    expect(res.status).toBe(201);
-    const { results } = await testEnv.DB.prepare("SELECT org_id, role, left_at FROM org_memberships WHERE user_id='w' ORDER BY org_id").all<{ org_id: string; role: string; left_at: string | null }>();
-    expect(results[0]).toMatchObject({ org_id: ORG_A, role: 'super_admin', left_at: null });
-    // В Б роль осталась прежней -- воскрешение адресное.
-    expect(results[1]).toMatchObject({ org_id: ORG_B, role: 'admin' });
   });
 });
 

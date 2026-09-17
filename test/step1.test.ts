@@ -15,8 +15,8 @@ afterEach(() => {
 });
 const tg = () => (restore = stubTelegram()) as ReturnType<typeof stubTelegram>;
 
-const boss = { id: 's1', phone: '+1', name: 'Босс', role: 'super_admin' };
-const worker = { id: 'w1', phone: '+2', name: 'Работник', role: 'admin' };
+const boss = { id: 's1', name: 'Босс', role: 'super_admin' };
+const worker = { id: 'w1', name: 'Работник', role: 'admin' };
 const team = { users: [boss, worker], memberships: [{ project_id: 'p1', user_id: 's1' }, { project_id: 'p1', user_id: 'w1' }] };
 
 const notes = (taskId: string) =>

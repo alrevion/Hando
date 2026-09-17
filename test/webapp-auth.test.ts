@@ -32,7 +32,7 @@ async function signInitData(botToken: string, fields: Record<string, string>): P
 const nowSec = () => Math.floor(Date.now() / 1000);
 const world = () =>
   envWith({
-    users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }],
+    users: [{ id: 'boss', name: 'Директор', role: 'creator' }],
     memberships: [{ project_id: 'p1', user_id: 'boss' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
     tasks: [],
@@ -180,7 +180,8 @@ describe('вход в браузере через бота', () => {
       await start(env, token);
       await press(env, `lg:${token}`);
       expect((await claim(env)).status).toBe(410);
-      expect((await claim(env, `login_link=${token.replace(/.$/, '0')}`)).status).toBe(410);
+      const forged = token.slice(0, -1) + (token.endsWith('0') ? '1' : '0');
+      expect((await claim(env, `login_link=${forged}`)).status).toBe(410);
     } finally { spy.mockRestore(); }
   });
 

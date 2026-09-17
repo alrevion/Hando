@@ -52,7 +52,7 @@ describe('тестовая база — настоящая D1', () => {
     // Подделка по регуляркам такого не умеет — это и есть разница.
     // CHECK на роли переехал с шага 2b в org_memberships: users роли не хранит.
     await env.DB.prepare("INSERT INTO orgs (id, name) VALUES ('o1','O')").run();
-    await env.DB.prepare("INSERT INTO users (id, phone, name) VALUES ('u1','+1','X')").run();
+    await env.DB.prepare("INSERT INTO users (id, name) VALUES ('u1','X')").run();
     await expect(
       env.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role) VALUES ('m1','o1','u1','не-роль')").run(),
     ).rejects.toThrow();
@@ -60,23 +60,12 @@ describe('тестовая база — настоящая D1', () => {
     await env.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role) VALUES ('m2','o1','u1','member')").run();
   });
 
-  it('СУБД настоящая: UNIQUE на телефоне остался ГЛОБАЛЬНЫМ', async () => {
-    // Человек глобальный (R1-2), поэтому UNIQUE не стал org-скоупным: один
-    // телефон -- один человек, сколько бы организаций у него ни было.
-    await env.DB.prepare("INSERT INTO users (id, phone, name) VALUES ('u2','+998900000001','A')").run();
-    await expect(
-      env.DB.prepare("INSERT INTO users (id, phone, name) VALUES ('u3','+998900000001','B')").run(),
-    ).rejects.toThrow();
-  });
-
-  it('СУБД настоящая: телефон стал nullable, и NULL не конфликтует с NULL', async () => {
-    // Подключение по invite_token через Telegram телефона не спрашивает --
-    // до 2b NOT NULL делал такое подключение невозможным. В SQLite NULL не
-    // считается дублем NULL, поэтому безтелефонных людей может быть много.
-    await env.DB.prepare("INSERT INTO users (id, phone, name) VALUES ('u4',NULL,'Без телефона')").run();
-    await env.DB.prepare("INSERT INTO users (id, phone, name) VALUES ('u5',NULL,'Тоже без')").run();
-    const { n } = (await env.DB.prepare('SELECT COUNT(*) AS n FROM users WHERE phone IS NULL').first<{ n: number }>())!;
-    expect(n).toBe(2);
+  it('номеров телефонов в базе нет вовсе (0034): их пришлось бы хранить в РУз', async () => {
+    const { results } = await env.DB.prepare('PRAGMA table_info(users)').all<{ name: string }>();
+    expect(results.map((r: { name: string }) => r.name)).not.toContain('phone');
+    // Индексы пересборки на месте: вход по Telegram ищет человека по ним.
+    const idx = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='users' AND name LIKE 'idx_%' ORDER BY name").all<{ name: string }>();
+    expect(idx.results.map((r: { name: string }) => r.name)).toEqual(['idx_users_invite', 'idx_users_pending_signup', 'idx_users_telegram']);
   });
 
   it('СУБД настоящая: events принимает новые target_type', async () => {

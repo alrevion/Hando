@@ -26,11 +26,11 @@ const sent = (spy: ReturnType<typeof stubTelegram>) =>
 const world = async () => {
   const env = await envWith({
     users: [
-      { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-      { id: 'a1', phone: '+2', name: 'Алия Маркетинг', role: 'admin' },
-      { id: 'a2', phone: '+3', name: 'Бахтияр Бухгалтер', role: 'admin' },
-      { id: 'w1', phone: '+4', name: 'Азиз Каримов', role: 'member' },
-      { id: 'w2', phone: '+5', name: 'Вика Счетовод', role: 'member' },
+      { id: 'boss', name: 'Директор', role: 'creator' },
+      { id: 'a1', name: 'Алия Маркетинг', role: 'admin' },
+      { id: 'a2', name: 'Бахтияр Бухгалтер', role: 'admin' },
+      { id: 'w1', name: 'Азиз Каримов', role: 'member' },
+      { id: 'w2', name: 'Вика Счетовод', role: 'member' },
     ],
     memberships: [
       { project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'a1' }, { project_id: 'p1', user_id: 'w1' },
@@ -75,9 +75,9 @@ describe('видимость по дереву', () => {
   });
 
   it('создатель числится участником отделов, которые завёл вместе с организацией', async () => {
-    const env = await envWith({ users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }], memberships: [], tasks: [] });
+    const env = await envWith({ users: [{ id: 'boss', name: 'Директор', role: 'creator' }], memberships: [], tasks: [] });
     tg();
-    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, telegram_user_id, onboarded_at) VALUES ('f1', '+7', 'Отец', 'tg-f1', datetime('now'))").run();
+    await testEnv.DB.prepare("INSERT INTO users (id, name, telegram_user_id, onboarded_at) VALUES ('f1', 'Отец', 'tg-f1', datetime('now'))").run();
     const { orgId } = await createOrg(env, 'f1', 'Семья', 'home_family');
     // Отделы профиля -- доски, и владелец обязан быть НА КАЖДОЙ: видимость
     // людей считается по участию, и без строки его не увидел бы никто из
@@ -356,9 +356,9 @@ describe('удаление организации перевыпускает к�
 
 describe('сессия без организации', () => {
   it('открыт только экран «создайте или вступите»; после создания -- обычная сессия', async () => {
-    const env = await envWith({ users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }], memberships: [], tasks: [] });
+    const env = await envWith({ users: [{ id: 'boss', name: 'Директор', role: 'creator' }], memberships: [], tasks: [] });
     tg();
-    await testEnv.DB.prepare("INSERT INTO users (id, phone, name, telegram_user_id, onboarded_at) VALUES ('lone', '+9', 'Один', 'tg-lone', datetime('now'))").run();
+    await testEnv.DB.prepare("INSERT INTO users (id, name, telegram_user_id, onboarded_at) VALUES ('lone', 'Один', 'tg-lone', datetime('now'))").run();
     const orgless = `session=${await mintSession(SECRET, { sub: 'lone', role: 'member', org_id: null })}`;
     const me = await apiRoutes.request('/me', { headers: { Cookie: orgless } }, env);
     expect(me.status).toBe(200);

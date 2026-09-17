@@ -73,7 +73,7 @@ describe('«не оппонентскую плату, а абонентскую�
 
 describe('поправка голосом БЕЗ ответа на карточку', () => {
   const world = () => envWith({
-    users: [{ id: 'boss', phone: '+1', name: 'Тимур Абдуллаев', role: 'creator' }],
+    users: [{ id: 'boss', name: 'Тимур Абдуллаев', role: 'creator' }],
     memberships: [{ project_id: 'p1', user_id: 'boss' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
     tasks: [],
@@ -185,8 +185,8 @@ describe('«каждый месяц» -- календарный, а не плю�
 describe('задача СЕБЕ рождается принятой', () => {
   const world = () => envWith({
     users: [
-      { id: 'boss', phone: '+1', name: 'Тимур Абдуллаев', role: 'creator' },
-      { id: 'w1', phone: '+2', name: 'Азиз Каримов', role: 'member' },
+      { id: 'boss', name: 'Тимур Абдуллаев', role: 'creator' },
+      { id: 'w1', name: 'Азиз Каримов', role: 'member' },
     ],
     memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'w1' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],

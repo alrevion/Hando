@@ -284,8 +284,8 @@ describe('бот: поручение из фразы, из фото и из кр
   const world = () =>
     envWith({
       users: [
-        { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-        { id: 'u-aziz', phone: '+2', name: 'Азиз', role: 'admin' },
+        { id: 'boss', name: 'Директор', role: 'creator' },
+        { id: 'u-aziz', name: 'Азиз', role: 'admin' },
       ],
       memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'u-aziz' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
@@ -379,9 +379,9 @@ describe('бот: поручение из фразы, из фото и из кр
   it('неоднозначное имя: переспрашиваем и НЕ создаём задачу', async () => {
     const env = await envWith({
       users: [
-        { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-        { id: 'a1', phone: '+2', name: 'Азиз', role: 'admin' },
-        { id: 'a2', phone: '+3', name: 'Азиза', role: 'admin' },
+        { id: 'boss', name: 'Директор', role: 'creator' },
+        { id: 'a1', name: 'Азиз', role: 'admin' },
+        { id: 'a2', name: 'Азиза', role: 'admin' },
       ],
       memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'a1' }, { project_id: 'p1', user_id: 'a2' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
@@ -453,9 +453,9 @@ describe('псевдоним из поправки', () => {
   const world = () =>
     envWith({
       users: [
-        { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-        { id: 'u-aziz', phone: '+2', name: 'Азиз Каримов', role: 'admin' },
-        { id: 'u-bek', phone: '+3', name: 'Бекзод Юсупов', role: 'admin' },
+        { id: 'boss', name: 'Директор', role: 'creator' },
+        { id: 'u-aziz', name: 'Азиз Каримов', role: 'admin' },
+        { id: 'u-bek', name: 'Бекзод Юсупов', role: 'admin' },
       ],
       memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'u-aziz' }, { project_id: 'p1', user_id: 'u-bek' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],

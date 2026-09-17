@@ -25,7 +25,7 @@ const TOKEN = 'test-mcp-token';
 const OWNER = 'u_owner'; // MCP_USER_ID (a creator)
 
 type FakeData = {
-  users: Array<{ id: string; phone: string; name: string; role: string }>;
+  users: Array<{ id: string; name: string; role: string }>;
   projects: Array<{ id: string; name: string; archived_at: string | null }>;
   tasks: Array<Record<string, unknown>>;
   events: Array<Record<string, unknown>>;
@@ -132,8 +132,8 @@ function mcpRequest(body: unknown, auth?: string): Request {
 
 const seed = (): FakeData => ({
   users: [
-    { id: OWNER, phone: '+1', name: 'Owner', role: 'creator' },
-    { id: 'u_bob', phone: '+2', name: 'Bob', role: 'admin' },
+    { id: OWNER, name: 'Owner', role: 'creator' },
+    { id: 'u_bob', name: 'Bob', role: 'admin' },
   ],
   projects: [{ id: 'p1', name: 'Alpha', archived_at: null }],
   tasks: [],

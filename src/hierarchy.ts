@@ -62,13 +62,13 @@ export async function visibleUserIds(env: Env, orgId: string, userId: string, ro
 
 export type Member = {
   id: string; name: string; role: Role; position: string | null; telegram_username: string | null;
-  aliases: string | null; frozen_at: string | null; invited_by: string | null; phone?: string | null;
+  aliases: string | null; frozen_at: string | null; invited_by: string | null;
 };
 
 /** Действующие участники, видимые человеку. Замороженные видны (с пометкой), но поручать им нельзя. */
-export async function visibleMembers(env: Env, orgId: string, userId: string, role: Role, withPhone = false): Promise<Member[]> {
+export async function visibleMembers(env: Env, orgId: string, userId: string, role: Role): Promise<Member[]> {
   const { results } = await env.DB.prepare(
-    `SELECT u.id, u.name, m.role AS role, m.position AS position, u.telegram_username, u.aliases, m.frozen_at, m.invited_by${withPhone ? ', u.phone' : ''}
+    `SELECT u.id, u.name, m.role AS role, m.position AS position, u.telegram_username, u.aliases, m.frozen_at, m.invited_by
      FROM users u JOIN org_memberships m ON m.user_id = u.id
      WHERE m.org_id = ? AND m.left_at IS NULL AND m.confirmed_at IS NOT NULL ORDER BY u.name, u.id`,
   ).bind(orgId).all<Member>();

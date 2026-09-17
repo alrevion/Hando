@@ -59,8 +59,8 @@ describe('график', () => {
 const world = (deadline: string | null) =>
   envWith({
     users: [
-      { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-      { id: 'w1', phone: '+2', name: 'Азиз Каримов', role: 'admin', orgs: [ORG_A, ORG_B] },
+      { id: 'boss', name: 'Директор', role: 'creator' },
+      { id: 'w1', name: 'Азиз Каримов', role: 'admin', orgs: [ORG_A, ORG_B] },
     ],
     memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'w1' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
@@ -252,7 +252,7 @@ describe('бот: задача в СВОЕЙ организации и наст�
 
   it('кнопка на задаче второй организации работает, хотя текущая -- первая', async () => {
     const env = await envWith({
-      users: [{ id: 'w1', phone: '+2', name: 'Азиз', role: 'admin', orgs: [ORG_A, ORG_B] }, { id: 'b', phone: '+3', name: 'Босс Б', role: 'creator', orgs: [ORG_B] }],
+      users: [{ id: 'w1', name: 'Азиз', role: 'admin', orgs: [ORG_A, ORG_B] }, { id: 'b', name: 'Босс Б', role: 'creator', orgs: [ORG_B] }],
       memberships: [{ project_id: 'pb', user_id: 'w1', org_id: ORG_B }],
       projects: [{ id: 'pb', telegram_chat_id: '-100222', created_by: 'b', org_id: ORG_B }],
       tasks: [{ id: 'tb', project_id: 'pb', status: 'todo', responsible_user_id: 'w1', author_id: 'b', org_id: ORG_B }],

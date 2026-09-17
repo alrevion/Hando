@@ -19,10 +19,10 @@ const sends = (spy: ReturnType<typeof stubTelegram>) =>
 const world = () =>
   envWith({
     users: [
-      { id: 'boss', phone: '+1', name: 'Босс', role: 'creator' },
-      { id: 'ok', phone: '+2', name: 'Подключённый', role: 'admin' },
+      { id: 'boss', name: 'Босс', role: 'creator' },
+      { id: 'ok', name: 'Подключённый', role: 'admin' },
       // Бота не подключал: адрес не резолвится, строка недоставляема.
-      { id: 'nobot', phone: '+3', name: 'Без бота', role: 'admin', telegram_user_id: null },
+      { id: 'nobot', name: 'Без бота', role: 'admin', telegram_user_id: null },
     ],
     memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'ok' }, { project_id: 'p1', user_id: 'nobot' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],

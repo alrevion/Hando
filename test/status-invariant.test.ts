@@ -24,9 +24,9 @@ let restore: { mockRestore(): void } | null = null;
 afterEach(() => { restore?.mockRestore(); restore = null; });
 const tg = () => (restore = stubTelegram());
 
-const boss = { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' };
-const aziz = { id: 'aziz', phone: '+2', name: 'Азиз', role: 'admin' };
-const bek = { id: 'bek', phone: '+3', name: 'Бек', role: 'admin' };
+const boss = { id: 'boss', name: 'Директор', role: 'creator' };
+const aziz = { id: 'aziz', name: 'Азиз', role: 'admin' };
+const bek = { id: 'bek', name: 'Бек', role: 'admin' };
 
 const world = (kind: string) =>
   envWith({

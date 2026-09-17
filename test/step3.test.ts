@@ -18,8 +18,8 @@ const sends = (spy: ReturnType<typeof stubTelegram>) =>
 
 // Директор + четырнадцать сотрудников: ровно тот размер, на котором ломались
 // по-задачные таймеры.
-const boss = { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' };
-const staff = Array.from({ length: 14 }, (_, i) => ({ id: `u${i}`, phone: `+1${i}`, name: `Сотрудник ${i}`, role: 'admin' }));
+const boss = { id: 'boss', name: 'Директор', role: 'creator' };
+const staff = Array.from({ length: 14 }, (_, i) => ({ id: `u${i}`, name: `Сотрудник ${i}`, role: 'admin' }));
 const world = (tasks: Record<string, unknown>[] = []) =>
   envWith({
     users: [boss, ...staff],

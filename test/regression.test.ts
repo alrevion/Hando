@@ -43,8 +43,8 @@ const events = (targetId: string) =>
 
 // Владелец доски + исполнитель. super_admin состоит в проекте явно: своя доска
 // со своими людьми, роль сама по себе доступа не даёт.
-const boss = { id: 's1', phone: '+1', name: 'Босс', role: 'super_admin' };
-const worker = { id: 'w1', phone: '+2', name: 'Работник', role: 'admin' };
+const boss = { id: 's1', name: 'Босс', role: 'super_admin' };
+const worker = { id: 'w1', name: 'Работник', role: 'admin' };
 const team = { users: [boss, worker], memberships: [{ project_id: 'p1', user_id: 's1' }, { project_id: 'p1', user_id: 'w1' }] };
 
 describe('регрессия шага -1: создание и редактирование', () => {
@@ -172,7 +172,7 @@ describe('регрессия шага -1: движение по доске', () 
 
 describe('регрессия шага -1: приёмка', () => {
   // Один env на три случая: изоляция хранилища откатывает записи МЕЖДУ тестами,
-  // а не внутри одного -- второй вызов envWith() падал бы на UNIQUE users.phone.
+  // а не внутри одного -- второй вызов envWith() падал бы на PRIMARY KEY users.id.
   const withDone = () =>
     envWith({
       ...team,

@@ -49,7 +49,7 @@ export type PendingSignup = { userId: string; name: string };
 /**
  * Заводит человека по его Telegram-аккаунту, если такого ещё нет.
  *
- * Телефон НЕ спрашивается: он nullable с шага 2b именно ради этого пути.
+ * Телефон не спрашивается и не хранится: личность -- сам Telegram-аккаунт.
  * Возвращает id -- существующий или созданный.
  */
 export async function ensureUser(env: Env, tgId: string, name: string, username: string | null): Promise<string> {

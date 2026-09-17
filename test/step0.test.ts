@@ -17,8 +17,8 @@ import { cookie, envWith, stubTelegram } from './fixture';
 const foreign = () =>
   envWith({
     users: [
-      { id: 's1', phone: '+9', name: 'Чужой супер', role: 'super_admin' },
-      { id: 'o1', phone: '+8', name: 'Владелец', role: 'super_admin' },
+      { id: 's1', name: 'Чужой супер', role: 'super_admin' },
+      { id: 'o1', name: 'Владелец', role: 'super_admin' },
     ],
     memberships: [{ project_id: 'p1', user_id: 'o1' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'o1' }],
@@ -65,7 +65,7 @@ describe('шаг 0: чужая доска закрыта на чтение и н
 
   it('восстановление чужого проекта -- 403', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'Чужой супер', role: 'super_admin' }, { id: 'o1', phone: '+8', name: 'Владелец', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'Чужой супер', role: 'super_admin' }, { id: 'o1', name: 'Владелец', role: 'super_admin' }],
       memberships: [{ project_id: 'p1', user_id: 'o1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'o1', archived_at: '2026-01-01T00:00:00.000Z' }],
       tasks: [],
@@ -84,7 +84,7 @@ describe('шаг 0: чужая доска закрыта на чтение и н
 
   it('список архивных проектов больше не показывает чужую доску', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'Чужой супер', role: 'super_admin' }, { id: 'o1', phone: '+8', name: 'Владелец', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'Чужой супер', role: 'super_admin' }, { id: 'o1', name: 'Владелец', role: 'super_admin' }],
       memberships: [{ project_id: 'mine', user_id: 's1' }],
       projects: [
         { id: 'mine', telegram_chat_id: '-100111', created_by: 'o1', archived_at: '2026-01-01T00:00:00.000Z' },
@@ -124,7 +124,7 @@ describe('шаг 0: чужая доска закрыта на чтение и н
 describe('шаг 0: добавление участника проверяет user_id', () => {
   it('несуществующий user_id -- 400 и отдельная формулировка, а не 409 «уже участник»', async () => {
     const env = await envWith({
-      users: [{ id: 'o1', phone: '+8', name: 'Владелец', role: 'super_admin' }, { id: 'u1', phone: '+7', name: 'Новичок', role: 'admin' }],
+      users: [{ id: 'o1', name: 'Владелец', role: 'super_admin' }, { id: 'u1', name: 'Новичок', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'o1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'o1' }],
       tasks: [],

@@ -17,7 +17,7 @@ const sent = (spy: { mock: { calls: unknown[] } }) =>
     .filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)) as { chat_id: string; text: string; reply_markup?: { inline_keyboard?: { text: string; web_app?: { url: string } }[][] } });
 
 const world = () => envWith({
-  users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }, { id: 'w1', phone: '+2', name: 'Азиз', role: 'member' }],
+  users: [{ id: 'boss', name: 'Директор', role: 'creator' }, { id: 'w1', name: 'Азиз', role: 'member' }],
   memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'w1' }],
   projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
   tasks: [
@@ -402,9 +402,9 @@ describe('переспрос «кого именно?» не съедает фр
   // переспрос и написан.
   const twoAziz = () => envWith({
     users: [
-      { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-      { id: 'a1', phone: '+2', name: 'Азиз Каримов', role: 'member' },
-      { id: 'a2', phone: '+3', name: 'Азиз Юсупов', role: 'member' },
+      { id: 'boss', name: 'Директор', role: 'creator' },
+      { id: 'a1', name: 'Азиз Каримов', role: 'member' },
+      { id: 'a2', name: 'Азиз Юсупов', role: 'member' },
     ],
     memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'a1' }, { project_id: 'p1', user_id: 'a2' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],

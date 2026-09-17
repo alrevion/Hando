@@ -10,7 +10,6 @@ export type Priority = 'urgent' | 'medium' | 'low';
 
 export interface User {
   id: string;
-  phone: string;
   name: string;
   role: Role;
   // Bare Telegram @handle (no leading @) -- lets task notifications @mention

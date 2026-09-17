@@ -14,8 +14,8 @@ afterEach(() => { restore?.mockRestore(); restore = null; });
 const tg = () => (restore = stubTelegram()) as ReturnType<typeof stubTelegram>;
 const calls = (spy: ReturnType<typeof stubTelegram>) => spy.mock.calls as unknown as [string, { body?: string }][];
 
-const boss = { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' };
-const worker1 = { id: 'w1', phone: '+2', name: 'Работник', role: 'admin' };
+const boss = { id: 'boss', name: 'Директор', role: 'creator' };
+const worker1 = { id: 'w1', name: 'Работник', role: 'admin' };
 const world = (tasks: Record<string, unknown>[] = []) =>
   envWith({
     users: [boss, worker1],

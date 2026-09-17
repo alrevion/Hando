@@ -9,14 +9,14 @@ import { cookie, envWith } from './fixture';
 
 describe('access control', () => {
   it('admin who is NOT a project member gets 403 from a project-scoped route', async () => {
-    const env = await envWith({ users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }], memberships: [], tasks: [] });
+    const env = await envWith({ users: [{ id: 'a1', name: 'A', role: 'admin' }], memberships: [], tasks: [] });
     const res = await apiRoutes.request('/projects/p1/tasks', { headers: { Cookie: await cookie('a1', 'admin') } }, env);
     expect(res.status).toBe(403);
   });
 
   it('admin who IS a member can access the project-scoped route', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
       tasks: [],
     });
@@ -26,7 +26,7 @@ describe('access control', () => {
 
   it('a non-super_admin/creator gets 403 attempting to delete a task', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }], // member, so access passes; role gate must still 403
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo', telegram_message_id: null }],
     });
@@ -36,7 +36,7 @@ describe('access control', () => {
 
   it('a regular admin editing an in-progress task is rejected (403)', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'in_progress', deadline: null, telegram_message_id: null }],
     });
@@ -50,7 +50,7 @@ describe('access control', () => {
 
   it('super_admin/creator editing an in-progress task succeeds and reopens it to todo', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
       memberships: [{ project_id: 'p1', user_id: 's1' }], // each board has its own people now -- needs an explicit row
       tasks: [{ id: 't1', project_id: 'p1', status: 'in_progress', deadline: null, telegram_message_id: null }],
     });
@@ -69,7 +69,7 @@ describe('access control', () => {
 
   it('editing a done task is rejected (409) even for super_admin', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
       memberships: [{ project_id: 'p1', user_id: 's1' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'done', deadline: null, telegram_message_id: null }],
     });
@@ -83,7 +83,7 @@ describe('access control', () => {
 
   it('valid transition (todo -> in_progress) via the {to} body key succeeds, by the responsible person', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'a1', deadline: null }],
@@ -109,8 +109,8 @@ describe('access control', () => {
   it('only the responsible person can move a task -- a bystander admin is forbidden', async () => {
     const env = await envWith({
       users: [
-        { id: 'a1', phone: '+1', name: 'Responsible', role: 'admin' },
-        { id: 'a2', phone: '+2', name: 'Bystander', role: 'admin' },
+        { id: 'a1', name: 'Responsible', role: 'admin' },
+        { id: 'a2', name: 'Bystander', role: 'admin' },
       ],
       memberships: [
         { project_id: 'p1', user_id: 'a1' },
@@ -141,9 +141,9 @@ describe('access control', () => {
   it('владелец двигает этапы за исполнителя (он принимает работу), посторонний админ -- нет', async () => {
     const env = await envWith({
       users: [
-        { id: 'a1', phone: '+1', name: 'Responsible', role: 'admin' },
-        { id: 'x1', phone: '+9', name: 'Outsider', role: 'admin' },
-        { id: 'c1', phone: '+0', name: 'C', role: 'creator' },
+        { id: 'a1', name: 'Responsible', role: 'admin' },
+        { id: 'x1', name: 'Outsider', role: 'admin' },
+        { id: 'c1', name: 'C', role: 'creator' },
       ],
       memberships: [],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
@@ -165,7 +165,7 @@ describe('access control', () => {
 
   it('a super_admin who is neither a member nor the project creator is forbidden -- each board has its own people', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
       memberships: [],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'someone-else' }],
       tasks: [],
@@ -176,7 +176,7 @@ describe('access control', () => {
 
   it('a super_admin who created the project can access it even without an explicit membership row', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
       memberships: [],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 's1' }],
       tasks: [],
@@ -186,7 +186,7 @@ describe('access control', () => {
   });
 
   it('a super_admin cannot change their own role, even to admin (403)', async () => {
-    const env = await envWith({ users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }], memberships: [], tasks: [] });
+    const env = await envWith({ users: [{ id: 's1', name: 'S', role: 'super_admin' }], memberships: [], tasks: [] });
     const res = await apiRoutes.request(
       '/users/s1',
       { method: 'PATCH', headers: { Cookie: await cookie('s1', 'super_admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'admin' }) },
@@ -197,7 +197,7 @@ describe('access control', () => {
 
   it('зависимость держит НАЧАЛО работы, а не согласие: принять можно всегда, взять в работу -- только после предшественника', async () => {
     const data = {
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
       tasks: [
@@ -236,7 +236,7 @@ describe('access control', () => {
 
   it('reject requires a comment and a positive extra_days, and recalculates the deadline', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
       memberships: [{ project_id: 'p1', user_id: 's1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'done', responsible_user_id: 's1', deadline: '2020-01-01T00:00:00.000Z', done_at: '2020-01-01T00:00:00.000Z' }],
@@ -271,7 +271,7 @@ describe('access control', () => {
 
   it('creating a task notifies the assignee IN DM, @mentioning them by their Telegram username', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin', telegram_username: 'a_handle' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin', telegram_username: 'a_handle' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
       tasks: [],
@@ -306,7 +306,7 @@ describe('access control', () => {
 
   it('creating a task defaults priority to medium when omitted, and rejects a bogus value', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
       tasks: [],
@@ -331,8 +331,8 @@ describe('access control', () => {
   it('a plain admin gets 403 setting someone else\'s Telegram username; super_admin succeeds', async () => {
     const env = await envWith({
       users: [
-        { id: 'a1', phone: '+1', name: 'A', role: 'admin' },
-        { id: 's1', phone: '+9', name: 'S', role: 'super_admin' },
+        { id: 'a1', name: 'A', role: 'admin' },
+        { id: 's1', name: 'S', role: 'super_admin' },
       ],
       memberships: [],
       tasks: [],
@@ -351,28 +351,28 @@ describe('access control', () => {
     expect(ok.status).toBe(200);
   });
 
-  it("a super_admin can edit someone's name and phone (previously impossible -- only telegram_username/role were editable)", async () => {
+  it("a super_admin can edit someone's name", async () => {
     const env = await envWith({
       users: [
-        { id: 's1', phone: '+9', name: 'S', role: 'super_admin' },
-        { id: 'a1', phone: '+1', name: 'Old Name', role: 'admin' },
+        { id: 's1', name: 'S', role: 'super_admin' },
+        { id: 'a1', name: 'Old Name', role: 'admin' },
       ],
       memberships: [],
       tasks: [],
     });
     const res = await apiRoutes.request(
       '/users/a1',
-      { method: 'PATCH', headers: { Cookie: await cookie('s1', 'super_admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New Name', phone: '+7000' }) },
+      { method: 'PATCH', headers: { Cookie: await cookie('s1', 'super_admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New Name' }) },
       env,
     );
     expect(res.status).toBe(200);
   });
 
-  it('rejects an empty name/phone on edit (400) instead of silently blanking it', async () => {
+  it('rejects an empty name on edit (400) instead of silently blanking it', async () => {
     const env = await envWith({
       users: [
-        { id: 's1', phone: '+9', name: 'S', role: 'super_admin' },
-        { id: 'a1', phone: '+1', name: 'A', role: 'admin' },
+        { id: 's1', name: 'S', role: 'super_admin' },
+        { id: 'a1', name: 'A', role: 'admin' },
       ],
       memberships: [],
       tasks: [],
@@ -388,8 +388,8 @@ describe('access control', () => {
   it('GET /tasks/:id is accessible to a project member and forbidden to a non-member', async () => {
     const env = await envWith({
       users: [
-        { id: 'a1', phone: '+1', name: 'A', role: 'admin' },
-        { id: 'a2', phone: '+2', name: 'B', role: 'admin' },
+        { id: 'a1', name: 'A', role: 'admin' },
+        { id: 'a2', name: 'B', role: 'admin' },
       ],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'a1', deadline: null }],
@@ -402,7 +402,7 @@ describe('access control', () => {
 
   it('invalid transition (todo -> done, skipping in_progress) is rejected (409)', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
       memberships: [{ project_id: 'p1', user_id: 's1' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 's1', deadline: null }],
     });
@@ -420,7 +420,7 @@ describe('access control', () => {
 
   it('moving in_progress -> done notifies Telegram of completion', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
       memberships: [{ project_id: 'p1', user_id: 's1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'in_progress', responsible_user_id: 's1', deadline: null, telegram_message_id: '42' }],
@@ -473,7 +473,7 @@ describe('access control', () => {
   });
 
   it('доска без группы Telegram -- отдел; создатель сразу на ней', async () => {
-    const env = await envWith({ users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }], memberships: [], tasks: [] });
+    const env = await envWith({ users: [{ id: 's1', name: 'S', role: 'super_admin' }], memberships: [], tasks: [] });
     const res = await apiRoutes.request(
       '/projects',
       { method: 'POST', headers: { Cookie: await cookie('s1', 'super_admin'), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'X' }) },
@@ -486,7 +486,7 @@ describe('access control', () => {
 
   it('an attachment over 20MB is rejected (413) without ever calling Telegram', async () => {
     const env = await envWith({
-      users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
       memberships: [{ project_id: 'p1', user_id: 's1' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo' }],
     });
@@ -502,7 +502,7 @@ describe('access control', () => {
 
   it('admin who is NOT a project member gets 403 from the task attachments route', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [],
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo' }],
     });
@@ -512,7 +512,7 @@ describe('access control', () => {
 
   it('a project member who is not the uploader cannot delete an attachment (403)', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }], // member, so access passes; uploader gate must still 403
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo' }],
       attachments: [{ id: 'at1', task_id: 't1', uploaded_by: 'someone-else', telegram_message_id: '5', telegram_file_id: 'f', filename: 'x.pdf', mime_type: 'application/pdf', size_bytes: 10 }],
@@ -523,7 +523,7 @@ describe('access control', () => {
 
   it('the uploader (a plain member) can delete their own attachment', async () => {
     const env = await envWith({
-      users: [{ id: 'a1', phone: '+1', name: 'A', role: 'admin' }],
+      users: [{ id: 'a1', name: 'A', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'a1' }],
       tasks: [{ id: 't1', project_id: 'p1', status: 'todo' }],
       attachments: [{ id: 'at1', task_id: 't1', uploaded_by: 'a1', telegram_message_id: '5', telegram_file_id: 'f', filename: 'x.pdf', mime_type: 'application/pdf', size_bytes: 10 }],
@@ -538,8 +538,8 @@ describe('access control', () => {
   it('super_admin больше не выдаётся никем: ни super_admin, ни creator (400)', async () => {
     const env = await envWith({
       users: [
-        { id: 's1', phone: '+9', name: 'S', role: 'super_admin' },
-        { id: 'a1', phone: '+1', name: 'A', role: 'admin' },
+        { id: 's1', name: 'S', role: 'super_admin' },
+        { id: 'a1', name: 'A', role: 'admin' },
       ],
       memberships: [],
       tasks: [],
@@ -555,8 +555,8 @@ describe('access control', () => {
   it('владелец меняет роль между «руководитель отдела» и «участник»', async () => {
     const env = await envWith({
       users: [
-        { id: 'c1', phone: '+0', name: 'C', role: 'creator' },
-        { id: 'a1', phone: '+1', name: 'A', role: 'admin' },
+        { id: 'c1', name: 'C', role: 'creator' },
+        { id: 'a1', name: 'A', role: 'admin' },
       ],
       memberships: [],
       tasks: [],
@@ -571,7 +571,7 @@ describe('access control', () => {
 
   it("cannot change the creator's own role, even as creator (403)", async () => {
     const env = await envWith({
-      users: [{ id: 'c1', phone: '+0', name: 'C', role: 'creator' }],
+      users: [{ id: 'c1', name: 'C', role: 'creator' }],
       memberships: [],
       tasks: [],
     });
@@ -586,8 +586,8 @@ describe('access control', () => {
   it('a plain admin is forbidden from listing or restoring archived projects; a super_admin connected to the project can', async () => {
     const env = await envWith({
       users: [
-        { id: 'a1', phone: '+1', name: 'A', role: 'admin' },
-        { id: 's1', phone: '+9', name: 'S', role: 'super_admin' },
+        { id: 'a1', name: 'A', role: 'admin' },
+        { id: 's1', name: 'S', role: 'super_admin' },
       ],
       memberships: [],
       tasks: [],

@@ -23,7 +23,7 @@ type FakeData = {
   // фикстура двойного членства, без которой тест изоляции обесценен: код вида
   // EXISTS(... WHERE user_id = ?) без AND org_id = ? проходит старую фикстуру
   // зелёным, потому что там человек принадлежал ровно одной организации.
-  users: Array<{ id: string; phone: string; name: string; role: string; telegram_username?: string; telegram_user_id?: string | null; orgs?: string[] }>;
+  users: Array<{ id: string; name: string; role: string; telegram_username?: string; telegram_user_id?: string | null; orgs?: string[] }>;
   memberships: Array<{ project_id: string; user_id: string; org_id?: string }>;
   tasks: Array<Record<string, unknown>>;
   projects?: Array<{ id: string; telegram_chat_id: string; created_by?: string; archived_at?: string; org_id?: string }>;
@@ -63,8 +63,8 @@ export async function envWith(data: FakeData): Promise<Env> {
       // сообщение честно ждёт в очереди. Тестам нужен подключённый человек,
       // поэтому id выводится из его собственного. Кому нужен НЕподключённый --
       // передаёт telegram_user_id: null явно.
-      db.prepare("INSERT INTO users (id, phone, name, telegram_username, telegram_user_id, current_org_id, onboarded_at) VALUES (?,?,?,?,?,?,datetime('now'))")
-        .bind(u.id, u.phone, u.name, u.telegram_username ?? null,
+      db.prepare("INSERT INTO users (id, name, telegram_username, telegram_user_id, current_org_id, onboarded_at) VALUES (?,?,?,?,?,datetime('now'))")
+        .bind(u.id, u.name, u.telegram_username ?? null,
           u.telegram_user_id === undefined ? `tg-${u.id}` : u.telegram_user_id, orgs[0]),
     );
     for (const org of orgs) {
@@ -95,13 +95,12 @@ export async function envWith(data: FakeData): Promise<Env> {
   for (const p of projects.values()) referenced.add(p.by);
   for (const t of data.tasks) referenced.add((t.responsible_user_id as string) ?? '__seed');
   for (const a of data.attachments ?? []) referenced.add(a.uploaded_by);
-  let phone = 0;
   for (const id of referenced) {
     if (userIds.has(id)) continue;
     // Досозданный человек получает членство в ORG_A: иначе строка, на которую
     // ссылается задача, принадлежала бы никому и org-предикаты вели бы себя
     // непредсказуемо.
-    stmts.push(db.prepare("INSERT INTO users (id, phone, name, telegram_user_id, current_org_id, onboarded_at) VALUES (?,?,?,?,?,datetime('now'))").bind(id, `+00${phone++}`, id, `tg-${id}`, ORG_A));
+    stmts.push(db.prepare("INSERT INTO users (id, name, telegram_user_id, current_org_id, onboarded_at) VALUES (?,?,?,?,datetime('now'))").bind(id, id, `tg-${id}`, ORG_A));
     stmts.push(db.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?,?,?,?,datetime('now'))").bind(`${ORG_A}:${id}`, ORG_A, id, 'admin'));
   }
   for (const p of projects.values()) {

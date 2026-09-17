@@ -45,7 +45,7 @@ describe('срок словами: месяцы, «до пятого», часы
 
   it('поправка словами: «убери срок» снимает срок, «тема: …» меняет тему', async () => {
     const env = await envWith({
-      users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }, { id: 'u-aziz', phone: '+2', name: 'Азиз', role: 'admin' }],
+      users: [{ id: 'boss', name: 'Директор', role: 'creator' }, { id: 'u-aziz', name: 'Азиз', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'u-aziz' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
       tasks: [],
@@ -108,9 +108,9 @@ describe('поправка к черновику без модели', () => {
 const world = () =>
   envWith({
     users: [
-      { id: 'boss', phone: '+1', name: 'Директор', role: 'creator' },
-      { id: 'u-aziz', phone: '+2', name: 'Азиз Каримов', role: 'admin' },
-      { id: 'u-bek', phone: '+3', name: 'Бек Юсупов', role: 'admin' },
+      { id: 'boss', name: 'Директор', role: 'creator' },
+      { id: 'u-aziz', name: 'Азиз Каримов', role: 'admin' },
+      { id: 'u-bek', name: 'Бек Юсупов', role: 'admin' },
     ],
     memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'u-aziz' }, { project_id: 'p1', user_id: 'u-bek' }],
     projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
@@ -314,7 +314,7 @@ describe('приложение: тот же черновик', () => {
 describe('счётчик промахов разбора', () => {
   it('каждый черновик оставляет в журнале, чем он разобран', async () => {
     const env = await envWith({
-      users: [{ id: 'boss', phone: '+1', name: 'Директор', role: 'creator' }, { id: 'u-aziz', phone: '+2', name: 'Азиз', role: 'admin' }],
+      users: [{ id: 'boss', name: 'Директор', role: 'creator' }, { id: 'u-aziz', name: 'Азиз', role: 'admin' }],
       memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'u-aziz' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
       tasks: [],

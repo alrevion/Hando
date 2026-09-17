@@ -175,7 +175,7 @@ apiRoutes.get('/me', async (c) => {
   // между 2a и 2b человек видел бы у себя роль, по которой ему уже ничего не
   // разрешено. org отдаётся клиенту: фронту нужно знать, где он находится.
   const u = await c.env.DB.prepare(
-    `SELECT u.id, u.name, u.phone, m.role AS role, m.position AS position, o.id AS org_id, o.name AS org_name,
+    `SELECT u.id, u.name, m.role AS role, m.position AS position, o.id AS org_id, o.name AS org_name,
             COALESCE(u.notify_mode, 'all') AS notify_mode, COALESCE(u.remind_before_min, 30) AS remind_before_min
      FROM users u
      JOIN org_memberships m ON m.user_id = u.id AND m.org_id = ? AND m.left_at IS NULL
@@ -196,81 +196,14 @@ function normalizeUsername(raw: string | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-// creator creates super_admin; super_admin creates admin. Coarse gate in middleware;
-// the "only creator makes super_admin" sub-rule is the one domain check below.
-apiRoutes.post('/users', requireRole('super_admin', 'creator'), async (c) => {
-  const { phone, name, role, telegram_username } = await c.req
-    .json<{ phone?: string; name?: string; role?: Role; telegram_username?: string }>()
-    .catch(() => ({}) as Record<string, undefined>);
-  if (!phone || !name || !role) return c.json({ error: 'phone, name, role required' }, 400);
-  if (role === 'creator') return c.json({ error: 'cannot create creator via API' }, 400);
-  if (!['super_admin', 'admin', 'member'].includes(role)) return c.json({ error: 'unknown role' }, 400);
-  if (role === 'super_admin' && c.get('role') !== 'creator') return c.json({ error: 'only creator can create super_admin' }, 403);
+// Заводить человека по телефону больше нельзя: Hando номеров не хранит (их
+// пришлось бы хранить в РУз), а люди приходят сами -- по ссылке-приглашению в
+// бота (signup.ts), где Telegram и есть их личность.
 
-  const orgId = c.get('orgId');
-  const username = normalizeUsername(telegram_username);
-  const trimmed = phone.trim();
-
-  // Телефон глобально уникален, а человек -- глобальный (R1-2). Значит «этот
-  // телефон уже есть» перестало быть ошибкой: это штатный сценарий первого дня
-  // ровно для той персоны, ради которой R1-2 вводился -- владелец добавляет в
-  // кафе бухгалтера, уже заведённого в его школе. Слепой catch разбирается на
-  // три случая явно.
-  const existing = await c.env.DB.prepare('SELECT id FROM users WHERE phone = ?').bind(trimmed).first<{ id: string }>();
-  if (existing) {
-    const already = await c.env.DB
-      .prepare('SELECT left_at FROM org_memberships WHERE org_id = ? AND user_id = ?')
-      .bind(orgId, existing.id)
-      .first<{ left_at: string | null }>();
-    if (already && already.left_at === null) return c.json({ error: 'already a member of this organisation' }, 409);
-
-    // ЧУЖОГО ЧЕЛОВЕКА ПО ОДНОМУ ТЕЛЕФОНУ ПРИСОЕДИНИТЬ НЕЛЬЗЯ.
-    //
-    // Раньше здесь молча создавалось членство. План описывал сценарий «владелец
-    // добавляет в кафе своего бухгалтера из школы», где согласие подразумевалось
-    // самим фактом, что это его человек. Но код не мог отличить этот случай от
-    // «беру телефон постороннего»: имя, роль и организацию задаёт вызывающий, а
-    // жертва не получает даже уведомления.
-    //
-    // Цена была не в самом графте: получив членство, атакующий проходил гейт
-    // PATCH /users/:id и переписывал ГЛОБАЛЬНУЮ идентичность жертвы (телефон),
-    // после чего входил под ней и попадал в ЕЁ организации.
-    //
-    // Возврат СВОЕГО отозванного сотрудника разрешён: членство уже было, то есть
-    // согласие когда-то состоялось. Присоединение нового идёт через приглашение,
-    // которое человек гасит сам.
-    if (!already) return c.json({ error: 'this phone already belongs to a person; send them an invite instead', code: 'INVITE_REQUIRED' }, 409);
-
-    // confirmed_at проставляется сразу: заводит человека сам владелец, и он же
-    // подтверждающий. Ожидание одобрения нужно только тому, кто вступил ПО КОДУ.
-    await c.env.DB.prepare("UPDATE org_memberships SET left_at = NULL, role = ?, confirmed_at = ? WHERE org_id = ? AND user_id = ?").bind(role, nowIso(), orgId, existing.id).run();
-    await logEvent(c.env.DB, { actorId: c.get('userId'), orgId, targetType: 'user', targetId: existing.id, action: 'membership_restored' });
-    return c.json({ id: existing.id, phone: trimmed, name, role, telegram_username: username }, 201);
-  }
-
-  const id = uuid();
-  // Пишем в ОБЕ: users.role ради NOT NULL CHECK из 0001_init (снимется в 2b),
-  // членство -- ради истины. Без строки в org_memberships созданный человек не
-  // принадлежал бы никому и не смог бы войти.
-  try {
-    await c.env.DB.batch([
-      // users.role снята пересборкой 2b: роль живёт только в членстве.
-      c.env.DB.prepare('INSERT INTO users (id, phone, name, telegram_username, current_org_id) VALUES (?, ?, ?, ?, ?)').bind(id, trimmed, name, username, orgId),
-      // confirmed_at сразу -- см. выше: подтверждает тот, кто заводит.
-      c.env.DB.prepare('INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES (?, ?, ?, ?, ?)').bind(uuid(), orgId, id, role, nowIso()),
-    ]);
-  } catch {
-    return c.json({ error: 'could not create user' }, 500);
-  }
-  await logEvent(c.env.DB, { actorId: c.get('userId'), orgId, targetType: 'user', targetId: id, action: 'created' });
-  return c.json({ id, phone: trimmed, name, role, telegram_username: username }, 201);
-});
-
-// Edit any subset of name/phone/telegram_username/role -- all optional and
-// independent (send only what changed). Was telegram_username-only; broadened
-// because there was previously no way to fix a name/phone typo at all.
+// Edit any subset of name/telegram_username/role -- all optional and
+// independent (send only what changed).
 apiRoutes.patch('/users/:id', requireRole('admin', 'super_admin', 'creator'), async (c) => {
-  const body = await c.req.json<{ name?: string; phone?: string; telegram_username?: string; role?: Role }>().catch(() => ({}) as Record<string, undefined>);
+  const body = await c.req.json<{ name?: string; telegram_username?: string; role?: Role }>().catch(() => ({}) as Record<string, undefined>);
   const targetId = c.req.param('id');
   const orgId = c.get('orgId');
 
@@ -289,20 +222,18 @@ apiRoutes.patch('/users/:id', requireRole('admin', 'super_admin', 'creator'), as
     // Руководитель отдела меняет роли только в своём поддереве.
     if (!(await canManageMember(c.env, orgId, c.get('userId'), c.get('role'), targetId))) return c.json({ error: 'forbidden' }, 403);
   }
-  // Идентичность (имя, телефон, username) -- только владельцу.
-  if ((body.name !== undefined || body.phone !== undefined || 'telegram_username' in body) && c.get('role') === 'admin') {
+  // Идентичность (имя, username) -- только владельцу.
+  if ((body.name !== undefined || 'telegram_username' in body) && c.get('role') === 'admin') {
     return c.json({ error: 'forbidden' }, 403);
   }
   if (body.name !== undefined && !body.name.trim()) return c.json({ error: 'name cannot be empty' }, 400);
-  if (body.phone !== undefined && !body.phone.trim()) return c.json({ error: 'phone cannot be empty' }, 400);
 
   // ИДЕНТИЧНОСТЬ ОБЩЕГО ЧЕЛОВЕКА НЕ ПРИНАДЛЕЖИТ ОДНОМУ АРЕНДАТОРУ.
   //
-  // users глобальные (R1-2): один человек живёт в нескольких организациях. Право
-  // править его имя и ТЕЛЕФОН выдавалось по членству в одной из них -- значит
-  // любая организация могла переписать его точку входа и войти под ним в
-  // остальные. Роль правится по-прежнему: она и так org-скоупная.
-  const identityEdit = body.name !== undefined || body.phone !== undefined || 'telegram_username' in body;
+  // users глобальные (R1-2): один человек живёт в нескольких организациях, и
+  // его имя, выставленное одной из них, увидели бы все остальные. Роль
+  // правится по-прежнему: она и так org-скоупная.
+  const identityEdit = body.name !== undefined || 'telegram_username' in body;
   if (identityEdit) {
     const elsewhere = await c.env.DB
       .prepare('SELECT 1 FROM org_memberships WHERE user_id = ? AND org_id <> ? AND left_at IS NULL')
@@ -319,16 +250,12 @@ apiRoutes.patch('/users/:id', requireRole('admin', 'super_admin', 'creator'), as
     sets.push('name = ?');
     binds.push(body.name.trim());
   }
-  if (body.phone !== undefined) {
-    sets.push('phone = ?');
-    binds.push(body.phone.trim());
-  }
   if ('telegram_username' in body) {
     sets.push('telegram_username = ?');
     binds.push(normalizeUsername(body.telegram_username));
   }
   // Роль пишется ТОЛЬКО в членство: колонка users.role снята пересборкой 2b.
-  // Правка идентичности (имя/телефон/username) и правка роли -- две разные
+  // Правка идентичности (имя/username) и правка роли -- две разные
   // записи, и вторая может быть единственной.
   if (sets.length === 0 && body.role === undefined) return c.json({ error: 'nothing to update' }, 400);
   try {
@@ -342,7 +269,7 @@ apiRoutes.patch('/users/:id', requireRole('admin', 'super_admin', 'creator'), as
     }
     await c.env.DB.batch(writes);
   } catch {
-    return c.json({ error: 'phone already exists' }, 409);
+    return c.json({ error: 'could not update user' }, 500);
   }
 
   await logEvent(c.env.DB, { actorId: c.get('userId'), orgId: c.get('orgId'), targetType: 'user', targetId, action: 'edited' });
@@ -385,11 +312,8 @@ apiRoutes.get('/users/:id/stats', async (c) => {
 
 // Справочник людей -- ПО ДЕРЕВУ (раздел 19): владелец видит всех, руководитель
 // отдела -- своё поддерево и людей своих досок, участник -- людей своих досок.
-// Телефон -- только владельцу (модалка правки человека).
 apiRoutes.get('/users', async (c) => {
-  const role = c.get('role');
-  const withPhone = role === 'super_admin' || role === 'creator';
-  const rows = await visibleMembers(c.env, c.get('orgId'), c.get('userId'), role, withPhone);
+  const rows = await visibleMembers(c.env, c.get('orgId'), c.get('userId'), c.get('role'));
   return c.json(rows.map(({ aliases: _a, ...u }) => { void _a; return u; }));
 });
 
@@ -1110,7 +1034,7 @@ apiRoutes.get('/org/snapshot', async (c) => {
   // задач, а опрос идёт каждые несколько секунд. Видимость -- по дереву
   // (раздел 19), поэтому список есть у всех ролей, но у каждой свой.
   const users = since ? null
-    : (await visibleMembers(c.env, orgId, userId, role, role === 'creator' || role === 'super_admin'))
+    : (await visibleMembers(c.env, orgId, userId, role))
         .map(({ aliases: _a, ...u }) => { void _a; return u; });
 
   return c.json({
@@ -1287,10 +1211,10 @@ apiRoutes.get('/archive/mine', async (c) => {
 // offer a Remove button for them); everyone else must be an actual member.
 apiRoutes.get('/projects/:projectId/members', requireProjectAccess('project'), async (c) => {
   const projectId = c.req.param('projectId');
-  // Same phone/telegram_username privacy gate as GET /users -- this list also
-  // feeds the plain responsible-person picker, which any project member can hit.
+  // telegram_username -- только старшим: этот список питает и простой выбор
+  // исполнителя, который доступен любому участнику доски.
   const role = c.get('role');
-  const extra = role === 'super_admin' || role === 'creator' ? ', u.telegram_username, u.phone' : '';
+  const extra = role === 'super_admin' || role === 'creator' ? ', u.telegram_username' : '';
   const orgId = c.get('orgId');
   // Роль -- из членства в организации, не из мёртвой users.role; и сам список
   // людей теперь выводится из org_memberships, а не из глобальной users.

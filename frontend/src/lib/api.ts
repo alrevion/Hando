@@ -73,13 +73,11 @@ export const restoreProject = (id: string) => post<void>(`/projects/${id}/restor
 
 // --- Users (for admin/super_admin management + responsible-person pickers) ---
 export const getUsers = () => get<User[]>('/users');
-export const createUser = (input: { phone: string; name: string; role: 'super_admin' | 'admin'; telegram_username?: string }) =>
-  post<User>('/users', input);
 // Любое подмножество полей. telegram_username: '' стирает. Ролей две назначаемых
 // (руководитель отдела, участник); сервер проверяет право и поддерево.
 export const updateUser = (
   userId: string,
-  input: Partial<{ name: string; phone: string; telegram_username: string; role: 'admin' | 'member' }>,
+  input: Partial<{ name: string; telegram_username: string; role: 'admin' | 'member' }>,
 ) => patch<void>(`/users/${userId}`, input);
 // Заморозка и удаление из организации (раздел 19): владелец -- любого,
 // руководитель отдела -- в своём поддереве. Открытые поручения вернутся авторам.
