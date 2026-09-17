@@ -287,6 +287,21 @@ describe('помощник', () => {
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
   });
 
+  it('«напомни мне завтра в 10, что…» -- черновик себе со сроком, а не «ок, напомню»', async () => {
+    // Живая фраза из продакшена. Раньше её забирал TO_BOT по первому слову,
+    // помощник отвечал «Ок, напомню завтра в 10:00» -- и не заводил ничего.
+    const env = await world();
+    const spy = tg();
+    await say(env, 'tg-boss', 'Напомни мне завтра в 10, что нужно замерить окна для того, чтобы съездить на джами и купить москитные сетки или сделать их и купить материалы.');
+    const row = await testEnv.DB.prepare('SELECT assignee_ids, deadline, title FROM drafts').first<{ assignee_ids: string; deadline: string; title: string }>();
+    // Без ключа модели тема не сокращается, но и «Что» в начале не остаётся.
+    expect(row!.title).toMatch(/^Замерить окна/);
+    expect(JSON.parse(row!.assignee_ids)).toEqual(['boss']);
+    const tomorrow = new Date(Date.now() + 86400000).toLocaleDateString('en-CA', { timeZone: 'Asia/Tashkent' });
+    expect(new Date(row!.deadline).toLocaleString('en-CA', { timeZone: 'Asia/Tashkent', hour12: false })).toBe(`${tomorrow}, 10:00:00`);
+    expect(sent(spy).some((m) => m.text.includes('напомню'))).toBe(false);
+  });
+
   it('API: POST /ask отвечает по своим задачам', async () => {
     const env = await world();
     const res = await apiRoutes.request('/ask', { method: 'POST', headers: { Cookie: await cookie('w1', 'member', ORG_A), 'Content-Type': 'application/json' }, body: JSON.stringify({ question: 'за что взяться?', history: [] }) }, env);
@@ -462,6 +477,14 @@ describe('намерение фразы: что бот считает прось
     // --- просьба к боту
     ['удали все черновики', 'ask', false],
     ['напомни Азизу про отчёт', 'ask', true],
+    ['напомни о смете', 'ask', false],
+    ['напомни про подготовить отчёт', 'ask', false],
+
+    // --- напоминание СЕБЕ: это дело со сроком, а не просьба толкнуть чужое
+    ['напомни мне завтра в 10 замерить окна', 'task', false],
+    ['напомните мне про встречу в пятницу', 'task', false],
+    ['напомни завтра позвонить в банк', 'task', false],
+    ['напомни в пятницу о том, что нужно оплатить интернет', 'task', false],
     ['покажи что сдано', 'ask', false],
 
     // --- поручение: есть действие

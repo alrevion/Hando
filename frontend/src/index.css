@@ -1020,13 +1020,16 @@ select.inp {
    них, меняется скачком: интерполировать нечего. Регистрация делает их
    числами, и тогда едет уже сама переменная -- а с ней и пилюля.
    В старых WebKit правило неизвестно, переменные остаются текстом, и пилюля
-   просто переставляется без анимации -- ровно как было. */
-@property --c {
+   просто переставляется без анимации -- ровно как было.
+   Имена длинные нарочно: регистрация ГЛОБАЛЬНА, и короткое --r однажды
+   перекрыло токен радиуса (--r: 14px стал «не числом») -- у всех карточек
+   пропали скругления. */
+@property --pill-col {
   syntax: '<number>';
   inherits: false;
   initial-value: 0;
 }
-@property --r {
+@property --pill-row {
   syntax: '<number>';
   inherits: false;
   initial-value: 0;
@@ -1040,10 +1043,10 @@ select.inp {
   border-radius: 999px;
   background: var(--label);
   /* 100% здесь -- собственный размер пилюли, плюс зазор сетки. */
-  transform: translate(calc((100% + 4px) * var(--c, 0)), calc((100% + 4px) * var(--r, 0)));
+  transform: translate(calc((100% + 4px) * var(--pill-col, 0)), calc((100% + 4px) * var(--pill-row, 0)));
   /* Едут ПЕРЕМЕННЫЕ, а не transform: transform пересчитывается из них и сам по
      себе интерполироваться не может. */
-  transition: --c 0.28s cubic-bezier(0.32, 0.72, 0, 1), --r 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: --pill-col 0.28s cubic-bezier(0.32, 0.72, 0, 1), --pill-row 0.28s cubic-bezier(0.32, 0.72, 0, 1);
 }
 @media (prefers-reduced-motion: reduce) {
   .cal-pill {

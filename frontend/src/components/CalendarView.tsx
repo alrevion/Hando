@@ -218,7 +218,7 @@ export function CalendarView({ currentUser }: { currentUser: User }) {
                     прыжок через полгода ленты анимировать нечего. */}
                 {selIn(y, m) !== null ? (
                   <div className="cal-pill" aria-hidden="true"
-                    style={{ ['--c' as string]: selIn(y, m)! % 7, ['--r' as string]: Math.floor(selIn(y, m)! / 7) }} />
+                    style={{ ['--pill-col' as string]: selIn(y, m)! % 7, ['--pill-row' as string]: Math.floor(selIn(y, m)! / 7) }} />
                 ) : null}
                 {Array.from({ length: (new Date(y, m, 1).getDay() + 6) % 7 }, (_, i) => <div key={`pad-${i}`} />)}
                 {Array.from({ length: new Date(y, m + 1, 0).getDate() }, (_, i) => i + 1).map((day) => {
