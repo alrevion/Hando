@@ -36,7 +36,6 @@
     "crons": ["*/5 * * * *"]
   },
   "vars": {
-    "AUTH_API_URL": "https://api.auth.alrevion.com",
     // Выделенная bot-only группа Telegram под вложения -- единственное
     // хранилище медиа (ADR-4). Бот @hando_ai_bot уже добавлен в неё.
     // Валидируется через resolveChatId при настройке.

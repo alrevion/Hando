@@ -247,8 +247,10 @@ export async function draftText(env: Env, row: DraftRow, timeZone: string): Prom
   ];
   // Подробности -- отдельной строкой, а не хвостом темы: тема должна читаться
   // в списке из одной строки, а всё сказанное сверх неё живёт здесь.
-  if (row.description?.trim()) lines.push(`📄 <b>Содержание:</b> ${esc(row.description.trim())}`);
+  // Строка есть ВСЕГДА, как у срока: пропавшая строка читается как поломка, а
+  // «не указано» говорит, что поле есть и его можно дописать ответом.
   lines.push(
+    `📄 <b>Содержание:</b> ${row.description?.trim() ? esc(row.description.trim()) : 'не указано'}`,
     `👤 <b>Кому:</b> ${self ? 'вам' : esc(names.join(', ')) || '—'}`,
     `📅 <b>Срок:</b> ${row.deadline ? formatWhen(row.deadline, timeZone) : 'не указан'}`,
     `${PRIORITY_DOT[row.priority] ?? '🟡'} <b>Важность:</b> ${PRIORITY_RU[row.priority]}${row.priority_explicit ? '' : ' (не сказана)'}`,

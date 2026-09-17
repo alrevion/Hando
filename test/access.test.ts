@@ -484,19 +484,6 @@ describe('access control', () => {
     expect(await testEnv.DB.prepare('SELECT 1 FROM project_memberships WHERE project_id = ? AND user_id = ?').bind(id, 's1').first()).not.toBeNull();
   });
 
-  it('auth pre-check makes ZERO calls to auth-api for an unregistered phone', async () => {
-    const env = await envWith({ users: [], memberships: [], tasks: [] });
-    const spy = vi.spyOn(globalThis, 'fetch');
-    const res = await apiRoutes.request(
-      '/auth/login',
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: '+404' }) },
-      env,
-    );
-    expect(res.status).toBe(404);
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
-  });
-
   it('an attachment over 20MB is rejected (413) without ever calling Telegram', async () => {
     const env = await envWith({
       users: [{ id: 's1', phone: '+9', name: 'S', role: 'super_admin' }],

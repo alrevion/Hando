@@ -1,40 +1,25 @@
-// Auth: phone pre-check -> auth-api OTP -> self-minted HMAC session token.
-import type { Env, Role, SessionPayload, User } from './types';
+// Auth: self-minted HMAC session token. Войти можно двумя путями, и оба через
+// Telegram: подпись мини-приложения (verifyInitData) или подтверждение в боте
+// для браузера (login_links, routes.ts).
+import type { Env, Role, SessionPayload } from './types';
 
 export const SESSION_COOKIE = 'session';
 // Exported so the cookie's own maxAge (routes.ts, set alongside mintSession) can't
 // drift out of sync with the token's exp claim -- it did once, silently halving this.
 export const SESSION_TTL_SECONDS = 12 * 60 * 60; // stateless token has no revoke path, so still bounded -- but 30min was logging out active users mid-task
 
+/** Сколько ключ входа в браузере ждёт подтверждения в боте. Столько же живёт его кука. */
+export const LOGIN_TTL_MS = 10 * 60 * 1000;
+
+/** Ключ входа есть, ещё не подтверждён и не истёк. */
+export async function loginPending(db: Env['DB'], token: string): Promise<boolean> {
+  const row = await db.prepare('SELECT created_at FROM login_links WHERE token = ? AND confirmed_at IS NULL')
+    .bind(token).first<{ created_at: string }>();
+  return !!row && Date.now() - Date.parse(row.created_at) <= LOGIN_TTL_MS;
+}
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-
-// Step 1 of the auth flow: reject unregistered phones WITHOUT touching auth-api.
-export function precheckPhone(db: Env['DB'], phone: string) {
-  return db.prepare('SELECT * FROM users WHERE phone = ?').bind(phone.trim()).first<User>();
-}
-
-// Step 2: ask auth-api to send the OTP (only reached for a registered phone).
-export async function sendOtp(env: Env, phone: string): Promise<boolean> {
-  const res = await fetch(`${env.AUTH_API_URL}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': env.AUTH_API_KEY },
-    body: JSON.stringify({ phone }),
-  });
-  return res.ok;
-}
-
-// Step 3: confirm the code with auth-api.
-export async function verifyOtp(env: Env, phone: string, code: string): Promise<boolean> {
-  const res = await fetch(`${env.AUTH_API_URL}/auth/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': env.AUTH_API_KEY },
-    body: JSON.stringify({ phone, code }),
-  });
-  if (!res.ok) return false;
-  const body = (await res.json().catch(() => ({}))) as { success?: boolean };
-  return body.success === true;
-}
 
 // --- session token: base64url(payload).base64url(HMAC-SHA256(payload)) ---
 

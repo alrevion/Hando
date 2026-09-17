@@ -37,7 +37,7 @@ import { askAssistant, classifyIntent } from './assistant';
 import { assignableMembers } from './hierarchy';
 import { APP_URL } from './transition';
 import { show as showChecklist, toggleItem } from './checklist';
-import { membershipRole, resolveOrgId } from './auth';
+import { loginPending, membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
 const enc = new TextEncoder();
@@ -378,6 +378,29 @@ botApp.post('/webhook', async (c) => {
   // ------------------------------------------------------------ нажатие кнопки
   if (update.callback_query) {
     const cq = update.callback_query;
+
+    // ВХОД В БРАУЗЕРЕ -- до whoIs: войти может и тот, у кого пространства ещё
+    // нет (сайт тогда покажет «создайте или вступите»).
+    const login = cq.data?.match(/^(lg|lgx):([0-9a-f]{32})$/);
+    if (login) {
+      const [, kind, token] = login;
+      const me = await c.env.DB.prepare('SELECT id FROM users WHERE telegram_user_id = ?').bind(String(cq.from.id)).first<{ id: string }>();
+      let reply = 'Ссылка для входа устарела. Нажмите «Войти через Telegram» на сайте ещё раз.';
+      if (me && await loginPending(c.env.DB, token)) {
+        if (kind === 'lgx') {
+          await c.env.DB.prepare('DELETE FROM login_links WHERE token = ?').bind(token).run();
+          reply = 'Вход отменён. Без этой кнопки по ссылке не войти — аккаунт в безопасности.';
+        } else {
+          await c.env.DB.prepare('UPDATE login_links SET user_id = ?, confirmed_at = ? WHERE token = ? AND confirmed_at IS NULL')
+            .bind(me.id, nowIso(), token).run();
+          reply = '✅ Вход подтверждён. Вернитесь в браузер — Hando уже открывается.';
+        }
+      }
+      await answerCallbackQuery(c.env, cq.id);
+      if (cq.message) await editMessageText(c.env, String(cq.message.chat.id), String(cq.message.message_id), reply);
+      return c.json({ ok: true });
+    }
+
     // answerCallbackQuery отправляется НА КАЖДОЕ нажатие, включая отвергнутые:
     // без него у нажавшего крутится спиннер до таймаута.
     const who = await whoIs(c.env, cq.from);
@@ -890,6 +913,24 @@ botApp.post('/webhook', async (c) => {
   if (msg.chat.type !== 'private' && msg.chat.id !== msg.from.id) return c.json({ ok: true });
 
   const start = msg.text?.match(/^\/start\s+(\S+)/);
+  // ВХОД В БРАУЗЕРЕ: сайт открыл бота с ключом. Сам переход ничего не
+  // подтверждает -- нужна кнопка. Иначе чужую ссылку достаточно было бы
+  // открыть, чтобы отдать свою сессию тому, кто её прислал.
+  if (start && start[1].startsWith('login_')) {
+    const token = start[1].slice('login_'.length);
+    const chat = String(msg.chat.id);
+    const known = await c.env.DB.prepare('SELECT id FROM users WHERE telegram_user_id = ?').bind(String(msg.from.id)).first<{ id: string }>();
+    if (!known || !(await isOnboarded(c.env, known.id))) {
+      await sendMessage(c.env, chat, 'Вы ещё не зарегистрированы в Hando. Нажмите /start — это займёт минуту, — а потом войдите на сайте ещё раз.');
+    } else if (!(await loginPending(c.env.DB, token))) {
+      await sendMessage(c.env, chat, 'Ссылка для входа устарела. Нажмите «Войти через Telegram» на сайте ещё раз.');
+    } else {
+      await sendMessage(c.env, chat,
+        '🔐 <b>Вход в Hando в браузере</b>\n\nПодтвердите, если это вы только что нажали «Войти через Telegram» на сайте. Если нет — нажмите «Это не я»: кто-то прислал вам свою ссылку для входа.',
+        { inline_keyboard: [[{ text: '✅ Войти', callback_data: `lg:${token}` }, { text: '✖ Это не я', callback_data: `lgx:${token}` }]] }, true);
+    }
+    return c.json({ ok: true });
+  }
   if (start && start[1].startsWith('j_')) {
     // Личная ссылка-приглашение: заявка уходит её хозяину. Незнакомец сначала
     // называет себя -- в заявке должно стоять имя, а не никнейм.

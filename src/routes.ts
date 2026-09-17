@@ -4,7 +4,7 @@ import { type Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Env, Role, Task, TaskStatus } from './types';
 import { chunks, logEvent, nowIso, uuid } from './db';
-import { membershipRole, mintSession, precheckPhone, resolveOrgId, sendOtp, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyInitData, verifyOtp, verifySession } from './auth';
+import { LOGIN_TTL_MS, membershipRole, mintSession, resolveOrgId, SESSION_COOKIE, SESSION_TTL_SECONDS, verifyInitData, verifySession } from './auth';
 import { type AppEnv, requireAuth, requireProjectAccess, requireRole } from './middleware';
 import { deleteMessage, editMessageText, getFileUrl, resolveChatId, sendDocument, sendMessage } from './telegram';
 import { applyTransition, assigneeButtons, buildNotification } from './transition';
@@ -18,7 +18,7 @@ import {
 } from './drafts';
 import { CATEGORIES, PACKS, pack } from './packs';
 import { learnAlias, localIso, parseTask, refineDraft, transcribe } from './parse';
-import { approveJoin, canCreateOrg, createOrg, inviteCodeFor, inviteLink, joinByCode, notifyApprover, pendingRequests, rejectJoin } from './signup';
+import { approveJoin, BOT_USERNAME, canCreateOrg, createOrg, inviteCodeFor, inviteLink, joinByCode, notifyApprover, pendingRequests, rejectJoin } from './signup';
 import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers, visibleTasks, visibleUserIds } from './hierarchy';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
 import { askAssistant, type AskTurn } from './assistant';
@@ -58,56 +58,12 @@ async function withEventTrail(db: D1Database, orgId: string, tasks: Record<strin
 
 // ---------------------------------------------------------------- auth (public)
 
-apiRoutes.post('/auth/login', async (c) => {
-  const { phone } = await c.req.json<{ phone?: string }>().catch(() => ({ phone: undefined }));
-  if (!phone) return c.json({ error: 'phone required' }, 400);
-  // Pre-check FIRST: unregistered phone is rejected without ever calling auth-api.
-  const user = await precheckPhone(c.env.DB, phone);
-  if (!user) return c.json({ error: 'phone not registered', code: 'PHONE_NOT_REGISTERED' }, 404);
-  if (!(await sendOtp(c.env, phone))) return c.json({ error: 'otp send failed' }, 502);
-  return c.json({ success: true });
-});
-
-apiRoutes.post('/auth/verify', async (c) => {
-  const { phone, code } = await c.req.json<{ phone?: string; code?: string }>().catch(() => ({ phone: undefined, code: undefined }));
-  if (!phone || !code) return c.json({ error: 'phone and code required' }, 400);
-  const user = await precheckPhone(c.env.DB, phone);
-  if (!user) return c.json({ error: 'phone not registered', code: 'PHONE_NOT_REGISTERED' }, 404);
-  if (!(await verifyOtp(c.env, phone, code))) return c.json({ error: 'invalid code' }, 401);
-
-  // Роль и организация -- из членства, не из мёртвой users.role. Одно членство --
-  // вход сразу; несколько без выбранного current -- resolveOrgId вернёт null, и
-  // человеку придётся выбрать организацию (экран выбора -- шаг 5).
-  const orgId = await resolveOrgId(c.env.DB, user.id);
-  if (!orgId) return c.json({ error: 'no active organisation for this account' }, 403);
-  const role = await membershipRole(c.env.DB, orgId, user.id);
-  if (!role) return c.json({ error: 'no active organisation for this account' }, 403);
-  const token = await mintSession(c.env.SESSION_SECRET, { sub: user.id, role, org_id: orgId });
-  setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
-  return c.json({ user: { id: user.id, name: user.name, role, org_id: orgId } });
-});
-
 /**
- * Вход из мини-приложения Telegram. Публичный роут -- он ДО requireAuth, как и
- * остальные /auth/*: человек тут ещё без сессии, он её и получает.
- *
- * Телефон и OTP не нужны: подпись Telegram доказывает, что это тот самый
- * аккаунт, который уже подключён к боту. Второй способ входа, а не замена
- * первого -- у кого-то бот не подключён, и он входит по номеру.
+ * Сессия для человека, чья личность уже доказана Telegram'ом -- подписью
+ * мини-приложения или кнопкой в боте. Организация и роль -- из членства, не
+ * из мёртвой users.role.
  */
-apiRoutes.post('/auth/telegram', async (c) => {
-  const { initData } = await c.req.json<{ initData?: string }>().catch(() => ({}) as Record<string, undefined>);
-  const tg = await verifyInitData(c.env.TELEGRAM_BOT_TOKEN, initData ?? '');
-  if (!tg) return c.json({ error: 'invalid initData' }, 401);
-
-  // Человек должен быть уже подключён к боту: мини-приложение не заводит людей,
-  // это делает регистрация в самом боте. Иначе появился бы второй путь создания
-  // пользователей, о котором не знает подтверждение владельцем.
-  const user = await c.env.DB.prepare('SELECT id, name FROM users WHERE telegram_user_id = ?')
-    .bind(tg.id)
-    .first<{ id: string; name: string }>();
-  if (!user) return c.json({ error: 'not connected', code: 'CONNECT_BOT_FIRST' }, 403);
-
+async function startSession(c: Context<AppEnv>, user: { id: string; name: string }) {
   let orgId = await resolveOrgId(c.env.DB, user.id);
   if (!orgId) {
     // Несколько членств и ни одно не выбрано -- берём первое по времени: это
@@ -123,17 +79,75 @@ apiRoutes.post('/auth/telegram', async (c) => {
     }
   }
   const role = orgId ? await membershipRole(c.env.DB, orgId, user.id) : null;
-  if (!orgId || !role) {
-    // Первая организация создаётся В ПРИЛОЖЕНИИ (раздел 18): сессия без
-    // организации законна и открывает экран «создайте или вступите».
-    const token = await mintSession(c.env.SESSION_SECRET, { sub: user.id, role: 'member', org_id: null });
-    setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
-    return c.json({ user: { id: user.id, name: user.name, role: 'member', org_id: null } });
-  }
-
-  const token = await mintSession(c.env.SESSION_SECRET, { sub: user.id, role, org_id: orgId });
+  // Первая организация создаётся В ПРИЛОЖЕНИИ (раздел 18): сессия без
+  // организации законна и открывает экран «создайте или вступите».
+  const payload = orgId && role ? { sub: user.id, role, org_id: orgId } : { sub: user.id, role: 'member' as const, org_id: null };
+  const token = await mintSession(c.env.SESSION_SECRET, payload);
   setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: SESSION_TTL_SECONDS });
-  return c.json({ user: { id: user.id, name: user.name, role, org_id: orgId } });
+  return c.json({ user: { id: user.id, name: user.name, role: payload.role, org_id: payload.org_id } });
+}
+
+/**
+ * Вход из мини-приложения Telegram. Публичный роут -- он ДО requireAuth, как и
+ * остальные /auth/*: человек тут ещё без сессии, он её и получает.
+ *
+ * Телефон и OTP не нужны: подпись Telegram доказывает, что это тот самый
+ * аккаунт, который уже подключён к боту.
+ */
+apiRoutes.post('/auth/telegram', async (c) => {
+  const { initData } = await c.req.json<{ initData?: string }>().catch(() => ({}) as Record<string, undefined>);
+  const tg = await verifyInitData(c.env.TELEGRAM_BOT_TOKEN, initData ?? '');
+  if (!tg) return c.json({ error: 'invalid initData' }, 401);
+
+  // Человек должен быть уже подключён к боту: мини-приложение не заводит людей,
+  // это делает регистрация в самом боте. Иначе появился бы второй путь создания
+  // пользователей, о котором не знает подтверждение владельцем.
+  const user = await c.env.DB.prepare('SELECT id, name FROM users WHERE telegram_user_id = ?')
+    .bind(tg.id)
+    .first<{ id: string; name: string }>();
+  if (!user) return c.json({ error: 'not connected', code: 'CONNECT_BOT_FIRST' }, 403);
+  return startSession(c, user);
+});
+
+// ВХОД В БРАУЗЕРЕ -- через бота, а не по телефону. Номер и коды шли через
+// внешний сервис, который у Hando не подключён, и из браузера не входил никто.
+//
+// Ключ живёт в КУКЕ этого браузера, а в ссылку уходит только он же -- так что
+// ссылка без куки бесполезна: переслать её или подсмотреть мало, забрать
+// сессию может только тот браузер, который её начал.
+const LOGIN_COOKIE = 'login_link';
+
+apiRoutes.post('/auth/link', async (c) => {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const token = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const now = Date.now();
+  // Уборка по ходу: брошенные ключи никому не нужны, а cron ради них -- лишний.
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM login_links WHERE created_at < ?').bind(new Date(now - LOGIN_TTL_MS).toISOString()),
+    c.env.DB.prepare('INSERT INTO login_links (token, created_at) VALUES (?, ?)').bind(token, new Date(now).toISOString()),
+  ]);
+  setCookie(c, LOGIN_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/api/auth', maxAge: LOGIN_TTL_MS / 1000 });
+  return c.json({ url: `https://t.me/${BOT_USERNAME}?start=login_${token}` });
+});
+
+/** 202 -- ещё не подтверждено; 410 -- ключа нет или он истёк; 200 -- вошли. */
+apiRoutes.post('/auth/link/claim', async (c) => {
+  const token = getCookie(c, LOGIN_COOKIE);
+  const row = token
+    ? await c.env.DB.prepare('SELECT user_id, created_at, confirmed_at FROM login_links WHERE token = ?')
+      .bind(token).first<{ user_id: string | null; created_at: string; confirmed_at: string | null }>()
+    : null;
+  if (!row || Date.now() - Date.parse(row.created_at) > LOGIN_TTL_MS) {
+    return c.json({ error: 'Ссылка для входа устарела. Нажмите «Войти через Telegram» ещё раз.', code: 'LOGIN_EXPIRED' }, 410);
+  }
+  if (!row.confirmed_at || !row.user_id) return c.json({ pending: true }, 202);
+  // Гасим ДО выдачи сессии: второй опрос с той же кукой не должен войти ещё раз.
+  const gone = await c.env.DB.prepare('DELETE FROM login_links WHERE token = ? AND confirmed_at IS NOT NULL').bind(token).run();
+  if (!gone.meta.changes) return c.json({ error: 'Ссылка для входа уже использована.', code: 'LOGIN_EXPIRED' }, 410);
+  deleteCookie(c, LOGIN_COOKIE, { path: '/api/auth' });
+  const user = await c.env.DB.prepare('SELECT id, name FROM users WHERE id = ?').bind(row.user_id).first<{ id: string; name: string }>();
+  if (!user) return c.json({ error: 'not found' }, 404);
+  return startSession(c, user);
 });
 
 apiRoutes.post('/auth/logout', (c) => {

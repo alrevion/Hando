@@ -104,8 +104,6 @@ function envWith(data: FakeData): Env {
   return {
     DB: fakeDB(data),
     ASSETS: {} as Fetcher,
-    AUTH_API_URL: 'https://auth.example',
-    AUTH_API_KEY: 'k',
     TELEGRAM_BOT_TOKEN: 't',
     TELEGRAM_STORAGE_CHAT_ID: '-100storage',
     SESSION_SECRET: 'test-secret',

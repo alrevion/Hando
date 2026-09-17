@@ -6,8 +6,9 @@
 import { env as testEnv } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { apiRoutes } from '../src/routes';
+import { botApp } from '../src/bot';
 import { verifyInitData } from '../src/auth';
-import { envWith } from './fixture';
+import { envWith, stubTelegram } from './fixture';
 import type { Env } from '../src/types';
 
 const TOKEN = 'tg-bot-token';
@@ -117,5 +118,99 @@ describe('POST /auth/telegram', () => {
     // организации законна, и приложение показывает «создайте или вступите».
     expect(res.status).toBe(200);
     expect((await res.json<{ user: { org_id: string | null } }>()).user.org_id).toBeNull();
+  });
+});
+
+// Вход в браузере. По телефону войти было нельзя: бот номер не спрашивает, и
+// ни у кого в базе его нет. Теперь сайт открывает бота с ключом, а человек
+// подтверждает вход кнопкой.
+describe('вход в браузере через бота', () => {
+  const hook = (env: Env, update: unknown) =>
+    botApp.request('/webhook', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'tg-secret', 'Content-Type': 'application/json' }, body: JSON.stringify(update) }, env);
+  const start = (env: Env, token: string) =>
+    hook(env, { message: { chat: { id: 'tg-boss', type: 'private' }, from: { id: 'tg-boss', first_name: 'Д' }, text: `/start login_${token}` } });
+  const press = (env: Env, data: string) =>
+    hook(env, { callback_query: { id: 'c1', from: { id: 'tg-boss' }, data, message: { chat: { id: 'tg-boss', type: 'private' }, message_id: 7 } } });
+  const claim = (env: Env, cookie?: string) =>
+    apiRoutes.request('/auth/link/claim', { method: 'POST', headers: cookie ? { Cookie: cookie } : {} }, env);
+  /** Ключ и кука браузера, начавшего вход. */
+  async function begin(env: Env) {
+    const res = await apiRoutes.request('/auth/link', { method: 'POST' }, env);
+    const { url } = await res.json<{ url: string }>();
+    const token = url.match(/start=login_([0-9a-f]{32})$/)![1];
+    const cookie = res.headers.get('Set-Cookie')!.split(';')[0];
+    return { url, token, cookie };
+  }
+  const sentTexts = (spy: ReturnType<typeof stubTelegram>) =>
+    (spy.mock.calls as unknown as [string, { body?: string }][])
+      .filter(([u]) => u.includes('/sendMessage') || u.includes('/editMessageText'))
+      .map(([, i]) => JSON.parse(String(i.body)) as { text: string; reply_markup?: { inline_keyboard: { callback_data: string }[][] } });
+
+  it('ссылка -> бот -> «Войти» -> браузер получает сессию, один раз', async () => {
+    const env = await world();
+    const spy = stubTelegram();
+    try {
+      const { url, token, cookie } = await begin(env);
+      expect(url).toBe(`https://t.me/hando_ai_bot?start=login_${token}`);
+      expect((await claim(env, cookie)).status).toBe(202);
+
+      await start(env, token);
+      // Переход по ссылке сам ничего не подтверждает.
+      expect((await claim(env, cookie)).status).toBe(202);
+      const ask = sentTexts(spy).at(-1)!;
+      expect(ask.text).toContain('Вход в Hando в браузере');
+      expect(ask.reply_markup!.inline_keyboard[0].map((b) => b.callback_data)).toEqual([`lg:${token}`, `lgx:${token}`]);
+
+      await press(env, `lg:${token}`);
+      expect(sentTexts(spy).at(-1)!.text).toContain('Вход подтверждён');
+      const ok = await claim(env, cookie);
+      expect(ok.status).toBe(200);
+      expect((await ok.json<{ user: { id: string } }>()).user.id).toBe('boss');
+      expect(ok.headers.get('Set-Cookie')).toContain('session=');
+      // Второй раз той же кукой -- уже нет.
+      expect((await claim(env, cookie)).status).toBe(410);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('подтверждённый ключ без куки браузера бесполезен: ссылку мало подсмотреть', async () => {
+    const env = await world();
+    const spy = stubTelegram();
+    try {
+      const { token } = await begin(env);
+      await start(env, token);
+      await press(env, `lg:${token}`);
+      expect((await claim(env)).status).toBe(410);
+      expect((await claim(env, `login_link=${token.replace(/.$/, '0')}`)).status).toBe(410);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('«Это не я» гасит ключ', async () => {
+    const env = await world();
+    const spy = stubTelegram();
+    try {
+      const { token, cookie } = await begin(env);
+      await start(env, token);
+      await press(env, `lgx:${token}`);
+      expect(sentTexts(spy).at(-1)!.text).toContain('Вход отменён');
+      expect((await claim(env, cookie)).status).toBe(410);
+      // И подтвердить его после этого нельзя.
+      await press(env, `lg:${token}`);
+      expect((await claim(env, cookie)).status).toBe(410);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('истёкший ключ не подтверждается', async () => {
+    const env = await world();
+    const spy = stubTelegram();
+    try {
+      const { token, cookie } = await begin(env);
+      await testEnv.DB.prepare('UPDATE login_links SET created_at = ? WHERE token = ?')
+        .bind(new Date(Date.now() - 11 * 60 * 1000).toISOString(), token).run();
+      await start(env, token);
+      expect(sentTexts(spy).at(-1)!.text).toContain('устарела');
+      await press(env, `lg:${token}`);
+      expect((await testEnv.DB.prepare('SELECT confirmed_at FROM login_links WHERE token = ?').bind(token).first<{ confirmed_at: string | null }>())!.confirmed_at).toBeNull();
+      expect((await claim(env, cookie)).status).toBe(410);
+    } finally { spy.mockRestore(); }
   });
 });

@@ -133,8 +133,6 @@ export interface TaskEvent {
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  AUTH_API_URL: string;
-  AUTH_API_KEY: string;
   TELEGRAM_BOT_TOKEN: string;
   // Single dedicated bot-only group used across ALL projects purely as a blob
   // store for task attachments -- never a project's human-visible chat.

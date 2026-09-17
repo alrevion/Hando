@@ -110,8 +110,8 @@ const world = async () => {
 // вход, «моё»), с явной причиной: молчаливый пропуск неотличим от забытого роута.
 type Probe = { path: string; method?: string; body?: unknown; skip?: string };
 const FIXTURES: Record<string, Probe> = {
-  'POST /auth/login': { path: '/auth/login', method: 'POST', body: { phone: '+3' }, skip: 'публичный: до сессии организации ещё нет' },
-  'POST /auth/verify': { path: '/auth/verify', method: 'POST', body: { phone: '+3', code: '1' }, skip: 'публичный: до сессии организации ещё нет' },
+  'POST /auth/link': { path: '/auth/link', method: 'POST', skip: 'публичный: до сессии организации ещё нет' },
+  'POST /auth/link/claim': { path: '/auth/link/claim', method: 'POST', skip: 'публичный: сессию выдаёт по своей куке, чужих идентификаторов не принимает' },
   'POST /auth/telegram': { path: '/auth/telegram', method: 'POST', body: { initData: 'подделка' }, skip: 'публичный: подпись Telegram проверяется до всего остального' },
   'POST /auth/logout': { path: '/auth/logout', method: 'POST', skip: 'гасит свою же куку, чужих идентификаторов не принимает' },
   'GET /me': { path: '/me', skip: 'отдаёт только себя в СВОЕЙ организации; проверяется отдельным тестом ниже' },

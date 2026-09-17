@@ -50,12 +50,10 @@ const patch = <T>(path: string, body?: unknown) =>
 const del = <T>(path: string) => request<T>(path, { method: 'DELETE' });
 
 // --- Auth ---
-// POST /api/auth/login {phone} -> 200 {} on success, or a 404 with
-// {error, code: 'PHONE_NOT_REGISTERED'} for a phone with no provisioned account.
-export const authLogin = (phone: string) => post<void>('/auth/login', { phone });
-// POST /api/auth/verify {phone, code} -> sets session cookie, returns {user}.
-export const authVerify = (phone: string, code: string) =>
-  post<{ user: User }>('/auth/verify', { phone, code });
+// Вход в браузере через бота: ссылка на бота, потом опрос. claim отвечает
+// {pending} (202), пока человек не нажал «Войти», и 410, когда ключ истёк.
+export const authLinkStart = () => post<{ url: string }>('/auth/link');
+export const authLinkClaim = () => post<{ user?: User; pending?: boolean }>('/auth/link/claim');
 // GET /api/me -> {user} when a valid session cookie is present, else 401.
 export const getMe = () => get<{ user: User }>('/me');
 export const authLogout = () => post<void>('/auth/logout');

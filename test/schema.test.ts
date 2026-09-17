@@ -14,6 +14,7 @@ describe('тестовая база — настоящая D1', () => {
       'drafts',
       'events',
       'intent_cache',
+      'login_links',
       'notifications',
       'nudges',
       'org_memberships',

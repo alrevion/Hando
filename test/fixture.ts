@@ -167,8 +167,6 @@ export async function envWith(data: FakeData): Promise<Env> {
   return {
     DB: db,
     ASSETS: {} as Fetcher,
-    AUTH_API_URL: 'https://auth.example',
-    AUTH_API_KEY: 'k',
     TELEGRAM_BOT_TOKEN: 't',
     TELEGRAM_STORAGE_CHAT_ID: '-100555',
     SESSION_SECRET: SECRET,
