@@ -138,6 +138,9 @@ function authorButtons(r: Row): InlineButton[][] {
   return r.kind === 'each' ? [] : [[{ text: '👤 Переназначить', callback_data: `ra:${r.task_id}:` }]];
 }
 
+/** Когда поставлена задача: created_at бывает и ISO, и SQLite-строкой без пояса. */
+const bornAt = (r: Row) => Date.parse(r.created_at.includes('T') ? r.created_at : `${r.created_at.replace(' ', 'T')}Z`);
+
 // (b) НЕ ПРИНЯЛ. Адресату -- через час после постановки; если срок сегодня --
 // каждый час. Автору -- через три часа, один раз.
 export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
@@ -158,7 +161,7 @@ export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
   const log = await sentLog(env, results.map((r) => r.id));
   const writes: D1PreparedStatement[] = [];
   for (const r of results) {
-    const age = now.getTime() - Date.parse(r.created_at.includes('T') ? r.created_at : `${r.created_at.replace(' ', 'T')}Z`);
+    const age = now.getTime() - bornAt(r);
     if (age < HOUR_MS) continue;
     // КАЖДЫЙ ЧАС, пока не принял, а не один раз. Одно напоминание теряется в
     // ленте Telegram за ночь, и поручение висит непринятым до утра, хотя
@@ -208,11 +211,15 @@ export async function remindDueSoon(env: Env, now: Date): Promise<void> {
     // час до срока напоминало бы почти непрерывно. Для таких задач остаётся
     // только «срок наступил» и просрочка.
     const tight = r.repeat_min !== null && r.repeat_min < 24 * 60;
-    if (!tight && left > 0 && left <= HOUR_MS && dueNow(log, r.id, 'before_1h', ONCE, now)) {
+    // Предупреждение «за час» -- только если задача появилась РАНЬШЕ, чем за
+    // час. «Напомни через 2 минуты» иначе получало «⏰ Через час срок» на
+    // первом же проходе: до срока меньше часа, значит окно открыто.
+    const lead = Date.parse(r.due_at as string) - bornAt(r);
+    if (!tight && lead > HOUR_MS && left > 0 && left <= HOUR_MS && dueNow(log, r.id, 'before_1h', ONCE, now)) {
       shoot('before_1h', `⏰ Через час срок: «${r.title}»`);
     }
     const n = r.remind_before_min;
-    if (!tight && n > 0 && n !== 60 && left > 0 && left <= n * 60 * 1000 && dueNow(log, r.id, 'before_n', ONCE, now)) {
+    if (!tight && n > 0 && n !== 60 && lead > n * 60 * 1000 && left > 0 && left <= n * 60 * 1000 && dueNow(log, r.id, 'before_n', ONCE, now)) {
       shoot('before_n', `⏰ ${n % 60 === 0 ? `Через ${n / 60} ч` : `Через ${n} мин`} срок: «${r.title}»`);
     }
     if (left <= 0 && -left < HOUR_MS && dueNow(log, r.id, 'at_due', ONCE, now)) {

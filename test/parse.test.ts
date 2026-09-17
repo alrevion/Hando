@@ -96,6 +96,36 @@ describe('сроки в поясе организации', () => {
   it('через N дней и недель', () => {
     expect(localDay(iso('через 3 дня'))).toBe('2026-09-05');
     expect(localDay(iso('через 2 недели'))).toBe('2026-09-16');
+    // Словом тоже: распознавание речи пишет и так, и так.
+    expect(localDay(iso('через два дня'))).toBe('2026-09-04');
+    expect(localDay(iso('через пару дней'))).toBe('2026-09-04');
+    expect(localDay(iso('через неделю'))).toBe('2026-09-09');
+    expect(localDay(iso('через месяц'))).toBe('2026-10-02');
+  });
+
+  it('через N минут и часов -- точный момент от сейчас', () => {
+    const after = (p: string) => (Date.parse(iso(p)!) - NOW.getTime()) / 60000;
+    expect(after('через 2 минуты проверить оформление')).toBe(2);
+    expect(after('через минуту')).toBe(1);
+    expect(after('через пятнадцать минут')).toBe(15);
+    expect(after('через полчаса')).toBe(30);
+    expect(after('через час')).toBe(60);
+    expect(after('через полтора часа')).toBe(90);
+    expect(after('через 3 часа')).toBe(180);
+    expect(after('через пару часов')).toBe(120);
+  });
+
+  it('через два дня в 10 -- день из «через», час из фразы', () => {
+    const local = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso('через два дня в 10 утра')!));
+    expect(local).toBe('2026-09-04, 10:00');
+  });
+
+  it('«через день» без числа -- повтор, а не срок; «через два дня» -- срок, а не повтор', () => {
+    expect(iso('поливать цветы через день')).toBeNull();
+    const d = parseByPattern('позвонить маме через два дня', PEOPLE, 'u-self', NOW, TZ)!;
+    expect(d.repeatMin).toBeNull();
+    expect(localDay(d.deadline!)).toBe('2026-09-04');
+    expect(d.title).toBe('Позвонить маме');
   });
 
   it('число месяца, уже прошедшее, переносится на следующий', () => {
@@ -135,6 +165,13 @@ describe('разбор целиком, без обращения к сети', (
     // Личный слой -- это адресат, совпадающий с автором, а не отдельная сущность.
     expect(d.assigneeIds).toEqual(['u-self']);
     expect(d.title).toBe('Позвонить в банк');
+  });
+
+  it('«Напомни мне через 2 минуты проверить оформление.» -- себе, со сроком, тема без точки', () => {
+    const d = parse('Напомни мне через 2 минуты проверить оформление.')!;
+    expect(d.assigneeIds).toEqual(['u-self']);
+    expect(d.title).toBe('Проверить оформление');
+    expect(Date.parse(d.deadline!) - NOW.getTime()).toBe(2 * 60000);
   });
 
   it('«напомни мне завтра, что надо позвонить в банк» -- тема без «что»', () => {
@@ -195,6 +232,22 @@ describe('разбор НИКОГДА не отвечает «не понима�
     expect(d.priority).toBe('low');
     // Оно уже стало полем -- в названии читалось бы дважды.
     expect(d.title).toBe('Разобрать архив');
+  });
+});
+
+describe('разбор моделью', () => {
+  it('модель знает «сейчас» в поясе организации: иначе её срок -- догадка', async () => {
+    const env = { GROQ_API_KEY: 'k' } as Env;
+    let prompt = '';
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      prompt = (JSON.parse(String(init?.body)) as { messages: { content: string }[] }).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"title":"Разобраться с поставщиком","assignee_ids":[],"deadline":null}' } }] }));
+    });
+    try {
+      await parseTask(env, 'разобраться с поставщиком', PEOPLE, 'u-self', TZ, NOW);
+    } finally { spy.mockRestore(); }
+    // NOW -- 05:00 UTC, в Ташкенте 10:00.
+    expect(prompt).toContain('Сейчас 2026-09-02 10:00, пояс Asia/Tashkent');
   });
 });
 

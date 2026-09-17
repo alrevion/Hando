@@ -235,6 +235,17 @@ export function localToday(now: Date, timeZone: string): { y: number; m: number;
   return { y: p.y, m: p.m, d: p.d };
 }
 
+// Число словом или цифрой: вслух говорят «раз в три дня» и «через пару часов»,
+// а не «каждые 3». Общее для срока и повтора. Длинные слова -- раньше коротких:
+// «двадцать» иначе начиналось бы как «два».
+const N: Record<string, number> = {
+  один: 1, одну: 1, два: 2, две: 2, двух: 2, пару: 2, пары: 2, три: 3, трое: 3, трёх: 3, трех: 3,
+  четыре: 4, четырёх: 4, четырех: 4, пять: 5, пяти: 5, шесть: 6, семь: 7, десять: 10,
+  четырнадцать: 14, пятнадцать: 15, двадцать: 20, тридцать: 30, сорок: 40,
+};
+const num = (w: string | undefined): number => (w ? (N[w.toLowerCase()] ?? (Number(w) || 1)) : 1);
+const COUNT = String.raw`\d+|один|одну|двадцать|дв[ае]|двух|пар[уы]|тридцать|тр[иоё]е?|трёх|трех|четырнадцать|четыре|четыр[её]х|пятнадцать|пят[иь]|шесть|семь|десять|сорок`;
+
 export function matchDeadline(
   text: string, now: Date, timeZone: string,
   /** Конец дня для «до завтра»/«в пятницу»: конец рабочего дня организации, у 24/7 -- 23:59. */
@@ -261,6 +272,27 @@ export function matchDeadline(
   const mark = (...ws: string[]) => ws.forEach((w) => used.add(w));
 
   let base: Date | null = null;
+
+  // «Через 2 минуты», «через полчаса», «через пару дней» -- срок ОТ СЕЙЧАС.
+  // Прежде понималось только «через 3 дня» цифрой, а «через 2 минуты» не
+  // совпадало ни с чем: черновик без срока, то есть без напоминания.
+  // Минуты и часы -- точный момент, разбирать дальше нечего. Дни, недели и
+  // месяцы дают ДЕНЬ, а время к нему -- из фразы («через два дня в 10») или
+  // конец рабочего дня. «Через день» без числа -- не срок, а повтор через
+  // день (matchRepeat), его не трогаем.
+  const rel = lower.match(new RegExp(
+    String.raw`(?:^|[\s,])через\s+(?:(${COUNT}|полтора)\s+)?(полчаса|минут[а-яё]*|час[а-яё]*|сутки|суток|дн[а-яё]*|день|недел[а-яё]*|месяц[а-яё]*)(?![а-яё])`, 'i'));
+  if (rel && !(rel[1] === undefined && /^д/i.test(rel[2]))) {
+    const n = rel[1]?.toLowerCase() === 'полтора' ? 1.5 : num(rel[1]);
+    const unit = rel[2].toLowerCase();
+    mark(...rel[0].trim().split(/\s+/));
+    const minutes = unit === 'полчаса' ? 30 : unit.startsWith('минут') ? n : unit.startsWith('час') ? n * 60 : 0;
+    if (minutes) return { iso: new Date(now.getTime() + minutes * 60000).toISOString(), usedWords: used };
+    base = unit.startsWith('месяц')
+      ? new Date(Date.UTC(today.y, today.m - 1 + n, today.d))
+      : new Date(midnight.getTime() + n * (unit.startsWith('недел') ? 7 : 1) * 864e5);
+  }
+
   // «ДО завтра» -- это СЕГОДНЯ до конца суток, а не завтрашний день.
   //
   // Предлог здесь меняет смысл на противоположный: «сдать до завтра» значит
@@ -269,7 +301,8 @@ export function matchDeadline(
   // принудительно 23:59, а не конец рабочего дня: именно в полночь наступает
   // то самое «завтра», до которого просили успеть.
   // Порядок важен: «послезавтра» содержит «завтра» как подстроку.
-  if (word('сегодня').test(lower)) { base = midnight; mark('сегодня'); }
+  if (base) { /* срок уже дан оборотом «через …» */ }
+  else if (word('сегодня').test(lower)) { base = midnight; mark('сегодня'); }
   else if (word('послезавтра').test(lower)) { base = new Date(midnight.getTime() + 2 * 864e5); mark('послезавтра'); }
   else if (/(?:^|[\s,.;:!?«»"'()-])до\s+завтра(?=$|[\s,.;:!?«»"'()-])/i.test(lower)) {
     base = midnight; hardEnd = '23:59'; mark('до', 'завтра');
@@ -316,15 +349,6 @@ export function matchDeadline(
         base = new Date(midnight.getTime() + (count - 1) * 864e5);
       }
       mark(...win[0].split(/\s+/));
-    }
-  }
-
-  if (!base) {
-    const days = lower.match(/через\s+(\d+)\s*(дн|день|дня|недел)[а-яё]*/i);
-    if (days) {
-      const n = Number(days[1]) * (days[2].startsWith('недел') ? 7 : 1);
-      base = new Date(midnight.getTime() + n * 864e5);
-      mark(...days[0].split(/\s+/));
     }
   }
 
@@ -515,6 +539,8 @@ function buildTitle(text: string, used: Set<string>[]): string {
       && !/^(?:напомни|напомню|поручи|скажи|передай|мне|себе|я|нужно|надо|необходимо|чтобы)$/i.test(w))
     .join(' ')
     .replace(/\s+/g, ' ')
+    // Точка в конце -- от диктовки, темой она не бывает: «Проверить оформление.»
+    .replace(/[\s.!…]+$/, '')
     // Вычеркнутое слово оставляет за собой предлог: «подготовить кабинет к
     // проверке» -> «Подготовить кабинет к». Предлог без своего слова не значит
     // ничего, поэтому хвостовой убираем. Внутри фразы предлоги не трогаем --
@@ -585,10 +611,15 @@ export function parseByPattern(text: string, people: Person[], selfId: string, n
 const GROQ = 'https://api.groq.com/openai/v1';
 
 /** Разбор моделью. null -- сеть не ответила; вызывающий отдаёт fallback. */
-export async function parseByLlm(env: Env, text: string, people: Person[], model: string, packId?: string | null, selfId?: string): Promise<Draft | null> {
+export async function parseByLlm(env: Env, text: string, people: Person[], model: string, packId?: string | null, selfId?: string, now = new Date(), timeZone = 'Asia/Tashkent'): Promise<Draft | null> {
   const roster = people.map((p) => `${p.id}=${p.name}`).join('; ');
+  // Сюда доходят фразы, в которых шаблоны срока не нашли, и срок модели --
+  // единственный. Без «сейчас» любое «через», «к обеду», «в следующий раз» у
+  // неё -- догадка о дате, которой она не знает.
+  const local = new Intl.DateTimeFormat('sv-SE', { timeZone, dateStyle: 'short', timeStyle: 'short' }).format(now);
   const prompt = [
     'Разбери поручение в JSON. Отвечай ТОЛЬКО JSON, без пояснений.',
+    `Сейчас ${local}, пояс ${timeZone}. deadline считай от этого момента и пиши с поправкой на пояс.`,
     'Поля: title (суть поручения: 2-6 слов, повелительная форма, без имён, дат и слов о важности -- «Подготовить отчёт», а не «Артуру нужно подготовить отчёт до пятницы»), description (остальные подробности из фразы одной-двумя фразами, или пустая строка), assignee_ids (массив id из списка), deadline (ISO 8601 или null), kind ("single"|"each"|"ack").',
     'kind="ack" если это объявление/приказ «ознакомиться», а не задача.',
     `Люди: ${roster}`,
@@ -654,20 +685,15 @@ export function matchRepeat(text: string): { days: number | null; usedWords: Set
     m[0].trim().split(/\s+/).forEach((w) => used.add(w));
     return { days: Math.max(1, days), usedWords: used };
   };
-  // Число словом или цифрой: вслух чаще говорят «раз в три дня», чем «каждые 3».
-  const N: Record<string, number> = {
-    один: 1, одну: 1, два: 2, две: 2, двух: 2, три: 3, трое: 3, трёх: 3, трех: 3,
-    четыре: 4, четырёх: 4, четырех: 4, пять: 5, пяти: 5, шесть: 6, семь: 7, десять: 10, четырнадцать: 14,
-  };
-  const num = (w: string | undefined): number => (w ? (N[w] ?? (Number(w) || 1)) : 1);
-  const COUNT = String.raw`\d+|один|одну|дв[ае]|двух|тр[иоё]е?|трёх|трех|четыре|четыр[её]х|пят[иь]|шесть|семь|десять|четырнадцать`;
 
-  // «каждые 3 дня», «раз в три дня», «через каждые два дня».
-  const nDays = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в|через)\s+(${COUNT})\s*(?:дн[а-яё]*|день|сут[а-яё]+)`, 'i'));
+  // «каждые 3 дня», «раз в три дня», «через каждые два дня». Голое «через два
+  // дня» -- уже не повтор, а срок (matchDeadline): «позвонить через два дня»
+  // делают один раз.
+  const nDays = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в)\s+(${COUNT})\s*(?:дн[а-яё]*|день|сут[а-яё]+)`, 'i'));
   if (nDays) return take(nDays, num(nDays[1]));
-  const nWeeks = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в|через)\s+(${COUNT})\s*недел[а-яё]*`, 'i'));
+  const nWeeks = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в)\s+(${COUNT})\s*недел[а-яё]*`, 'i'));
   if (nWeeks) return take(nWeeks, num(nWeeks[1]) * 7);
-  const nMonths = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в|через)\s+(${COUNT})\s*месяц[а-яё]*`, 'i'));
+  const nMonths = lower.match(new RegExp(String.raw`(?:кажд[а-яё]+|раз\s+в)\s+(${COUNT})\s*месяц[а-яё]*`, 'i'));
   if (nMonths) return take(nMonths, num(nMonths[1]) * 30);
 
   // Без числа: «через день» -- это раз в два дня, «каждый день» -- раз в день.
@@ -790,7 +816,7 @@ export async function parseTask(
   const forOther = (ids: string[]) => (ids.some((id) => id !== selfId) ? authorName : null);
   if (byPattern) return { ...byPattern, ...(await splitTitle(env, byPattern.title, model, forOther(byPattern.assigneeIds))) };
 
-  const byLlm = env.GROQ_API_KEY ? await parseByLlm(env, text, people, model, packId, selfId) : null;
+  const byLlm = env.GROQ_API_KEY ? await parseByLlm(env, text, people, model, packId, selfId, now, timeZone) : null;
   if (byLlm) return byLlm;
 
   // Даже на запасном пути слово про срочность не должно остаться в названии:

@@ -133,6 +133,7 @@ describe('матрица напоминаний: дозировка', () => {
 
   it('за час, за N минут (настройка человека) и в срок -- по разу и всегда (urgent)', async () => {
     const env = await world(plus(NOW, 20).toISOString());
+    await createdAgo(24 * 60);
     await testEnv.DB.prepare("UPDATE users SET remind_before_min = 25 WHERE id = 'w1'").run();
     await remindDueSoon(env, NOW);
     await remindDueSoon(env, plus(NOW, 5));
@@ -143,6 +144,21 @@ describe('матрица напоминаний: дозировка', () => {
     await remindDueSoon(env, plus(NOW, 22));
     kinds = (await queued()).map((n) => n.kind).sort();
     expect(kinds).toEqual(['at_due', 'before_1h', 'before_n']);
+  });
+
+  it('«через 2 минуты»: ни «через час», ни «через N мин» -- только «срок наступил»', async () => {
+    // Задача поставлена за две минуты до срока: окно «за час» было открыто уже
+    // при постановке, и первый же проход слал «⏰ Через час срок».
+    const env = await world(plus(NOW, 2).toISOString());
+    await createdAgo(0);
+    await testEnv.DB.prepare("UPDATE users SET remind_before_min = 30 WHERE id = 'w1'").run();
+    await remindDueSoon(env, NOW);
+    await remindDueSoon(env, plus(NOW, 1));
+    expect(await queued()).toEqual([]);
+    await remindDueSoon(env, plus(NOW, 3));
+    const q = await queued();
+    expect(q.map((n) => n.kind)).toEqual(['at_due']);
+    expect(q[0].p.text).toContain('Срок наступил');
   });
 
   it('просрочено: первое сразу, дальше раз в час в рабочее время; автору раз в день', async () => {
