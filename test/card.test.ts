@@ -588,6 +588,10 @@ describe('задача из контекста: «заверши её» посл
     expect(sent(spy).some((m) => m.text === '✅ «Посмотреть оформление» выполнена.')).toBe(true);
     expect(sent(spy).some((m) => m.text.includes('Уточните'))).toBe(false);
     expect(await drafts()).toBe(0);
+    // И ровно ОДНО сообщение: отчёт «✅ Готово · Кто: Яков» о собственном
+    // действии приходил вторым и читался как двойное подтверждение.
+    expect(sent(spy).filter((m) => m.chat_id === 'tg-boss').map((m) => m.text))
+      .toEqual(['✅ «Посмотреть оформление» выполнена.']);
   });
 
   it('голое «готово» -- о задаче из напоминания; чужая уходит на проверку', async () => {
@@ -597,6 +601,9 @@ describe('задача из контекста: «заверши её» посл
     await say(env, 'tg-w1', 'всё, готово');
     expect(await row('w1')).toMatchObject({ state: 'done' });
     expect(sent(spy).some((m) => m.text === '✅ «Подготовить отчёт» сдана на проверку.')).toBe(true);
+    // Исполнителю -- только ответ команды, а отчёт «Готово» уходит АВТОРУ.
+    expect(sent(spy).filter((m) => m.chat_id === 'tg-w1')).toHaveLength(1);
+    expect(sent(spy).some((m) => m.chat_id === 'tg-boss' && m.text.includes('Готово'))).toBe(true);
   });
 
   it('напоминание старше получаса уже не в счёт', async () => {

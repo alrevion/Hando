@@ -179,10 +179,12 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
     const deadline = set?.deadline !== undefined ? set.deadline : (task.deadline ?? null);
     const targets = new Set<string>();
 
-    // (1) АКТОР, если он адресат. Его письмо -- якорь ветки: именно его
-    // message_id сохраняется как telegram_message_id и позже заменяется
-    // эскалацией. Убрать актора значило бы остаться без якоря.
-    if (actorId) {
+    // (1) АКТОР -- только если письмо ОТСЛЕЖИВАЕМОЕ. Его message_id и есть
+    // якорь ветки: он сохраняется в telegram_home_id задачи и позже гасится
+    // («🚀 В работе» исчезает, когда работу сдали). Во всех остальных случаях
+    // человеку не пишут о том, что он только что сделал сам: на «заверши её»
+    // приходил и ответ команды, и отчёт «✅ Готово, кто: Яков» -- о себе же.
+    if (actorId && notify.track) {
       const mine = await env.DB.prepare('SELECT 1 FROM task_assignees WHERE task_id = ? AND user_id = ?')
         .bind(task.id, actorId).first();
       if (mine) targets.add(actorId);
@@ -210,6 +212,10 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
       ).bind(task.id).all<{ user_id: string }>();
       for (const r of results) targets.add(r.user_id);
     }
+
+    // Актора вычёркиваем и здесь: правило (3) добавляет всех адресатов
+    // закрытой задачи, а он среди них -- тот, кто её и закрыл.
+    if (actorId && !notify.track) targets.delete(actorId);
 
     for (const uid of targets) {
       statements.push(await buildNotification(env, task, action, notify, deadline, uid, actorId ?? undefined));

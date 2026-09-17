@@ -337,7 +337,8 @@ describe('ревью: адресация уведомлений на рассы�
 
     const { results } = await testEnv.DB.prepare('SELECT assignee_id FROM notifications WHERE task_id = ?').bind(id).all<{ assignee_id: string }>();
     // Задача закрыта -- это меняет работу остальных: делать её больше не надо.
-    expect(results.map((r) => r.assignee_id).sort()).toEqual(['boss', 'u0', 'u1', 'u2']);
+    // Самому u0 письма нет: он её и закрыл, отчёт о собственном действии лишний.
+    expect(results.map((r) => r.assignee_id).sort()).toEqual(['boss', 'u1', 'u2']);
   });
 
   it('отказ доходит до АВТОРА, а не до посторонних исполнителей', async () => {

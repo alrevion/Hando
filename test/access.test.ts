@@ -236,10 +236,12 @@ describe('access control', () => {
 
   it('reject requires a comment and a positive extra_days, and recalculates the deadline', async () => {
     const env = await envWith({
-      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
-      memberships: [{ project_id: 'p1', user_id: 's1' }],
+      // Исполнитель -- НЕ автор: возврат на доработку читает исполнитель, а
+      // писать самому себе о собственном действии бот перестал.
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }, { id: 'w1', name: 'W', role: 'admin' }],
+      memberships: [{ project_id: 'p1', user_id: 's1' }, { project_id: 'p1', user_id: 'w1' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
-      tasks: [{ id: 't1', project_id: 'p1', status: 'done', responsible_user_id: 's1', deadline: '2020-01-01T00:00:00.000Z', done_at: '2020-01-01T00:00:00.000Z' }],
+      tasks: [{ id: 't1', project_id: 'p1', status: 'done', responsible_user_id: 'w1', author_id: 's1', deadline: '2020-01-01T00:00:00.000Z', done_at: '2020-01-01T00:00:00.000Z' }],
     });
     const missingComment = await apiRoutes.request(
       '/tasks/t1/reject',
@@ -420,10 +422,12 @@ describe('access control', () => {
 
   it('moving in_progress -> done notifies Telegram of completion', async () => {
     const env = await envWith({
-      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
-      memberships: [{ project_id: 'p1', user_id: 's1' }],
+      // Автор отдельно от исполнителя: «Готово» -- отчёт автору, а не самому
+      // сдавшему (он только что нажал кнопку и видит доску).
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }, { id: 'boss', name: 'Автор', role: 'creator' }],
+      memberships: [{ project_id: 'p1', user_id: 's1' }, { project_id: 'p1', user_id: 'boss' }],
       projects: [{ id: 'p1', telegram_chat_id: '-100999' }],
-      tasks: [{ id: 't1', project_id: 'p1', status: 'in_progress', responsible_user_id: 's1', deadline: null, telegram_message_id: '42' }],
+      tasks: [{ id: 't1', project_id: 'p1', status: 'in_progress', responsible_user_id: 's1', author_id: 'boss', deadline: null, telegram_message_id: '42' }],
     });
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ result: { message_id: 43 }, ok: true }), { status: 200 }),
