@@ -322,4 +322,28 @@ describe('регрессия шага -1: cron', () => {
     expect((await events('old')).results).toEqual([{ action: 'archived', actor_id: null, comment: null, overdue_by: null }]);
     expect((await events('fresh')).results).toEqual([]);
   });
+
+  it('10. тик каждую минуту: срок -- поминутно, остальное -- раз в пять минут', async () => {
+    // «Напомни через минуту» при пятиминутном тике приходило через шесть.
+    const day = 24 * 3600 * 1000;
+    const env = await envWith({
+      ...team,
+      tasks: [
+        { id: 'old', project_id: 'p1', status: 'done', responsible_user_id: 'w1', done_at: new Date(Date.now() - 8 * day).toISOString() },
+        { id: 'due', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', deadline: new Date(Date.now() - 30 * 1000).toISOString() },
+      ],
+    });
+    tg();
+    const tick = (minute: number) => {
+      const at = new Date();
+      at.setUTCMinutes(minute, 0, 0);
+      return scheduled({ scheduledTime: at.getTime(), cron: '* * * * *' } as ScheduledController, env, {} as ExecutionContext);
+    };
+    await tick(3);
+    const kinds = async () => (await testEnv.DB.prepare('SELECT kind FROM notifications').all<{ kind: string }>()).results.map((r) => r.kind);
+    expect(await kinds()).toContain('at_due');
+    expect((await row('old'))!.status).toBe('done');
+    await tick(5);
+    expect((await row('old'))!.status).toBe('archived');
+  });
 });

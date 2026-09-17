@@ -22,28 +22,39 @@ const HOURLY_MS = 55 * 60 * 1000;
 const DAILY_MS = 23 * HOUR_MS;
 const ONCE = Number.POSITIVE_INFINITY;
 
-export async function scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+export async function scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
   const now = new Date();
   // Каждый проход -- сам по себе: упавший проход не должен отменять слив
   // очереди (страховку доставки) и самопочинку вебхука в этом же тике.
   const guard = async (name: string, fn: () => Promise<unknown>) => {
     try { await fn(); } catch (err) { console.error(`cron ${name} failed`, err); }
   };
-  await guard('autoArchive', () => autoArchive(env));
-  await guard('notAccepted', () => remindNotAccepted(env, now));
+  // Тик -- КАЖДУЮ МИНУТУ, но поминутно идёт только срок: «напомни через
+  // минуту» при пятиминутном тике приходило через шесть. Остальное --
+  // непринятые, просрочки, сводка -- дозируется часами и сутками, и гонять
+  // его чаще раза в пять минут значило бы впятеро больше читать базу впустую.
+  // Минута -- из расписания, а не из часов: тик может начаться на секунду
+  // позже. Вызов без расписания (тест, ручной запуск) -- полный проход.
+  const full = !controller.scheduledTime || new Date(controller.scheduledTime).getUTCMinutes() % 5 === 0;
+  if (full) {
+    await guard('autoArchive', () => autoArchive(env));
+    await guard('notAccepted', () => remindNotAccepted(env, now));
+  }
   await guard('dueSoon', () => remindDueSoon(env, now));
-  await guard('overdue', () => remindOverdue(env, now));
-  await guard('staleReview', () => remindStaleReview(env));
-  await guard('digests', () => sendDigests(env, now));
+  if (full) {
+    await guard('overdue', () => remindOverdue(env, now));
+    await guard('staleReview', () => remindStaleReview(env));
+    await guard('digests', () => sendDigests(env, now));
+    // Поводы ставятся ДО слива очереди: иначе выданный сейчас повод ждал бы
+    // следующего тика.
+    await guard('nudges', () => enqueueNudges(env));
+  }
   // Страховка за отправку: роуты сливают outbox сразу после ответа, но если тот
   // вызов не дошёл, строка так и лежит с sent_at IS NULL -- здесь она уедет.
-  // Поводы ставятся ДО слива очереди: иначе выданный сейчас повод ждал бы
-  // следующего тика.
-  await guard('nudges', () => enqueueNudges(env));
   await guard('outbox', () => drainOutbox(env, now));
   // Самопочинка вебхука: без неё регистрация была бы ручным шагом с токеном
   // бота, а сбившийся вебхук пришлось бы замечать по молчанию бота.
-  await guard('webhook', () => reconcileWebhook(env, APP_URL));
+  if (full) await guard('webhook', () => reconcileWebhook(env, APP_URL));
 }
 
 // (a) status='done' + done_at older than 7 days -> archived (system-generated event).
