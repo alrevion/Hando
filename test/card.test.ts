@@ -545,3 +545,81 @@ describe('порядок работ: «одно после другого»', ()
     expect(await dep('larisa')).toBeNull();
   });
 });
+
+// Живая жалоба: пришло «⚠️ Просрочено: «Посмотреть оформление»», человек
+// ответил голосом «заверши её» -- бот спросил «о какой задаче речь?». Бот сам
+// её только что назвал.
+describe('задача из контекста: «заверши её» после напоминания', () => {
+  const selfWorld = async () => {
+    const env = await envWith({
+      users: [
+        { id: 'boss', name: 'Директор', role: 'creator' },
+        { id: 'w1', name: 'Азиз Каримов', role: 'admin' },
+      ],
+      memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'w1' }],
+      projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+      tasks: [
+        { id: 't1', project_id: 'p1', title: 'Подготовить отчёт', status: 'todo', responsible_user_id: 'w1', author_id: 'boss' },
+        { id: 't2', project_id: 'p1', title: 'Посмотреть оформление', status: 'in_progress', responsible_user_id: 'boss', author_id: 'boss', priority: 'medium' },
+      ],
+    });
+    await testEnv.DB.prepare("UPDATE task_assignees SET state = 'accepted', accepted_at = datetime('now') WHERE task_id = 't2'").run();
+    // Задачи «старые»: иначе последней упомянутой была бы просто последняя созданная.
+    await testEnv.DB.prepare("UPDATE tasks SET created_at = datetime('now', '-2 days')").run();
+    return env;
+  };
+  const notified = (taskId: string, userId: string, minutesAgo: number) =>
+    testEnv.DB.prepare(
+      `INSERT INTO notifications (id, task_id, assignee_id, org_id, kind, payload, scheduled_at, sent_at)
+       VALUES (?, ?, ?, ?, 'overdue', '{}', ?, ?)`,
+    ).bind(`n-${taskId}-${minutesAgo}`, taskId, userId, ORG_A,
+      new Date(Date.now() - minutesAgo * 60000).toISOString(), new Date(Date.now() - minutesAgo * 60000).toISOString()).run();
+  const task = async (id: string) =>
+    (await testEnv.DB.prepare('SELECT status, confirmed_at, priority FROM tasks WHERE id = ?').bind(id).first<{ status: string; confirmed_at: string | null; priority: string }>())!;
+  const drafts = async () => (await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n;
+
+  it('«заверши её» закрывает задачу из последнего напоминания; своя -- сразу выполнена', async () => {
+    const env = await selfWorld();
+    const spy = tg();
+    await notified('t2', 'boss', 5);
+    await say(env, 'tg-boss', 'Заверши её.');
+    expect(await task('t2')).toMatchObject({ status: 'done' });
+    expect((await task('t2')).confirmed_at).toBeTruthy();
+    expect(sent(spy).some((m) => m.text === '✅ «Посмотреть оформление» выполнена.')).toBe(true);
+    expect(sent(spy).some((m) => m.text.includes('Уточните'))).toBe(false);
+    expect(await drafts()).toBe(0);
+  });
+
+  it('голое «готово» -- о задаче из напоминания; чужая уходит на проверку', async () => {
+    const env = await selfWorld();
+    const spy = tg();
+    await notified('t1', 'w1', 3);
+    await say(env, 'tg-w1', 'всё, готово');
+    expect(await row('w1')).toMatchObject({ state: 'done' });
+    expect(sent(spy).some((m) => m.text === '✅ «Подготовить отчёт» сдана на проверку.')).toBe(true);
+  });
+
+  it('напоминание старше получаса уже не в счёт', async () => {
+    const env = await selfWorld();
+    tg();
+    await notified('t2', 'boss', 45);
+    await say(env, 'tg-boss', 'заверши её');
+    expect(await task('t2')).toMatchObject({ status: 'in_progress' });
+  });
+
+  it('«не сделал её» -- не сдача', async () => {
+    const env = await selfWorld();
+    tg();
+    await notified('t2', 'boss', 2);
+    await say(env, 'tg-boss', 'я её ещё не сделал');
+    expect(await task('t2')).toMatchObject({ status: 'in_progress' });
+  });
+
+  it('«сделай это срочно» -- не правка прошлой задачи: «это» ни на что не указывает', async () => {
+    const env = await selfWorld();
+    tg();
+    await notified('t2', 'boss', 2);
+    await say(env, 'tg-boss', 'сделай это срочно');
+    expect(await task('t2')).toMatchObject({ priority: 'medium' });
+  });
+});

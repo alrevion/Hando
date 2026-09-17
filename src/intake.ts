@@ -148,6 +148,8 @@ const V_ACCEPT = startOfWord(String.raw`принима[ею]|принял|сог
 const V_START = startOfWord(String.raw`в\s+работу|начал|начина[ею]|приступил|приступа[ею]|беру|взял|занялся|делаю`);
 /** Сдать на проверку. */
 const V_DONE = startOfWord(String.raw`готов[оа]?|сдела[нл]|выполн[иел]|законч|заверш|сда[лю]|отправил\s+на\s+проверку`);
+/** «Не сделал», «ещё не готово» -- это НЕ сдача, хотя глагол тот же. */
+const NOT_DONE = startOfWord(String.raw`не\s+(?:ещё\s+|еще\s+)?(?:готов|сдела|выполн|законч|заверш|сда[лю])`);
 /** Принять работу -- это делает автор. */
 const V_CONFIRM = startOfWord(String.raw`принима[ею]\s+работу|принял\s+работу|подтвержда[ею]|зач[её]т|проверил\s+и\s+принял`);
 /**
@@ -213,6 +215,50 @@ async function taskInPhrase(
 }
 
 const PRI_RU: Record<string, string> = { urgent: 'высокая', medium: 'средняя', low: 'низкая' };
+
+/**
+ * «Заверши её», «эту перенеси на пятницу» -- задача не названа, на неё указали.
+ * И фраза из одного глагола -- «готово», «всё, сделал» -- тоже о той, что перед
+ * глазами: другого предмета в ней нет.
+ */
+// «Это» сюда не входит: в речи оно везде («Азизу сделай это срочно» -- новое
+// поручение, а не правка прошлого). Оно только не мешает голому глаголу.
+const POINTER = /(?<![а-яё])(?:её|ее|его|неё|нее|эту|этой|задачу)(?![а-яё])/i;
+const FILLER = new Set(['я', 'уже', 'всё', 'все', 'ну', 'да', 'вот', 'так', 'это', 'ок', 'окей', 'пожалуйста', 'спасибо']);
+function pointsAtLast(phrase: string): boolean {
+  if (POINTER.test(phrase)) return true;
+  const words = phrase.toLowerCase().replace(/в\s+работу|на\s+проверку/g, ' ')
+    .split(/[^а-яёa-z]+/).filter((w) => w && !FILLER.has(w));
+  return words.length <= 1;
+}
+
+/**
+ * Задача, о которой бот писал человеку последней: напоминание, уведомление или
+ * только что созданная. Раньше «заверши её» сразу после «⚠️ Просрочено:
+ * «Посмотреть оформление»» кончалось вопросом «о какой задаче речь?» --
+ * хотя бот сам её только что назвал.
+ *
+ * Полчаса: дальше «её» уже не о том сообщении. Сводка не в счёт -- в ней
+ * задач много, и первая из них ничем не выделена.
+ */
+async function lastMentioned(env: Env, orgId: string, userId: string, now: Date): Promise<Task | null> {
+  const since = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+  // Форматы времени разные (ISO у очереди, datetime('now') у задач) --
+  // сравниваются через datetime(), иначе «T» и пробел путают порядок.
+  const row = await env.DB.prepare(
+    `SELECT t.* FROM (
+       SELECT n.task_id AS id, n.sent_at AS at FROM notifications n
+        WHERE n.assignee_id = ? AND n.org_id = ? AND n.kind <> 'digest' AND n.sent_at IS NOT NULL
+          AND datetime(n.sent_at) >= datetime(?)
+       UNION ALL
+       SELECT id, created_at FROM tasks WHERE author_id = ? AND org_id = ? AND datetime(created_at) >= datetime(?)
+     ) m JOIN tasks t ON t.id = m.id
+     LEFT JOIN task_assignees a ON a.task_id = t.id AND a.user_id = ?
+     WHERE t.status IN ('todo','in_progress','done') AND (t.author_id = ? OR a.user_id IS NOT NULL)
+     ORDER BY datetime(m.at) DESC LIMIT 1`,
+  ).bind(userId, orgId, since, userId, orgId, since, userId, userId).first<Task>();
+  return row ?? null;
+}
 
 /**
  * Незакрытый предшественник -- или null, если путь свободен.
@@ -308,7 +354,8 @@ export async function commandTaskByPhrase(
   const anyVerb = V_ACCEPT.test(phrase) || V_START.test(phrase) || V_DONE.test(phrase) || V_CONFIRM.test(phrase)
     || V_RETURN.test(phrase) || V_DECLINE.test(phrase) || V_LATE.test(phrase) || EDIT_VERB.test(phrase);
   if (!anyVerb) return null;
-  const task = await taskInPhrase(env, who.orgId, who.userId, phrase);
+  const task = await taskInPhrase(env, who.orgId, who.userId, phrase)
+    ?? (pointsAtLast(phrase) ? await lastMentioned(env, who.orgId, who.userId, now) : null);
   if (!task) return null;
 
   const mine = await myAssignee(env, task.id, who.userId, who.orgId);
@@ -365,14 +412,15 @@ export async function commandTaskByPhrase(
     return { taskId: task.id, text: `⏳ Передал автору: не успеваете по «${task.title}».` };
   }
   // «Начал» по уже принятой задаче -- отметка времени, а не переход.
-  if (mine && V_START.test(phrase) && !V_DONE.test(phrase) && mine.state === 'accepted' && !mine.started_at) {
+  const done = V_DONE.test(phrase) && !NOT_DONE.test(phrase);
+  if (mine && V_START.test(phrase) && !done && mine.state === 'accepted' && !mine.started_at) {
     const waits = await blockingPredecessor(env, task, who.orgId);
     if (waits) return { taskId: task.id, text: `⛔️ Сначала «${waits}» — «${task.title}» ждёт её.` };
     await startWork(env, task, mine, who.userId);
     return { taskId: task.id, text: `🚀 «${task.title}» — в работе.` };
   }
-  if (mine && (V_ACCEPT.test(phrase) || V_START.test(phrase) || V_DONE.test(phrase))) {
-    const to = V_DONE.test(phrase) ? 'done' : 'accepted';
+  if (mine && (V_ACCEPT.test(phrase) || V_START.test(phrase) || done)) {
+    const to = done ? 'done' : 'accepted';
     // «Готово» из «не принял» -- две ступени сразу: человек не обязан сперва
     // нажимать «в работу», если он уже всё сделал.
     const steps = to === 'done' && mine.state === 'pending' ? (['accepted', 'done'] as const) : ([to] as const);
@@ -389,10 +437,12 @@ export async function commandTaskByPhrase(
     }
     // ЗАДАЧА СЕБЕ закрывается сразу: спрашивать у себя же «примите работу» не у кого.
     const fresh = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>();
+    let closed = false;
     if (to === 'done' && author && fresh && fresh.status === 'done' && !fresh.confirmed_at) {
       const live = await loadAssignees(env, task.id, who.orgId);
       if (live.filter((a) => a.state !== 'declined').every((a) => a.user_id === who.userId)) {
         await confirmWork(env, fresh, who.userId, false);
+        closed = true;
       }
     }
     // «Взял в работу» на непринятой задаче делает оба шага сразу: согласие и
@@ -409,7 +459,8 @@ export async function commandTaskByPhrase(
     }
     return {
       taskId: task.id,
-      text: to === 'accepted' ? `👌 «${task.title}» принята.` : `✅ «${task.title}» сдана на проверку.`,
+      // Свою задачу проверять некому -- она закрыта, и «сдана на проверку» было бы неправдой.
+      text: to === 'accepted' ? `👌 «${task.title}» принята.` : closed ? `✅ «${task.title}» выполнена.` : `✅ «${task.title}» сдана на проверку.`,
     };
   }
 
