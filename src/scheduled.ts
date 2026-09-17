@@ -33,9 +33,11 @@ export async function scheduled(controller: ScheduledController, env: Env, _ctx:
   // минуту» при пятиминутном тике приходило через шесть. Остальное --
   // непринятые, просрочки, сводка -- дозируется часами и сутками, и гонять
   // его чаще раза в пять минут значило бы впятеро больше читать базу впустую.
-  // Минута -- из расписания, а не из часов: тик может начаться на секунду
-  // позже. Вызов без расписания (тест, ручной запуск) -- полный проход.
-  const full = !controller.scheduledTime || new Date(controller.scheduledTime).getUTCMinutes() % 5 === 0;
+  // Минута -- из расписания, а не из часов, и ОКРУГЛЁННАЯ: scheduledTime
+  // приходит с секундами (живой тик :30:22), и сдвиг не должен пропускать
+  // полный проход. Минута эпохи кратна пяти ровно тогда, когда минута часа.
+  // Вызов без расписания (тест, ручной запуск) -- полный проход.
+  const full = !controller.scheduledTime || Math.round(controller.scheduledTime / 60000) % 5 === 0;
   if (full) {
     await guard('autoArchive', () => autoArchive(env));
     await guard('notAccepted', () => remindNotAccepted(env, now));
