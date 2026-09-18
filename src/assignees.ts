@@ -156,9 +156,15 @@ async function respawnRepeating(env: Env, task: Task, actorId: string): Promise<
   // Кто делал, тот и делает дальше: список адресатов копируется как есть, без
   // отказавшихся -- они уже сказали, что этим не занимаются.
   const { results: live } = await env.DB.prepare(
-    "SELECT user_id FROM task_assignees WHERE task_id = ? AND org_id = ? AND state <> 'declined'",
-  ).bind(task.id, task.org_id).all<{ user_id: string }>();
+    "SELECT user_id, state FROM task_assignees WHERE task_id = ? AND org_id = ? AND state <> 'declined'",
+  ).bind(task.id, task.org_id).all<{ user_id: string; state: AssigneeState }>();
   if (live.length === 0) return;
+  // СОГЛАСИЕ ПЕРЕХОДИТ НА СЛЕДУЮЩИЙ КРУГ. «Поливать цветы через день» принимают
+  // один раз, а не через день: иначе каждый круг снова просил «✅ Принять» и
+  // раз в час напоминал «не принято» о деле, на которое человек уже подписался.
+  // Кто на прошлом круге так и не согласился (в «кто первый» закрыл другой) --
+  // решает заново.
+  const agreed = new Set(live.filter((a) => a.state !== 'pending').map((a) => a.user_id));
 
   const id = uuid();
   const fresh = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>() ?? task;
@@ -169,12 +175,12 @@ async function respawnRepeating(env: Env, task: Task, actorId: string): Promise<
     ).bind(id, fresh.org_id, fresh.project_id, fresh.title, fresh.description ?? '', minutes,
       // Галочки сбрасываются: список покупок на следующую неделю пустой.
       resetChecklist(fresh.checklist), fresh.author_id, fresh.kind,
-      initialStatus(fresh.kind as TaskKind, live.map((a) => a.user_id), fresh.author_id), fresh.priority, deadline),
+      initialStatus(fresh.kind as TaskKind, live.map((a) => a.user_id), fresh.author_id, agreed), fresh.priority, deadline),
     env.DB.prepare(
       `INSERT INTO events (id, actor_id, org_id, target_type, target_id, action, comment, overdue_by, created_at)
        VALUES (?, ?, ?, 'task', ?, 'created', 'повтор', NULL, ?)`,
     ).bind(uuid(), actorId, fresh.org_id, id, nowIso()),
-    ...buildAssignees(env, { id, org_id: fresh.org_id, kind: fresh.kind }, live.map((a) => a.user_id), deadline, fresh.author_id),
+    ...buildAssignees(env, { id, org_id: fresh.org_id, kind: fresh.kind }, live.map((a) => a.user_id), deadline, fresh.author_id, agreed),
   ]);
 
   // Карточка новому кругу -- каждому, кроме того, кто её сам и закрыл.
@@ -183,7 +189,7 @@ async function respawnRepeating(env: Env, task: Task, actorId: string): Promise<
   for (const a of live) {
     if (a.user_id === actorId) continue;
     writes.push(await buildNotification(env, nextTask, 'created',
-      { emoji: '🔁', label: 'Снова по кругу', buttons: assigneeButtons(nextTask, a.user_id) },
+      { emoji: '🔁', label: 'Снова по кругу', buttons: assigneeButtons(nextTask, a.user_id, agreed.has(a.user_id)) },
       deadline, a.user_id, actorId));
   }
   if (writes.length) await env.DB.batch(writes);
@@ -259,20 +265,28 @@ export async function myAssignee(env: Env, taskId: string, userId: string, orgId
  * Рассылка «ознакомиться» (ack) -- исключение: там принятие и есть закрытие, и
  * родиться принятой значило бы родиться закрытой.
  */
-export function initialState(userId: string, authorId: string | null | undefined, kind: TaskKind): AssigneeState {
-  return kind !== 'ack' && authorId && userId === authorId ? 'accepted' : 'pending';
+export function initialState(
+  userId: string, authorId: string | null | undefined, kind: TaskKind,
+  /** Кто уже согласился на прошлом круге повтора (respawnRepeating). */
+  agreed?: ReadonlySet<string>,
+): AssigneeState {
+  if (kind === 'ack') return 'pending';
+  return (authorId && userId === authorId) || agreed?.has(userId) ? 'accepted' : 'pending';
 }
 
 /** Статус новой задачи -- свёртка начальных строк, а не константа 'todo'. */
-export function initialStatus(kind: TaskKind, userIds: string[], authorId: string | null | undefined): TaskStatus {
-  return rollup(kind, userIds.map((u) => initialState(u, authorId, kind)));
+export function initialStatus(kind: TaskKind, userIds: string[], authorId: string | null | undefined, agreed?: ReadonlySet<string>): TaskStatus {
+  return rollup(kind, userIds.map((u) => initialState(u, authorId, kind, agreed)));
 }
 
-export function buildAssignees(env: Env, task: { id: string; org_id: string; kind?: string | null }, userIds: string[], dueAt: string | null, authorId: string | null | undefined) {
+export function buildAssignees(
+  env: Env, task: { id: string; org_id: string; kind?: string | null }, userIds: string[], dueAt: string | null,
+  authorId: string | null | undefined, agreed?: ReadonlySet<string>,
+) {
   const now = nowIso();
   const kind = (task.kind ?? 'single') as TaskKind;
   return userIds.map((userId) => {
-    const state = initialState(userId, authorId, kind);
+    const state = initialState(userId, authorId, kind, agreed);
     return env.DB.prepare(
       'INSERT INTO task_assignees (id, task_id, user_id, org_id, state, due_at, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).bind(uuid(), task.id, userId, task.org_id, state, dueAt, state === 'accepted' ? now : null);

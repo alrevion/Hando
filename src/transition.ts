@@ -84,11 +84,14 @@ export function openButton(taskId: string, label = '📱 Открыть'): Inlin
 export function assigneeButtons(
   task: { id: string; kind?: string | null; author_id?: string | null; checklist?: string | null },
   recipientId: string,
+  /** Строка уже принята (новый круг повтора): следующий шаг -- «Начал». */
+  accepted = false,
 ): InlineButton[][] {
   // Список -- первой строкой и у любого вида задачи: по нему и работают, а
   // «Принять» ниже никуда не денется.
   const list = task.checklist ? [[{ text: '🧾 Список', callback_data: `cl:${task.id}` }]] : [];
   if (task.kind === 'ack') return [...list, [{ text: '👁 Ознакомился', callback_data: `ack:${task.id}` }]];
+  if (accepted) return [...list, [{ text: '🚀 Начал', callback_data: `start:${task.id}` }]];
   // Задачу себе не у кого отпрашивать: «не успею» и «отказать» адресованы
   // АВТОРУ, а он здесь тот же человек. lateAssignee/declineAssignee и так не
   // шлют себе письмо (task.author_id !== actorId), то есть кнопки были пустым

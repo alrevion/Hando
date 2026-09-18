@@ -8,6 +8,7 @@ import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it } from 'vitest';
 import { botApp } from '../src/bot';
 import { assigneeButtons } from '../src/transition';
+import { initialState } from '../src/assignees';
 import { cookie, envWith, ORG_A, stubTelegram } from './fixture';
 import { apiRoutes } from '../src/routes';
 import type { Env } from '../src/types';
@@ -60,20 +61,35 @@ describe('повтор и список пунктов', () => {
     await testEnv.DB.prepare("UPDATE tasks SET repeat_min = 2880, deadline = ? WHERE id='t1'").bind(before).run();
     await testEnv.DB.prepare("UPDATE task_assignees SET due_at = ? WHERE task_id='t1'").bind(before).run();
     await say(env, 'tg-w1', 'подготовить отчёт готово');
+    const spy = tg();
     await say(env, 'tg-boss', 'принимаю работу подготовить отчёт');
     const { results } = await testEnv.DB.prepare("SELECT id, deadline, status, repeat_min FROM tasks WHERE title='Подготовить отчёт' ORDER BY created_at")
       .all<{ id: string; deadline: string; status: string; repeat_min: number }>();
     expect(results).toHaveLength(2);
     const next = results.find((t) => t.id !== 't1')!;
-    // Новый круг: свой срок ровно через два дня от прежнего, снова todo и
-    // снова повторяющийся -- иначе цветы политы один раз и навсегда.
-    expect(next.status).toBe('todo');
+    // Новый круг: свой срок ровно через два дня от прежнего и снова
+    // повторяющийся -- иначе цветы политы один раз и навсегда.
     expect(next.repeat_min).toBe(2880);
     expect(Date.parse(next.deadline) - Date.parse(before)).toBe(2 * 24 * 60 * 60 * 1000);
-    // Исполнитель тот же, и строка у него новая.
-    const row = await testEnv.DB.prepare('SELECT state FROM task_assignees WHERE task_id = ? AND user_id = ?')
-      .bind(next.id, 'w1').first<{ state: string }>();
-    expect(row!.state).toBe('pending');
+    // Исполнитель тот же, строка новая -- и УЖЕ принятая: на прошлом круге он
+    // согласился, и просить «✅ Принять» через день было бы переспрашиванием.
+    const row = await testEnv.DB.prepare('SELECT state, accepted_at FROM task_assignees WHERE task_id = ? AND user_id = ?')
+      .bind(next.id, 'w1').first<{ state: string; accepted_at: string | null }>();
+    expect(row).toMatchObject({ state: 'accepted' });
+    expect(row!.accepted_at).toBeTruthy();
+    expect(next.status).toBe('in_progress');
+    // Карточка нового круга -- со следующим шагом, а не с «Принять».
+    const card = sent(spy).find((m) => m.chat_id === 'tg-w1' && m.text.includes('Снова по кругу'))!;
+    expect(labels(card)).toEqual(['🚀 Начал', '📱 Открыть']);
+  });
+
+  it('согласие переходит только от тех, кто его давал', () => {
+    // «Кто первый» закрыл другой -- этот человек так и не соглашался и решает заново.
+    const agreed = new Set(['w1']);
+    expect(initialState('w1', 'boss', 'any', agreed)).toBe('accepted');
+    expect(initialState('w2', 'boss', 'any', agreed)).toBe('pending');
+    // «Ознакомиться» принятым не рождается никогда: принятие там и есть закрытие.
+    expect(initialState('w1', 'boss', 'ack', agreed)).toBe('pending');
   });
 
   it('просроченный круг начинается от «сейчас», а не рождается просроченным', async () => {
