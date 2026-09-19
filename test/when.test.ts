@@ -54,16 +54,15 @@ describe('срок из намерения модели', () => {
     expect(local(resolveWhen(W({ kind: 'end_of_month' }), NOW, S))).toBe('2026-09-30 18:00');
   });
 
-  it('срок не рождается просроченным: сегодняшний день -- только если его час впереди', () => {
-    // Пятница 11 сентября, 20:00: конец рабочего дня прошёл.
+  it('«к N-му» -- это «не позже»: сказанное в сам этот день -- сегодня', () => {
+    // Пятница 11 сентября, 20:00: «до конца недели» -- сегодня, не следующая пятница.
     const friEve = new Date('2026-09-11T15:00:00Z');
-    expect(local(resolveWhen(W({ kind: 'end_of_week' }), friEve, S))).toBe('2026-09-18 18:00');
-    // 30 сентября, 20:00.
-    const lastEve = new Date('2026-09-30T15:00:00Z');
-    expect(local(resolveWhen(W({ kind: 'end_of_month' }), lastEve, S))).toBe('2026-10-31 18:00');
-    expect(local(resolveWhen(W({ kind: 'day_of_month', day: 30 }), lastEve, S))).toBe('2026-10-30 18:00');
-    // «К 31-му» 30-го -- 31 октября, а не сегодня, сжатое из 31-го.
-    expect(local(resolveWhen(W({ kind: 'day_of_month', day: 31 }), new Date('2026-09-30T05:00:00Z'), S))).toBe('2026-10-31 18:00');
+    expect(local(resolveWhen(W({ kind: 'end_of_week' }), friEve, S))).toBe('2026-09-11 18:00');
+    // 30 сентября: «к 31-му» -- сегодня, 31-го в сентябре нет.
+    const last = new Date('2026-09-30T05:00:00Z');
+    expect(local(resolveWhen(W({ kind: 'day_of_month', day: 31 }), last, S))).toBe('2026-09-30 18:00');
+    expect(local(resolveWhen(W({ kind: 'day_of_month', day: 30 }), last, S))).toBe('2026-09-30 18:00');
+    expect(local(resolveWhen(W({ kind: 'end_of_month' }), last, S))).toBe('2026-09-30 18:00');
     // Число без месяца -- ближайшее, а не через год.
     expect(local(resolveWhen(W({ kind: 'date', day: 3 }), new Date('2027-02-28T05:00:00Z'), S))).toBe('2027-03-03 18:00');
   });
