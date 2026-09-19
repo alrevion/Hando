@@ -12,8 +12,8 @@ afterEach(() => { spy?.mockRestore(); spy = null; });
 
 const W0 = { kind: 'none', amount: null, unit: 'none', weekday: null, day: null, month: null, time: null, part: 'none' };
 const R0 = { every: 'none', n: null, weekday: null, day: null, time: null, part: 'none' };
-const create = (o: object) => ({ type: 'create', title: '', description: null, assignees: [], announcement: false, checklist: [], when: W0, repeat: R0, ...o });
-const onTask = (o: object) => ({ type: 'task', task: 't1', op: 'done', when: W0, priority: 'none', title: null, after: 'none', ...o });
+const create = (o: object) => ({ type: 'create', title: '', description: null, assignees: [], announcement: false, priority: 'none', checklist: [], when: W0, repeat: R0, ...o });
+const onTask = (o: object) => ({ type: 'task', task: 't1', op: 'done', when: W0, priority: 'none', title: null, after: 'none', reason: null, ...o });
 
 type Body = { messages: { role: string; content: string }[]; response_format?: { type: string; json_schema?: { strict: boolean; schema: unknown } } };
 /** Ссылка задачи по её теме -- порядок задач в подсказке зависит от времени правки. */
@@ -128,5 +128,37 @@ describe('модель с действиями', () => {
     expect(m.calls[1].messages[2].content).toBe('Какую задачу перенести?');
     const t = await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE id = 'report' AND org_id = ?").bind(ORG_A).first<{ deadline: string | null }>();
     expect(t?.deadline).not.toBeNull();
+    // Сделано -- вопрос закрыт: третья фраза уходит модели без него.
+    await say(env, 'спасибо');
+    expect(m.calls[2].messages.map((x) => x.role)).toEqual(['system', 'user']);
+  });
+
+  it('несколько действий: причина и важность -- свои у каждого, а не вся фраза', async () => {
+    const env = await world();
+    await testEnv.DB.prepare("UPDATE task_assignees SET state = 'accepted' WHERE task_id = 'own'").run();
+    const m = mock((b) => ({
+      actions: [
+        onTask({ task: ref(b, 'Посмотреть оформление'), op: 'late', reason: 'жду макеты' }),
+        create({ title: 'Купить лекарства', priority: 'none' }),
+      ],
+      clarify: null,
+    }));
+    await say(env, 'срочно купить лекарства, а с оформлением не успеваю, жду макеты');
+    expect(m.calls).toHaveLength(1);
+    const ev = await testEnv.DB.prepare("SELECT comment FROM events WHERE action = 'late'")
+      .first<{ comment: string }>();
+    expect(ev?.comment).toBe('жду макеты');
+    const d = await testEnv.DB.prepare('SELECT priority, priority_explicit FROM drafts').first<{ priority: string; priority_explicit: number }>();
+    expect(d).toEqual({ priority: 'medium', priority_explicit: 0 });
+  });
+
+  it('тёзки -- переспрос старым путём, модель не выбирает сама', async () => {
+    const env = await world();
+    await testEnv.DB.prepare("INSERT INTO users (id, name, telegram_user_id, current_org_id, onboarded_at) VALUES ('aziz2', 'Азиз Рахимов', 'tg-aziz2', ?, datetime('now'))").bind(ORG_A).run();
+    await testEnv.DB.prepare("INSERT INTO org_memberships (id, org_id, user_id, role, confirmed_at) VALUES ('m-aziz2', ?, 'aziz2', 'member', datetime('now'))").bind(ORG_A).run();
+    const m = mock(() => ({ actions: [], clarify: 'не должно дойти' }));
+    await say(env, 'Азизу купить бумагу');
+    expect(m.calls).toHaveLength(0);
+    expect(m.sent.some((s) => s.text.startsWith('Кого именно'))).toBe(true);
   });
 });

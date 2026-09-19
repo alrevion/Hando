@@ -41,8 +41,8 @@ export type TaskOpName = typeof TASK_OPS[number];
 type Priority = 'urgent' | 'medium' | 'low';
 
 export type Act =
-  | { type: 'create'; title: string; description: string | null; assigneeIds: string[]; ack: boolean; deadline: string | null; repeatMin: number | null; checklist: string[] }
-  | { type: 'task'; taskId: string; op: TaskOpName; deadline: string | null; priority: Priority | null; title: string | null; afterId: string | null }
+  | { type: 'create'; title: string; description: string | null; assigneeIds: string[]; ack: boolean; deadline: string | null; repeatMin: number | null; checklist: string[]; priority: Priority | null }
+  | { type: 'task'; taskId: string; op: TaskOpName; deadline: string | null; priority: Priority | null; title: string | null; afterId: string | null; reason: string | null }
   | { type: 'draft'; draftId: string | 'all'; op: 'delete' | 'create' | 'edit'; fix: string | null }
   | { type: 'show'; what: 'my_tasks' | 'assigned' | 'drafts' }
   | { type: 'ask' }
@@ -93,6 +93,7 @@ export function schema(ctx: BrainCtx) {
       description: str(),
       assignees: { type: 'array', items: oneOf(people) },
       announcement: { type: 'boolean' },
+      priority: oneOf(['none', 'urgent', 'medium', 'low'], 'none unless importance is said'),
       checklist: { type: 'array', items: { type: 'string' } },
       when: WHEN,
       repeat: REPEAT,
@@ -111,6 +112,7 @@ export function schema(ctx: BrainCtx) {
       priority: oneOf(['none', 'urgent', 'medium', 'low']),
       title: str('new title, for op=rename'),
       after: oneOf(['none', ...tasks], 'for op=after'),
+      reason: str('for late / decline / return: the reason in the user\'s words, Russian'),
     }, 'an operation on an existing task'));
   }
   if (drafts.length) {
@@ -139,6 +141,7 @@ create — a NEW task or reminder. «напомни мне …», «надо …
   description: other useful details in Russian (purpose, place, conditions) or null. Never repeat the title.
   assignees: refs from PEOPLE who must do it. [] or ["me"] = the user. «мне и Азизу» → ["me","p1"].
   announcement: true only for «ознакомиться / прочитать / довести до сведения».
+  priority: urgent («срочно», «горит») / low («не срочно», «когда будет время») only when said about THIS task; otherwise none.
   when, repeat: see DATES.
 task — an operation on an EXISTING task from TASKS. Only when the message clearly points at one of them: by title words, by «её / эту / это / задачу», or a bare «готово / сделал» → the task marked LAST. ops:
   done — the user finished a task assigned to them («готово», «сделал», «полил цветы» for «Полить цветы»).
@@ -157,7 +160,7 @@ clarify — a short question in Russian, with actions = []. Only when the messag
 
 DATES — never calculate dates. Describe what was said; code computes the calendar.
   when.kind: none | in (amount + unit: «через 2 дня», «через полчаса» = 30 minutes) | today | tomorrow | after_tomorrow | weekday (1=Mon … 7=Sun) | date (day + month) | day_of_month (day) | end_of_week | end_of_month.
-  when.time: an exact clock time "HH:MM", 24h («в 7 вечера» → "19:00", «полдесятого» → "09:30», «после 12» → "12:00"). when.part: morning | noon («в обед», «к обеду») | afternoon («после обеда») | evening | end_of_day | none. Use time or part, not both.
+  when.time: an exact clock time "HH:MM", 24h («в 7 вечера» → "19:00", «полдесятого» → "09:30", «после 12» → "12:00"). A bare hour 1–6 without «утра / ночи» is afternoon: «в 3» → "15:00", «к 5» → "17:00". when.part: morning | noon («в обед», «к обеду») | afternoon («после обеда») | evening | end_of_day | none. Use time or part, not both.
   «до», «к», «в течение» mark a deadline like «в»: «до пятницы» → weekday 5; «в течение недели» → end_of_week; «в течение месяца» → end_of_month. A time alone («в 5») with other content → kind today.
   repeat.every: none | day | week (+ weekday) | month (+ day) | n_days (+ n: «через день» = 2, «каждые 3-4 дня» = 3) | n_weeks (+ n). repeat.time / part as in when. For a repeating task leave when.kind = none.
 
@@ -173,17 +176,20 @@ EXAMPLES (refs illustrative)
 «как отметить выполненную?» → ask
 «спасибо» → reply`;
 
+/** Темы и имена пишут другие люди: перевод строки подделал бы строку TASKS или PEOPLE. */
+const one = (s: string) => s.replace(/\s+/g, ' ').trim();
+
 function context(ctx: BrainCtx): string {
   const local = new Intl.DateTimeFormat('en-GB', {
     timeZone: ctx.sched.timezone, weekday: 'long', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   }).format(ctx.now);
-  const people = [`me = ${ctx.me.name} (the user)`,
-    ...ctx.people.map((p, i) => `p${i + 1} = ${p.name}${p.aliases?.length ? ` (also: ${p.aliases.join(', ')})` : ''}`)];
+  const people = [`me = ${one(ctx.me.name)} (the user)`,
+    ...ctx.people.map((p, i) => `p${i + 1} = ${one(p.name)}${p.aliases?.length ? ` (also: ${one(p.aliases.join(', '))})` : ''}`)];
   const tasks = ctx.tasks.map((t, i) => {
     const role = [t.author ? 'author' : null, t.mine ? `assignee (${t.mine})` : null].filter(Boolean).join(' + ');
-    return `t${i + 1} = «${t.title}» · user is ${role} · assignees: ${t.who} · status: ${t.status} · due: ${t.due ?? 'none'}${t.last ? ' · LAST' : ''}`;
+    return `t${i + 1} = «${one(t.title)}» · user is ${role} · assignees: ${one(t.who)} · status: ${t.status} · due: ${t.due ?? 'none'}${t.last ? ' · LAST' : ''}`;
   });
-  const drafts = ctx.drafts.map((d, i) => `d${i + 1} = «${d.title || 'no title yet'}» · due: ${d.due ?? 'none'}`);
+  const drafts = ctx.drafts.map((d, i) => `d${i + 1} = «${one(d.title) || 'no title yet'}» · due: ${d.due ?? 'none'}`);
   return [
     `NOW: ${local} (${ctx.sched.timezone})`,
     'PEOPLE:\n' + people.join('\n'),
@@ -199,6 +205,32 @@ type RawRepeat = { every: string; n: number | null; weekday: number | null; day:
 type Raw = { actions: Record<string, unknown>[]; clarify: string | null };
 
 const none = <T extends string>(v: string): T | null => (v === 'none' ? null : v as T);
+
+/** Важность -- только из перечня: любое другое значение значит «не сказана». */
+const priorityOf = (v: unknown): Priority | null => (v === 'urgent' || v === 'medium' || v === 'low' ? v : null);
+
+const HHMM = /^([01]?\d|2[0-3]):[0-5]\d$/;
+const within = (v: number | null, lo: number, hi: number) => v !== null && Number.isInteger(v) && v >= lo && v <= hi;
+
+/** Негодное описание срока -- словами для повтора: иначе when.ts молча подставил бы понедельник или конец дня. */
+function badWhen(w: RawWhen): string | null {
+  if (w.kind === 'none') return null;
+  if (w.time !== null && !HHMM.test(w.time)) return 'when.time must be HH:MM or null';
+  if (w.kind === 'in' && (!within(w.amount, 1, 1000) || w.unit === 'none')) return 'when kind=in needs amount >= 1 and a unit';
+  if (w.kind === 'weekday' && !within(w.weekday, 1, 7)) return 'when.weekday must be 1..7';
+  if ((w.kind === 'date' || w.kind === 'day_of_month') && !within(w.day, 1, 31)) return 'when.day must be 1..31';
+  if (w.kind === 'date' && w.month !== null && !within(w.month, 1, 12)) return 'when.month must be 1..12';
+  return null;
+}
+
+function badRepeat(r: RawRepeat): string | null {
+  if (r.every === 'none') return null;
+  if (r.time !== null && !HHMM.test(r.time)) return 'repeat.time must be HH:MM or null';
+  if ((r.every === 'n_days' || r.every === 'n_weeks') && !within(r.n, 1, 365)) return 'repeat.n must be >= 1';
+  if (r.weekday !== null && !within(r.weekday, 1, 7)) return 'repeat.weekday must be 1..7';
+  if (r.day !== null && !within(r.day, 1, 31)) return 'repeat.day must be 1..31';
+  return null;
+}
 
 function toWhen(w: RawWhen): When | null {
   if (!w || w.kind === 'none') return null;
@@ -227,6 +259,8 @@ export function resolve(raw: Raw, ctx: BrainCtx): Plan | string {
         if (title.length < 2) return `${at}: empty title`;
         const who = (a.assignees as unknown[]).map(person);
         if (who.some((p) => !p)) return `${at}: unknown assignee ref`;
+        const bad = badWhen(a.when as RawWhen) ?? badRepeat(a.repeat as RawRepeat);
+        if (bad) return `${at}: ${bad}`;
         const repeat = resolveRepeat(toRepeat(a.repeat as RawRepeat), ctx.now, ctx.sched);
         actions.push({
           type: 'create', title: title[0].toUpperCase() + title.slice(1),
@@ -236,6 +270,7 @@ export function resolve(raw: Raw, ctx: BrainCtx): Plan | string {
           deadline: resolveWhen(toWhen(a.when as RawWhen), ctx.now, ctx.sched) ?? repeat?.first ?? null,
           repeatMin: repeat?.minutes ?? null,
           checklist: ((a.checklist as unknown[]) ?? []).map((s) => String(s).trim()).filter(Boolean),
+          priority: priorityOf(a.priority),
         });
         break;
       }
@@ -244,15 +279,18 @@ export function resolve(raw: Raw, ctx: BrainCtx): Plan | string {
         if (!task) return `${at}: unknown task ref`;
         const op = a.op as TaskOpName;
         if (!TASK_OPS.includes(op)) return `${at}: unknown op`;
+        const bad = badWhen(a.when as RawWhen);
+        if (bad) return `${at}: ${bad}`;
         const deadline = resolveWhen(toWhen(a.when as RawWhen), ctx.now, ctx.sched);
         if (op === 'reschedule' && !deadline) return `${at}: reschedule needs "when"`;
-        const priority = none<Priority>(String(a.priority));
+        const priority = priorityOf(a.priority);
         if (op === 'set_priority' && !priority) return `${at}: set_priority needs "priority"`;
-        const title = typeof a.title === 'string' && a.title.trim().length >= 2 ? a.title.trim() : null;
+        const title = typeof a.title === 'string' && a.title.trim().length >= 3 ? a.title.trim() : null;
         if (op === 'rename' && !title) return `${at}: rename needs "title"`;
         const after = byRef(ctx.tasks, 't', a.after);
         if (op === 'after' && (!after || after.id === task.id)) return `${at}: "after" must be another task`;
-        actions.push({ type: 'task', taskId: task.id, op, deadline, priority, title, afterId: after?.id ?? null });
+        const reason = typeof a.reason === 'string' && a.reason.trim() ? a.reason.trim() : null;
+        actions.push({ type: 'task', taskId: task.id, op, deadline, priority, title, afterId: after?.id ?? null, reason });
         break;
       }
       case 'draft': {
@@ -306,8 +344,9 @@ export async function understand(env: Env, ctx: BrainCtx, phrase: string): Promi
       const res = await fetch(`${GROQ}/chat/completions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-        // Минуту человек не ждёт: дольше -- пусть отвечают правила.
-        signal: AbortSignal.timeout(20_000),
+        // Дважды по 12 секунд -- предел: дольше пусть отвечают правила, иначе
+        // Telegram не дождётся ответа и пришлёт то же сообщение снова.
+        signal: AbortSignal.timeout(12_000),
         body: JSON.stringify({
           model: env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b',
           messages, temperature: 0.3, max_completion_tokens: 3000,
@@ -315,10 +354,15 @@ export async function understand(env: Env, ctx: BrainCtx, phrase: string): Promi
           response_format: format,
         }),
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        // Без журнала отказ схемы (400) тихо превратил бы BRAIN=1 в одни правила.
+        console.error('brain http', res.status, (await res.text()).slice(0, 500));
+        return null;
+      }
       const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
       raw = data.choices?.[0]?.message?.content ?? '';
-    } catch {
+    } catch (e) {
+      console.error('brain fetch', String(e));
       return null;
     }
     let verdict: Plan | string;
@@ -328,6 +372,7 @@ export async function understand(env: Env, ctx: BrainCtx, phrase: string): Promi
       verdict = `invalid JSON or shape: ${String(e).slice(0, 200)}`;
     }
     if (typeof verdict !== 'string') return verdict;
+    console.error('brain invalid', verdict);
     messages.push({ role: 'assistant', content: raw }, { role: 'user', content: `That answer is invalid: ${verdict}. Answer again for the same message.` });
   }
   return null;

@@ -68,7 +68,9 @@ const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate
 function nextDayOfMonth(t: Ymd, day: number, allowToday: boolean): Ymd {
   const clamp = (y: number, m: number) => ({ y, m, d: Math.min(day, lastDay(y, m)) });
   const here = clamp(t.y, t.m);
-  if (here.d > t.d || (allowToday && here.d === t.d)) return here;
+  // Сравнивается НАЗВАННОЕ число: «к 31-му», сказанное 30 сентября, -- это
+  // 31 октября, а не сегодня, хотя сентябрьское 31-е и сжалось до 30-го.
+  if (here.d > t.d || (allowToday && day === t.d)) return here;
   return t.m === 12 ? clamp(t.y + 1, 1) : clamp(t.y, t.m + 1);
 }
 
@@ -96,16 +98,23 @@ export function resolveWhen(w: When | null, now: Date, s: Sched): string | null 
     return at(shift(today, n * (w.unit === 'weeks' ? 7 : 1)), clock(w, s), tz);
   }
 
+  const hhmm = clock(w, s);
+  // Сегодняшний день годится, только если его час ещё впереди: «до конца
+  // недели», сказанное в пятницу вечером, -- следующая пятница, а не срок,
+  // просроченный с рождения.
+  const todayOk = Date.parse(at(today, hhmm, tz)) > now.getTime();
   let day: Ymd;
   switch (w.kind) {
     case 'tomorrow': day = shift(today, 1); break;
     case 'after_tomorrow': day = shift(today, 2); break;
     case 'weekday': day = nextWeekday(today, w.weekday ?? 1, false); break;
-    case 'day_of_month': day = nextDayOfMonth(today, w.day ?? today.d, true); break;
-    case 'end_of_month': day = { ...today, d: lastDay(today.y, today.m) }; break;
-    case 'end_of_week': day = nextWeekday(today, weekEndDay(s as OrgSchedule), true); break;
+    case 'day_of_month': day = nextDayOfMonth(today, w.day ?? today.d, todayOk); break;
+    case 'end_of_month': day = nextDayOfMonth(today, 31, todayOk); break;
+    case 'end_of_week': day = nextWeekday(today, weekEndDay(s as OrgSchedule), todayOk); break;
     case 'date': {
-      const m = w.month ?? today.m, d = w.day ?? today.d;
+      // Число без месяца -- то же, что «к 3-му»: ближайшее, а не через год.
+      if (!w.month) { day = nextDayOfMonth(today, w.day ?? today.d, todayOk); break; }
+      const m = w.month, d = w.day ?? today.d;
       // Без года: прошедшая в этом году дата -- это следующий год.
       const y = m < today.m || (m === today.m && d < today.d) ? today.y + 1 : today.y;
       day = { y, m, d: Math.min(d, lastDay(y, m)) };
@@ -113,11 +122,10 @@ export function resolveWhen(w: When | null, now: Date, s: Sched): string | null 
     }
     default: day = today;
   }
-  const iso = at(day, clock(w, s), tz);
-  // «В 10 вечера», когда уже 23:00, -- завтра. Только если дня не называли:
-  // «сегодня» в прошлом всё равно честнее перенести, чем поставить прошедшим.
-  if (w.kind === 'today' && Date.parse(iso) <= now.getTime()) return at(shift(today, 1), clock(w, s), tz);
-  return iso;
+  // «В 10 вечера», когда уже 23:00, -- завтра. Названная дата (25 сентября)
+  // остаётся как сказана, даже прошедшей: переносить её за человека нельзя.
+  if (w.kind === 'today' && !todayOk) day = shift(today, 1);
+  return at(day, hhmm, tz);
 }
 
 /**

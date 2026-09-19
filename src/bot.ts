@@ -1517,6 +1517,10 @@ botApp.post('/webhook', async (c) => {
         ...st, askAt: nowIso(),
         ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: turn.asked }].slice(-6),
       });
+    } else if (history.length) {
+      // Сделано -- разговор закрыт. Иначе висящее «Какую задачу перенести?»
+      // двадцать минут читалось бы вопросом к каждой следующей фразе.
+      await setState(c.env, userId, { ...st, ask: undefined, askAt: undefined });
     }
     return c.json({ ok: true });
   }
