@@ -192,26 +192,48 @@ describe('матрица напоминаний: дозировка', () => {
 });
 
 describe('сводка', () => {
-  it('в начало рабочего дня, раз в день, только задачи со сроком сегодня; черновики -- карточками', async () => {
+  it('в начало рабочего дня, раз в день, только задачи со сроком сегодня; черновик -- один раз и с объяснением', async () => {
     const env = await world(at('15:00').toISOString());
     const spy = tg();
-    await testEnv.DB.prepare(
+    const draft = (id: string, title: string, created: Date) => testEnv.DB.prepare(
       `INSERT INTO drafts (id, org_id, author_id, title, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
-       VALUES ('d1', ?, 'w1', 'Купить бумагу', '["w1"]', NULL, 'medium', 0, 'single', 'купить бумагу', '[]', 'pattern', ?, ?)`,
-    ).bind(ORG_A, NOW.toISOString(), NOW.toISOString()).run();
+       VALUES (?, ?, 'w1', ?, '["w1"]', NULL, 'medium', 0, 'single', ?, '[]', 'pattern', ?, ?)`,
+    ).bind(id, ORG_A, title, title, created.toISOString(), created.toISOString()).run();
+    const DAY = 24 * 60 * 60 * 1000;
+    await draft('d1', 'Купить бумагу', new Date(at('09:10').getTime() - DAY));
+    // Вчерашняя карточка этого черновика ещё в чате.
+    await testEnv.DB.prepare("UPDATE drafts SET telegram_chat_id = 'tg-w1', telegram_message_id = '55' WHERE id = 'd1'").run();
+    // Сегодняшний -- и так перед глазами: в сводку не идёт.
+    await draft('d2', 'Позвонить в банк', at('08:00'));
     // 08:50 -- рано. 09:10 -- пора.
     expect(await sendDigests(env, at('08:50'))).toBe(0);
     expect(await sendDigests(env, at('09:10'))).toBe(1);
     const digest = (await queued()).find((n) => n.kind === 'digest')!;
     expect(digest.to).toBe('w1');
     expect(digest.p.text).toContain('1. «Подготовить отчёт» — 15:00');
-    expect(digest.p.text).toContain('Черновиков без подтверждения: 1');
-    expect(sentTexts(spy).some((m) => m.chat_id === 'tg-w1' && m.text.includes('Черновик'))).toBe(true);
+    // Карточка приходит С ОБЪЯСНЕНИЕМ: голая в 9 утра читалась как новый
+    // черновик из ниоткуда.
+    const toW1 = sentTexts(spy).filter((m) => m.chat_id === 'tg-w1').map((m) => m.text);
+    expect(toW1[0]).toContain('Черновик не создан. Пока не нажато «Создать», напоминаний по нему не будет');
+    expect(toW1.some((t) => t.includes('Купить бумагу'))).toBe(true);
+    expect(toW1.some((t) => t.includes('Позвонить в банк'))).toBe(false);
+    // Прежняя карточка убрана: один черновик -- одна карточка, а не две одинаковых.
+    const deleted = (spy.mock.calls as unknown as [string, { body?: string }][])
+      .filter(([u]) => u.includes('/deleteMessage')).map(([, i]) => JSON.parse(String(i.body)) as { chat_id: string; message_id: string | number });
+    expect(deleted.some((d) => d.chat_id === 'tg-w1' && String(d.message_id) === '55')).toBe(true);
     // Второй раз в тот же день -- нет; в субботу -- нет.
     expect(await sendDigests(env, at('09:30'))).toBe(0);
     expect(await sendDigests(env, new Date('2026-09-12T04:10:00Z'))).toBe(0);
     // Директору сроков сегодня нет -- сводки нет, а не пустое письмо.
     expect((await queued()).filter((n) => n.kind === 'digest').map((n) => n.to)).toEqual(['w1']);
+
+    // И один раз: на следующее утро о «Купить бумагу» уже не напоминают, а о
+    // вчерашнем «Позвонить в банк» -- напоминают.
+    spy.mockClear();
+    expect(await sendDigests(env, new Date(at('09:10').getTime() + DAY))).toBe(1);
+    const next = sentTexts(spy).filter((m) => m.chat_id === 'tg-w1').map((m) => m.text);
+    expect(next.some((t) => t.includes('Купить бумагу'))).toBe(false);
+    expect(next.some((t) => t.includes('Позвонить в банк'))).toBe(true);
   });
 });
 

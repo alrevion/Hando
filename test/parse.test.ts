@@ -115,6 +115,17 @@ describe('сроки в поясе организации', () => {
     expect(after('через пару часов')).toBe(120);
   });
 
+  it('«в воскресенье после 12» -- в 12:00, а не в конце дня', () => {
+    // Живая фраза: «Напомни мне в воскресенье, наверное, после 12, что нужно
+    // съездить на Джами». Раньше «после» временем не считалось: срок уезжал
+    // на конец дня, а «после 12» -- в содержание.
+    const hm = (p: string) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso(p)!));
+    expect(hm('Напомни мне в воскресенье, наверное, после 12, что нужно съездить на Джами и забрать сетки.')).toBe('Sun 12:00');
+    expect(hm('после 3 позвонить')).toBe('Wed 15:00');
+    // А «после 5-го числа» -- по-прежнему дата, а не пять часов.
+    expect(localDay(iso('сдать после 5-го числа'))).toBe('2026-09-05');
+  });
+
   it('через два дня в 10 -- день из «через», час из фразы', () => {
     const local = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso('через два дня в 10 утра')!));
     expect(local).toBe('2026-09-04, 10:00');

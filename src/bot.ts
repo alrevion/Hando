@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import type { Env, Role, Task } from './types';
 import { nowIso } from './db';
 import { confirmWork, myAssignee, startWork, transitionAssignee, declineAssignee, lateAssignee, reassignCandidates, reassignTask } from './assignees';
-import { answerCallbackQuery, deleteMessage, editMessageReplyMarkup, sendMessage, sendTyping, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
+import { answerCallbackQuery, editMessageReplyMarkup, sendMessage, sendTyping, type InlineButton, type InlineKeyboard, editMessageText } from './telegram';
 import { drainOutbox } from './outbox';
 import { applyTransition, openButton } from './transition';
 import { approveJoin, canCreateOrg, createOrg, departmentsFor, ensureUser, hasPendingJoin, inviteCodeFor, inviteLink, joinByCode, joinByInvite, notifyApprover, pendingOrgFor, pendingRequests, rejectJoin } from './signup';
@@ -1360,12 +1360,8 @@ botApp.post('/webhook', async (c) => {
     //
     // Кнопки под карточкой по-прежнему правят её НА МЕСТЕ: там человек смотрит
     // ровно на неё.
-    if (updated) {
-      if (updated.telegram_chat_id === chat && updated.telegram_message_id) {
-        await deleteMessage(c.env, chat, updated.telegram_message_id);
-      }
-      await renderDraft(c.env, updated, chat, tz, true);
-    }
+    // Старую карточку renderDraft убирает сам.
+    if (updated) await renderDraft(c.env, updated, chat, tz, true);
     return c.json({ ok: true });
   }
 

@@ -2,7 +2,7 @@
 // (раздел 21), сводка в начало рабочего дня, поводы и страховка за очередь.
 import type { Env, Task } from './types';
 import { chunks, nowIso, uuid } from './db';
-import { reconcileWebhook, type InlineButton } from './telegram';
+import { reconcileWebhook, sendMessage, type InlineButton } from './telegram';
 import { applyTransition, assigneeButtons, openButton } from './transition';
 import { drainOutbox } from './outbox';
 import { enqueueNudges } from './nudges';
@@ -353,7 +353,12 @@ export async function sendDigests(env: Env, now: Date): Promise<number> {
         .sort((a, b) => (PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]) || (Date.parse(a.due_at!) - Date.parse(b.due_at!)));
       const undated = rows.filter((r) => r.due_at === null)
         .sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
-      const drafts = await listDrafts(env, m.user_id, s.id);
+      // Черновик -- ещё не задача: пока не нажато «Создать», напоминаний по нему
+      // не будет вовсе. Сводка напоминает о нём ОДИН раз и не в день
+      // создания: сегодняшняя карточка и так перед глазами, а каждое утро одно
+      // и то же читалось как новый черновик.
+      const drafts = (await listDrafts(env, m.user_id, s.id))
+        .filter((d) => !d.reminded_at && !sameLocalDay(`${d.created_at.replace(' ', 'T')}${d.created_at.includes('Z') ? '' : 'Z'}`, now, s.timezone));
       const writes = [env.DB.prepare('UPDATE org_memberships SET digest_sent_on = ? WHERE id = ?').bind(dayKey, m.mid)];
       if (today.length > 0 || undated.length > 0) {
         const time = (iso: string) => new Intl.DateTimeFormat('ru-RU', { timeZone: s.timezone, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
@@ -367,14 +372,23 @@ export async function sendDigests(env: Env, now: Date): Promise<number> {
           lines.push(...undated.slice(0, 5).map((r) => `• «${r.title}»`));
           if (undated.length > 5) lines.push(`…и ещё ${undated.length - 5}`);
         }
-        if (drafts.length) lines.push('', `Черновиков без подтверждения: ${drafts.length} — ниже.`);
         // Через outbox (членство, адрес, клейм -- всё там). task_id -- первая
         // задача сводки: у строки очереди задача обязательна.
         writes.push(queueReminder(env, { task_id: (today[0] ?? undated[0]).id, org_id: s.id, user_id: m.user_id }, lines.join('\n'), 'digest', {}));
       }
       await env.DB.batch(writes);
-      // Черновики -- карточками с их кнопками: Создать · Изменить · Отменить.
-      for (const d of drafts.slice(0, 5)) await renderDraft(env, d, m.telegram_user_id, s.timezone, true);
+      // Черновики -- карточками с их кнопками: Создать · Изменить · Отменить,
+      // и С ОБЪЯСНЕНИЕМ. Голая карточка в 9 утра выглядела как новый черновик
+      // из ниоткуда. Строка идёт напрямую, а не очередью: иначе она пришла бы
+      // после карточек.
+      if (drafts.length) {
+        await sendMessage(env, m.telegram_user_id, drafts.length === 1
+          ? '📝 Черновик не создан. Пока не нажато «Создать», напоминаний по нему не будет:'
+          : `📝 Черновиков не создано: ${drafts.length}. Пока не нажато «Создать», напоминаний по ним не будет:`);
+        for (const d of drafts.slice(0, 5)) await renderDraft(env, d, m.telegram_user_id, s.timezone, true);
+        await env.DB.prepare(`UPDATE drafts SET reminded_at = ? WHERE id IN (${drafts.map(() => '?').join(',')})`)
+          .bind(nowIso(), ...drafts.map((d) => d.id)).run();
+      }
       if (today.length > 0 || undated.length > 0 || drafts.length > 0) sent++;
     }
   }

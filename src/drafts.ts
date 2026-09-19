@@ -16,7 +16,7 @@ import type { Media } from './media';
 import { createFromDraft } from './intake';
 import { canAssign } from './hierarchy';
 import { membershipRole } from './auth';
-import { editMessageText, esc, sendMessage, type InlineKeyboard } from './telegram';
+import { deleteMessage, editMessageText, esc, sendMessage, type InlineKeyboard } from './telegram';
 import { openButton } from './transition';
 
 export type DraftRow = {
@@ -40,6 +40,8 @@ export type DraftRow = {
   source: string;
   telegram_chat_id: string | null;
   telegram_message_id: string | null;
+  /** Когда о нём напомнила утренняя сводка. Напоминание -- одно. */
+  reminded_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -317,16 +319,22 @@ export function draftKeyboard(row: DraftRow, timeZone = 'Asia/Tashkent'): Inline
 
 /**
  * Показать карточку: отредактировать существующую, если она есть в этом чате,
- * иначе отправить новую и запомнить её. «Черновики» из меню шлют новую копию
- * -- старая могла уехать далеко вверх.
+ * иначе отправить новую и запомнить её. «Черновики» из меню и утренняя сводка
+ * шлют новую копию -- старая могла уехать далеко вверх.
+ *
+ * У черновика ОДНА живая карточка: новая копия убирает прежнюю. Иначе в чате
+ * висели два одинаковых черновика, и второй читался как новый.
  */
 export async function renderDraft(env: Env, row: DraftRow, chatId: string, timeZone: string, fresh = false): Promise<void> {
   const text = await draftText(env, row, timeZone);
   const kb = draftKeyboard(row, timeZone);
-  if (!fresh && row.telegram_chat_id === chatId && row.telegram_message_id) {
-    const ok = await editMessageText(env, chatId, row.telegram_message_id, text, kb, true);
+  const here = row.telegram_chat_id === chatId && row.telegram_message_id;
+  if (!fresh && here) {
+    const ok = await editMessageText(env, chatId, row.telegram_message_id!, text, kb, true);
     if (ok) return;
   }
+  // Старше 48 часов Telegram удалить не даст -- тогда старая просто останется.
+  if (fresh && here) await deleteMessage(env, chatId, row.telegram_message_id!);
   const messageId = await sendMessage(env, chatId, text, kb, true);
   if (messageId) await patchDraft(env, row.id, { telegramChatId: chatId, telegramMessageId: messageId });
 }
