@@ -562,3 +562,49 @@ describe('черновики словами', () => {
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
   });
 });
+
+// Аудит: «как удалить черновик?» УДАЛЯЛ черновик -- «удалить» содержит «удали».
+// А «удали черновик про сетки» при нескольких удалял последний, а не про сетки.
+describe('удаление черновиков: вопрос -- не команда, и не тот -- не удаляется', () => {
+  const two = async () => {
+    const env = await world();
+    for (const [id, title, ago] of [['d1', 'Съездить на Джами и забрать сетки', 2], ['d2', 'Купить хлеб', 1]] as const) {
+      await testEnv.DB.prepare(
+        `INSERT INTO drafts (id, org_id, author_id, title, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
+         VALUES (?, ?, 'boss', ?, '["boss"]', NULL, 'medium', 0, 'single', ?, '[]', 'pattern', datetime('now', ?), datetime('now', ?))`,
+      ).bind(id, ORG_A, title, title, `-${ago} hours`, `-${ago} hours`).run();
+    }
+    return env;
+  };
+  const left = async () => (await testEnv.DB.prepare('SELECT title FROM drafts ORDER BY title').all<{ title: string }>()).results.map((r) => r.title);
+
+  it('«как удалить черновик?» -- справка, черновики на месте', async () => {
+    const env = await two();
+    tg();
+    await say(env, 'tg-boss', 'как удалить черновик?');
+    expect(await left()).toEqual(['Купить хлеб', 'Съездить на Джами и забрать сетки']);
+  });
+
+  it('«удали черновик про сетки» удаляет про сетки, а не последний', async () => {
+    const env = await two();
+    const spy = tg();
+    await say(env, 'tg-boss', 'удали черновик про сетки');
+    expect(await left()).toEqual(['Купить хлеб']);
+    expect(sent(spy).at(-1)!.text).toContain('«Съездить на Джами и забрать сетки»');
+  });
+
+  it('названного нет -- не удаляется ничего, а не последний «на всякий случай»', async () => {
+    const env = await two();
+    const spy = tg();
+    await say(env, 'tg-boss', 'удали черновик про молоко');
+    expect(await left()).toEqual(['Купить хлеб', 'Съездить на Джами и забрать сетки']);
+    expect(sent(spy).at(-1)!.text).toContain('не нашёл');
+  });
+
+  it('«удали черновик» без уточнений -- по-прежнему последний', async () => {
+    const env = await two();
+    tg();
+    await say(env, 'tg-boss', 'удали черновик');
+    expect(await left()).toEqual(['Съездить на Джами и забрать сетки']);
+  });
+});

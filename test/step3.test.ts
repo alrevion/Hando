@@ -301,10 +301,10 @@ describe('ревью: адресация уведомлений на рассы�
     await apiRoutes.request(`/tasks/${id}/move`, json(await cookie('u0', 'admin', ORG_A), { to: 'in_progress' }), env);
 
     const { results } = await testEnv.DB.prepare('SELECT assignee_id FROM notifications WHERE task_id = ?').bind(id).all<{ assignee_id: string }>();
-    // Двое: сам u0 (его письмо -- якорь ветки, его заменит эскалация) и автор,
-    // которому видеть ход поручённой работы. Остальные тринадцать делают своё --
-    // «коллега взял свою часть» их не касается.
-    expect(results.map((r) => r.assignee_id).sort()).toEqual(['boss', 'u0']);
+    // Один: автор, которому видеть ход поручённой работы. Самому u0 о его же
+    // «принял» не пишем, остальные тринадцать делают своё -- «коллега взял
+    // свою часть» их не касается.
+    expect(results.map((r) => r.assignee_id).sort()).toEqual(['boss']);
   });
 
   it('в тексте стоит имя ТОГО, КТО ДЕЙСТВОВАЛ, а не получателя', async () => {

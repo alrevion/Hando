@@ -252,13 +252,12 @@ describe('шаг 4d: тихие часы в поясе организации', 
       body: JSON.stringify({ to: 'in_progress' }),
     }, env);
     expect(calls(spy).filter(([u]) => u.includes('/sendMessage'))).toHaveLength(0);
-    // Строки ЖДУТ, а не потеряны. Их две: адресат (его письмо -- якорь ветки) и
-    // автор (ему видеть ход поручённой работы). Раньше письмо уходило ещё и
-    // каждому постороннему адресату -- см. правило адресации в transition.ts.
-    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM notifications WHERE sent_at IS NULL').first<{ n: number }>())!.n).toBe(2);
+    // Строка ЖДЁТ, а не потеряна. Она одна -- автору (ему видеть ход
+    // поручённой работы); самому адресату о его же действии не пишем.
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM notifications WHERE sent_at IS NULL').first<{ n: number }>())!.n).toBe(1);
 
     vi.setSystemTime(new Date('2026-09-04T05:00:00Z')); // 10:00 в Ташкенте
-    expect(await drainOutbox(env)).toBe(2);
+    expect(await drainOutbox(env)).toBe(1);
     vi.useRealTimers();
   });
 });

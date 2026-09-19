@@ -832,6 +832,16 @@ botApp.post('/webhook', async (c) => {
     const chat = cq.message ? String(cq.message.chat.id) : null;
     const msgId = cq.message ? String(cq.message.message_id) : null;
 
+    // ЗАДАЧА ЗАКРЫТА -- кнопки старой карточки ничего не делают. Раньше
+    // «Принять» на карточке отменённой задачи пересчитывало статус по строкам
+    // и возвращало её из архива, а автору приходило «🚀 Принято»; в «кто
+    // первый» после закрытия «Принять» рассылало «Принято» всем.
+    if (task.status === 'archived' || task.status === 'done') {
+      await answerCallbackQuery(c.env, cq.id, task.status === 'archived' ? 'Задача отменена' : 'Задача уже закрыта');
+      if (chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
+      return c.json({ ok: true });
+    }
+
     // «Не успею» и «Отказать» просят причину: следующее сообщение -- она.
     if (action === 'late' || action === 'decline') {
       if (mine.state !== 'pending' && mine.state !== 'accepted') {
@@ -884,7 +894,8 @@ botApp.post('/webhook', async (c) => {
     // закрыть своё дело человек не находил как.
     if (action === 'done') {
       const self = task.author_id === who.userId;
-      const open = task.status !== 'done' && task.status !== 'archived' && (mine.state === 'accepted' || mine.state === 'pending' || mine.state === 'rejected');
+      // Закрытую задачу отсеял общий гейт выше; здесь -- своя строка ещё открыта.
+      const open = mine.state === 'accepted' || mine.state === 'pending' || mine.state === 'rejected';
       if (!self || !open) {
         await answerCallbackQuery(c.env, cq.id, self ? 'Уже закрыта' : 'Сдают в приложении');
         if (self && chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });

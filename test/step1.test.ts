@@ -29,7 +29,7 @@ const sends = (spy: ReturnType<typeof stubTelegram>) =>
 
 describe('шаг 1: outbox', () => {
   it('переход кладёт РОВНО одну строку в notifications и отправляет её один раз', async () => {
-    const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1' }] });
+    const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 's1' }] });
     const spy = tg();
     const res = await apiRoutes.request('/tasks/t1/move', {
       method: 'POST', headers: { Cookie: await cookie('w1', 'admin'), 'Content-Type': 'application/json' },
@@ -50,7 +50,7 @@ describe('шаг 1: outbox', () => {
   });
 
   it('не дошедшая отправка НЕ помечается sent_at, и следующий проход досылает её без дубля', async () => {
-    const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1' }] });
+    const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 's1' }] });
 
     // Telegram отвечает ошибкой -> sendMessage возвращает null.
     const down = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 500 }));
@@ -77,7 +77,7 @@ describe('шаг 1: outbox', () => {
   });
 
   it('id отслеживаемого сообщения проставляет проход отправки, а не переход', async () => {
-    const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1' }] });
+    const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 's1' }] });
     const down = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 500 }));
     await apiRoutes.request('/tasks/t1/move', {
       method: 'POST', headers: { Cookie: await cookie('w1', 'admin'), 'Content-Type': 'application/json' },

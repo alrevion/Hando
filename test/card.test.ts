@@ -701,3 +701,32 @@ describe('своя задача закрывается одним нажатие
     expect((await own()).confirmed_at).toBeTruthy();
   });
 });
+
+// Аудит: «Принять» на старой карточке ОТМЕНЁННОЙ задачи возвращало её из
+// архива, и автору приходило «🚀 Принято».
+describe('кнопки старой карточки у закрытой задачи', () => {
+  it('«Принять» после отмены не оживляет задачу и никого не извещает', async () => {
+    const env = await world();
+    const spy = tg();
+    await testEnv.DB.prepare("UPDATE tasks SET status = 'archived' WHERE id = 't1'").run();
+    await press(env, 'tg-w1', 'accept:t1');
+    expect(await status()).toBe('archived');
+    expect(await row('w1')).toMatchObject({ state: 'pending' });
+    expect(sent(spy).filter((m) => m.text.includes('Принято'))).toHaveLength(0);
+    // Кнопки на карточке сняты -- второй раз нажать нечего.
+    expect(edits(spy).at(-1)!.reply_markup!.inline_keyboard!.flat().map((b) => b.text)).toEqual(['📱 Открыть']);
+  });
+});
+
+// Аудит: кто нажимал «Принять» на ЧУЖОМ поручении, получал «🚀 Принято, кто:
+// он сам» -- исправление от 17-го касалось только задач себе.
+describe('о собственном действии -- ни слова', () => {
+  it('«Принять» на поручении: «Принято» получает автор, а не нажавший', async () => {
+    const env = await world();
+    const spy = tg();
+    await press(env, 'tg-w1', 'accept:t1');
+    expect(await row('w1')).toMatchObject({ state: 'accepted' });
+    expect(sent(spy).filter((m) => m.chat_id === 'tg-w1')).toHaveLength(0);
+    expect(sent(spy).some((m) => m.chat_id === 'tg-boss' && m.text.includes('Принято'))).toBe(true);
+  });
+});

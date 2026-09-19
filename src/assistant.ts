@@ -236,8 +236,12 @@ function byTitle(tasks: TaskLine[], q: string): string[] {
   return tasks.filter((t) => t.title.length >= 4 && q.includes(t.title.toLowerCase())).map((t) => t.id);
 }
 
-const DELETE_ASK = /(удали|убери|отмени|снеси|сотри)/i;
+// Удаление -- только ПОВЕЛИТЕЛЬНОЕ и целым словом. «Удалить» содержит «удали»,
+// и вопрос «как удалить черновик?» выполнялся как команда -- черновик пропадал.
+const DELETE_ASK = /(?<![а-яё])(?:удали|убери|отмени|снеси|сотри)(?:те)?(?![а-яё])/i;
 const REMIND_ASK = /(напомни|поторопи|подтолкни)/i;
+/** Вопрос КАК сделать -- справка, а не просьба сделать: «как удалить черновик?». */
+const HOW_TO = /^(?:а\s+)?(?:как|можно|могу|где|почему|зачем|если|что\s+будет)(?![а-яё])/i;
 
 /** Без модели: честный ответ по руководству и список того, что ближе по сроку. */
 async function fallback(env: Env, who: AskWho, question: string, tasks: TaskLine[]): Promise<string> {
@@ -312,6 +316,8 @@ function isGeneral(answer: string, tasks: TaskLine[]): boolean {
 
 /** Просьба про ЧЕРНОВИКИ, а не про задачи: «удали все черновики». */
 const DRAFTS_ASK = /черновик/i;
+/** Слова просьбы, а не темы: по ним черновик не ищется. */
+const DRAFT_NOISE = /^(?:удали|убери|отмени|снеси|сотри|удалите|уберите|отмените|черновик[а-яё]*|все|всё|мой|мои|моих|этот|эти|про|пожалуйста|последний|последние|ненужн[а-яё]*|лишн[а-яё]*)$/;
 
 /**
  * Удаление черновиков -- БЕЗ модели и без переспроса.
@@ -325,14 +331,29 @@ const DRAFTS_ASK = /черновик/i;
  * спрашивать по ней нечего.
  */
 async function deleteDrafts(env: Env, who: AskWho, question: string): Promise<string | null> {
-  if (!DELETE_ASK.test(question) || !DRAFTS_ASK.test(question)) return null;
+  if (!DELETE_ASK.test(question) || !DRAFTS_ASK.test(question) || HOW_TO.test(question.trim())) return null;
   const rows = await listDrafts(env, who.userId, who.orgId);
   if (rows.length === 0) return 'Черновиков нет — удалять нечего.';
 
   const q = question.toLowerCase();
-  // Названный дословно -- только он. «Удали черновик про цветы» не должно
-  // сносить остальные семь.
-  const named = rows.filter((r) => r.title.trim().length >= 4 && q.includes(r.title.toLowerCase()));
+  // Какой именно -- по СЛОВАМ темы, а не дословно: «удали черновик про сетки»
+  // при теме «Съездить на Джами и забрать сетки». Дословное сравнение ничего
+  // не находило, и удалялся последний -- не тот.
+  const said = q.split(/[^а-яёa-z0-9]+/)
+    .filter((w) => w.length >= 3 && !DRAFT_NOISE.test(w))
+    .map((w) => w.slice(0, Math.max(3, Math.min(5, w.length - 1))));
+  const named = said.length === 0 ? [] : rows.filter((r) => {
+    const title = r.title.toLowerCase();
+    return said.some((stem) => title.split(/[^а-яёa-z0-9]+/).some((t) => t.startsWith(stem)));
+  });
+  // Назвали, но такого нет -- НЕ удаляем последний «на всякий случай»: это был
+  // бы тот самый не тот черновик.
+  if (said.length > 0 && named.length === 0) {
+    return `Черновика про «${said.join(' ')}» не нашёл. Есть: ${rows.slice(0, 5).map((r) => `«${r.title.trim() || 'без темы'}»`).join(', ')}.`;
+  }
+  if (named.length > 1 && named.length < rows.length) {
+    return `Подходят несколько: ${named.map((r) => `«${r.title.trim() || 'без темы'}»`).join(', ')}. Какой удалить?`;
+  }
   // \b НЕ РАБОТАЕТ по-русски: в JS граница слова определена по [A-Za-z0-9_],
   // и между «е» и пробелом её нет -- /\bвсе\b/ не совпадает никогда. Границу
   // задаём сами, как в EDGE ниже.

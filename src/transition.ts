@@ -182,16 +182,11 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
     const deadline = set?.deadline !== undefined ? set.deadline : (task.deadline ?? null);
     const targets = new Set<string>();
 
-    // (1) АКТОР -- только если письмо ОТСЛЕЖИВАЕМОЕ. Его message_id и есть
-    // якорь ветки: он сохраняется в telegram_home_id задачи и позже гасится
-    // («🚀 В работе» исчезает, когда работу сдали). Во всех остальных случаях
-    // человеку не пишут о том, что он только что сделал сам: на «заверши её»
-    // приходил и ответ команды, и отчёт «✅ Готово, кто: Яков» -- о себе же.
-    if (actorId && notify.track) {
-      const mine = await env.DB.prepare('SELECT 1 FROM task_assignees WHERE task_id = ? AND user_id = ?')
-        .bind(task.id, actorId).first();
-      if (mine) targets.add(actorId);
-    }
+    // (1) АКТОРУ не пишем НИКОГДА: он только что нажал кнопку или сказал
+    // команду и получил на неё ответ. Раньше его письмо служило «якорем» ветки
+    // (track), и кто нажимал «Принять» на чужом поручении, получал «🚀 Принято,
+    // кто: он сам». Якорь теперь -- письмо автору: его «🚀 Принято» и
+    // заменяется потом на «✅ Готово» в его же чате.
 
     // (2) АВТОР -- ему видеть ход работы, которую он поручил. Себе о собственном
     // действии не пишем: человек только что нажал кнопку.
@@ -218,7 +213,7 @@ export async function applyTransition(env: Env, input: TransitionInput): Promise
 
     // Актора вычёркиваем и здесь: правило (3) добавляет всех адресатов
     // закрытой задачи, а он среди них -- тот, кто её и закрыл.
-    if (actorId && !notify.track) targets.delete(actorId);
+    if (actorId) targets.delete(actorId);
 
     for (const uid of targets) {
       statements.push(await buildNotification(env, task, action, notify, deadline, uid, actorId ?? undefined));

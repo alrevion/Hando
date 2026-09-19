@@ -125,7 +125,9 @@ describe('регрессия шага -1: создание и редактиро
 
 describe('регрессия шага -1: движение по доске', () => {
   it('3. todo -> in_progress -> done: done_at выставляется, telegram_message_id ставится и снимается', async () => {
-    const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1' }] });
+    // Поручение ОТ ДРУГОГО (s1): отслеживаемое «🚀 В работе» уходит автору.
+    // По своей задаче сообщений о своих же действиях нет вовсе.
+    const env = await envWith({ ...team, tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 's1' }] });
     const c = await cookie('w1', 'admin');
     tg();
 
@@ -147,9 +149,8 @@ describe('регрессия шага -1: движение по доске', () 
     expect((await apiRoutes.request('/tasks/t1/move', json(c, { to: 'in_progress' }), env)).status).toBe(409);
 
     const { results } = await events('t1');
-    // Третьим -- 'confirmed': задача поручена самому себе, и проверять её не у
-    // кого. Спрашивать «примите работу» у того же человека было бы обрядом.
-    expect(results.map((e) => e.action)).toEqual(['moved_in_progress', 'moved_done', 'confirmed']);
+    // Поручение от другого: сданное ждёт проверки автора, а не закрывается само.
+    expect(results.map((e) => e.action)).toEqual(['moved_in_progress', 'moved_done']);
   });
 
   it('4. снятие блокировки по зависимости не портит строку: предшественник в архиве тоже открывает путь', async () => {
