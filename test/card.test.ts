@@ -244,12 +244,33 @@ describe('правка действующей задачи словами', () =
     await say(env, 'tg-boss', 'перенеси срок по подготовить отчёт на завтра');
     const after = (await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE id='t1'").first<{ deadline: string }>())!.deadline;
     expect(after).not.toBe(before);
-    const reply = sent(spy).at(-1)!;
+    const reply = sent(spy).filter((m) => m.chat_id === 'tg-boss').at(-1)!;
     expect(reply.text).toContain('«Подготовить отчёт»');
     expect(reply.text).toContain('срок');
     // Кнопка ведёт в ту же задачу, а нового черновика не появилось.
     expect(labels(reply)).toEqual(['📱 Открыть']);
     expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
+    // Исполнитель узнаёт новый срок -- раньше перенос был молчаливым.
+    const toWorker = sent(spy).filter((m) => m.chat_id === 'tg-w1');
+    expect(toWorker).toHaveLength(1);
+    expect(toWorker[0].text).toContain('📅 Срок перенесён');
+    expect(toWorker[0].text).toContain('«Подготовить отчёт»');
+  });
+
+  it('перенос в приложении: дата без часа -- конец рабочего дня, срок у исполнителя тот же, и он извещён', async () => {
+    const env = await world();
+    const spy = tg();
+    const res = await apiRoutes.request('/tasks/t1', {
+      method: 'PATCH', headers: { Cookie: await cookie('boss', 'creator', ORG_A), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deadline: '2026-09-25' }),
+    }, env);
+    expect(res.status).toBe(200);
+    const t = (await testEnv.DB.prepare("SELECT deadline FROM tasks WHERE id='t1'").first<{ deadline: string }>())!.deadline;
+    const a = (await testEnv.DB.prepare("SELECT due_at FROM task_assignees WHERE task_id='t1'").first<{ due_at: string }>())!.due_at;
+    // Не полночь по Гринвичу (05:00 в Ташкенте), а конец рабочего дня.
+    expect(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tashkent', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(t))).toBe('18:00');
+    expect(a).toBe(t);
+    expect(sent(spy).some((m) => m.chat_id === 'tg-w1' && m.text.includes('📅 Срок перенесён'))).toBe(true);
   });
 
   it('«сделай срочной» меняет важность, а «переименуй в» -- тему', async () => {

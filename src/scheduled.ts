@@ -383,6 +383,12 @@ export async function sendDigests(env: Env, now: Date): Promise<number> {
         .sort((a, b) => (PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]) || (Date.parse(a.due_at!) - Date.parse(b.due_at!)));
       const undated = rows.filter((r) => r.due_at === null)
         .sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
+      // ПРОСРОЧЕННОЕ -- первым разделом. Раньше в сводке были только «на
+      // сегодня» и «без срока», и у человека с двумя просроченными делами сводки
+      // не было вовсе -- при том, что они и есть главное на утро.
+      const overdue = rows
+        .filter((r) => r.due_at !== null && Date.parse(r.due_at) < now.getTime() && !sameLocalDay(r.due_at, now, s.timezone))
+        .sort((a, b) => Date.parse(a.due_at!) - Date.parse(b.due_at!));
       // Черновик -- ещё не задача: пока не нажато «Создать», напоминаний по нему
       // не будет вовсе. Сводка напоминает о нём ОДИН раз и не в день
       // создания: сегодняшняя карточка и так перед глазами, а каждое утро одно
@@ -390,21 +396,28 @@ export async function sendDigests(env: Env, now: Date): Promise<number> {
       const drafts = (await listDrafts(env, m.user_id, s.id))
         .filter((d) => !d.reminded_at && !sameLocalDay(`${d.created_at.replace(' ', 'T')}${d.created_at.includes('Z') ? '' : 'Z'}`, now, s.timezone));
       const writes = [env.DB.prepare('UPDATE org_memberships SET digest_sent_on = ? WHERE id = ?').bind(dayKey, m.mid)];
-      if (today.length > 0 || undated.length > 0) {
+      if (today.length > 0 || undated.length > 0 || overdue.length > 0) {
         const time = (iso: string) => new Intl.DateTimeFormat('ru-RU', { timeZone: s.timezone, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
+        const day = (iso: string) => new Intl.DateTimeFormat('ru-RU', { timeZone: s.timezone, day: 'numeric', month: 'long' }).format(new Date(iso));
         const lines = [
           `📰 ${new Intl.DateTimeFormat('ru-RU', { timeZone: s.timezone, weekday: 'long', day: 'numeric', month: 'long' }).format(now)}`,
-          ...today.map((r, i) => `${i + 1}. «${r.title}» — ${time(r.due_at!)}${PRIORITY_RU[r.priority] ? ` · ${PRIORITY_RU[r.priority]}` : ''}`),
         ];
+        if (overdue.length > 0) {
+          lines.push(`⚠️ Просрочено (${overdue.length}):`);
+          lines.push(...overdue.slice(0, 5).map((r) => `• «${r.title}» — срок был ${day(r.due_at!)}`));
+          if (overdue.length > 5) lines.push(`…и ещё ${overdue.length - 5}`);
+          if (today.length > 0) lines.push('', 'На сегодня:');
+        }
+        lines.push(...today.map((r, i) => `${i + 1}. «${r.title}» — ${time(r.due_at!)}${PRIORITY_RU[r.priority] ? ` · ${PRIORITY_RU[r.priority]}` : ''}`));
         if (undated.length > 0) {
-          if (today.length > 0) lines.push('');
+          if (today.length > 0 || overdue.length > 0) lines.push('');
           lines.push(`Без срока (${undated.length}) — напоминаний по ним не будет:`);
           lines.push(...undated.slice(0, 5).map((r) => `• «${r.title}»`));
           if (undated.length > 5) lines.push(`…и ещё ${undated.length - 5}`);
         }
         // Через outbox (членство, адрес, клейм -- всё там). task_id -- первая
         // задача сводки: у строки очереди задача обязательна.
-        writes.push(queueReminder(env, { task_id: (today[0] ?? undated[0]).id, org_id: s.id, user_id: m.user_id }, lines.join('\n'), 'digest', {}));
+        writes.push(queueReminder(env, { task_id: (overdue[0] ?? today[0] ?? undated[0]).id, org_id: s.id, user_id: m.user_id }, lines.join('\n'), 'digest', {}));
       }
       await env.DB.batch(writes);
       // Черновики -- карточками с их кнопками: Создать · Изменить · Отменить,
@@ -419,7 +432,7 @@ export async function sendDigests(env: Env, now: Date): Promise<number> {
         await env.DB.prepare(`UPDATE drafts SET reminded_at = ? WHERE id IN (${drafts.map(() => '?').join(',')})`)
           .bind(nowIso(), ...drafts.map((d) => d.id)).run();
       }
-      if (today.length > 0 || undated.length > 0 || drafts.length > 0) sent++;
+      if (today.length > 0 || undated.length > 0 || overdue.length > 0 || drafts.length > 0) sent++;
     }
   }
   return sent;

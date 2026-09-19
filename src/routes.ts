@@ -743,7 +743,8 @@ apiRoutes.patch('/tasks/:id/quick', requireProjectAccess('task'), async (c) => {
     let iso = b.deadline;
     if (iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)) iso = atDayEnd(iso, await loadSchedule(c.env, c.get('orgId')));
     // Срок ложится и в задачу, и в строки адресатов: напоминание считает по ним.
-    await setTaskDeadline(c.env, task.id, c.get('orgId'), iso);
+    await setTaskDeadline(c.env, task.id, c.get('orgId'), iso, c.get('userId'));
+    await drainOutbox(c.env);
   }
   return c.json({ ok: true });
 });
@@ -1504,6 +1505,12 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
   // обязан увидеть новый заголовок и новый срок, а не прежние.
   const reassignTo = b.responsible_user_id;
   const priority = b.priority && PRIORITIES.includes(b.priority) ? b.priority : null;
+  // Дата без часа из системного выбора -- конец рабочего дня в поясе
+  // организации, как в быстрой правке. Сырая «2026-09-15» читалась как
+  // полночь по Гринвичу -- 05:00 по Ташкенту, и напоминания шли бы в 4-6 утра.
+  const deadline = b.deadline && /^\d{4}-\d{2}-\d{2}$/.test(b.deadline)
+    ? atDayEnd(b.deadline, await loadSchedule(c.env, c.get('orgId')))
+    : b.deadline;
   // Правка содержимого status НЕ трогает: иначе «единственный писатель» стал бы
   // «единственный писатель, кроме PATCH». Возврат в todo -- это переход, и он
   // уходит в applyTransition отдельным шагом ниже.
@@ -1516,7 +1523,9 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
     .bind(
       b.title ?? null,
       b.description ?? null,
-      b.deadline === undefined ? task.deadline : b.deadline,
+      // Без переоткрытия срок ставит setTaskDeadline ниже -- вместе со строками
+      // исполнителей и сообщением им; здесь он остаётся прежним.
+      deadline === undefined || !reopening ? task.deadline : deadline,
       // Повтор снимается передачей null -- COALESCE такого не умеет.
       b.repeat_min === undefined ? task.repeat_min : (b.repeat_min || null),
       b.content_blocks ?? null,
@@ -1529,7 +1538,13 @@ apiRoutes.patch('/tasks/:id', requireProjectAccess('task'), async (c) => {
 
   if (!reopening) {
     await logEvent(c.env.DB, { actorId: c.get('userId'), orgId: c.get('orgId'), targetType: 'task', targetId: task.id, action: 'edited' });
+    // Срок -- ещё и в строки исполнителей, с их журналом и с сообщением им:
+    // одно UPDATE tasks оставляло напоминания жить по старому сроку.
+    if (deadline !== undefined && deadline !== task.deadline) {
+      await setTaskDeadline(c.env, task.id, c.get('orgId'), deadline, c.get('userId'));
+    }
     await handoff(c, task, reassignTo);
+    await drainOutbox(c.env);
     return c.json({ success: true });
   }
 

@@ -269,6 +269,19 @@ describe('сводка', () => {
   });
 });
 
+describe('сводка: просроченное', () => {
+  it('просроченное -- первым разделом; раньше при одних просроченных сводки не было вовсе', async () => {
+    // Срок был вчера. Ни «на сегодня», ни «без срока» -- прежняя сводка молчала.
+    const env = await world(new Date(at('15:00').getTime() - 24 * 60 * 60 * 1000).toISOString());
+    tg();
+    expect(await sendDigests(env, at('09:10'))).toBe(1);
+    const digest = (await queued()).find((n) => n.kind === 'digest')!;
+    expect(digest.to).toBe('w1');
+    expect(digest.p.text).toContain('⚠️ Просрочено (1):');
+    expect(digest.p.text).toContain('• «Подготовить отчёт» — срок был 9 сентября');
+  });
+});
+
 describe('очередь: ночной пол, график и режим человека', () => {
   const enqueue = (env: Env, userId: string, payload: Record<string, unknown>) =>
     env.DB.prepare(

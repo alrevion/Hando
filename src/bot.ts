@@ -740,13 +740,14 @@ botApp.post('/webhook', async (c) => {
         return c.json({ ok: true });
       }
 
-      await setTaskDeadline(c.env, task.id, orgId, iso);
+      await setTaskDeadline(c.env, task.id, orgId, iso, who.userId);
       await answerCallbackQuery(c.env, cq.id, 'Срок поставлен');
       if (chatId && messageId) {
+        // Без «напомню за день до срока»: такого напоминания нет. Есть «за час»,
+        // «за N минут» и «в срок» -- исполнителю, и он сразу узнаёт новый срок.
         await editMessageText(c.env, chatId, messageId, [
           `✅ ${task.title}`,
           `Срок: ${formatWhen(iso, tz)}`,
-          'Напомню за день до срока.',
         ].join('\n'), { inline_keyboard: [[openButton(task.id)]] });
       }
       await drainOutbox(c.env);

@@ -105,14 +105,33 @@ export async function createFromDraft(
  * Писать только в одно значило бы «срок вижу, а напоминания нет».
  * Журнал напоминаний стирается: у нового срока свои «за час» и «в срок».
  */
-export async function setTaskDeadline(env: Env, taskId: string, orgId: string, iso: string | null): Promise<void> {
-  await env.DB.batch([
+export async function setTaskDeadline(
+  env: Env, taskId: string, orgId: string, iso: string | null,
+  /** Кто переносит. Задан -- исполнители узнают о новом сроке (кроме него самого). */
+  actorId?: string,
+): Promise<void> {
+  const before = await env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').bind(taskId, orgId).first<Task>();
+  const writes: D1PreparedStatement[] = [
     env.DB.prepare('UPDATE tasks SET deadline = ?, updated_at = ? WHERE id = ? AND org_id = ?')
       .bind(iso, nowIso(), taskId, orgId),
     env.DB.prepare('UPDATE task_assignees SET due_at = ? WHERE task_id = ? AND org_id = ?')
       .bind(iso, taskId, orgId),
     clearReminders(env, taskId),
-  ]);
+  ];
+  // ИСПОЛНИТЕЛЬ УЗНАЁТ О НОВОМ СРОКЕ. Раньше срок менялся кнопками, голосом и в
+  // приложении молча: человек жил по старому, а напоминания шли по новому. В
+  // том числе после его же «не успею» -- автор переносил, а ответа не было.
+  if (actorId && before && iso !== before.deadline && before.status !== 'done' && before.status !== 'archived') {
+    const { results } = await env.DB.prepare(
+      "SELECT user_id FROM task_assignees WHERE task_id = ? AND org_id = ? AND state IN ('pending','accepted','rejected')",
+    ).bind(taskId, orgId).all<{ user_id: string }>();
+    for (const { user_id } of results) {
+      if (user_id === actorId) continue;
+      writes.push(await buildNotification(env, { ...before, deadline: iso }, 'rescheduled',
+        { emoji: '📅', label: iso ? 'Срок перенесён' : 'Срок снят' }, iso, user_id, actorId));
+    }
+  }
+  await env.DB.batch(writes);
 }
 
 
@@ -474,7 +493,7 @@ export async function commandTaskByPhrase(
 
   const said: string[] = [];
   if (when.iso) {
-    await setTaskDeadline(env, task.id, who.orgId, when.iso);
+    await setTaskDeadline(env, task.id, who.orgId, when.iso, who.userId);
     said.push(`срок — ${formatWhen(when.iso, timeZone)}`);
   }
   if (pri.usedWords.size > 0 && pri.priority !== task.priority) {
