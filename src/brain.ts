@@ -38,6 +38,8 @@ export type BrainCtx = {
 
 export const TASK_OPS = ['done', 'accept', 'start', 'late', 'decline', 'confirm', 'return', 'reschedule', 'set_priority', 'rename', 'remind', 'delete', 'after'] as const;
 export type TaskOpName = typeof TASK_OPS[number];
+/** Что делает исполнитель; всё остальное -- решения автора. */
+const BY_ASSIGNEE = new Set<string>(['done', 'accept', 'start', 'late', 'decline']);
 type Priority = 'urgent' | 'medium' | 'low';
 
 export type Act =
@@ -136,33 +138,33 @@ const RULES = `You turn one message from a Hando user into structured actions. H
 Put every request of the message into "actions", in the order spoken. Never invent requests.
 
 ACTIONS
-create — a NEW task or reminder. «напомни мне …», «надо …», «нужно …», «купить …», «Азизу подготовить …», «передай Маше, что …» are new tasks, even when they start with «напомни». Several independent things to do → several create actions. A list of items inside one errand («купить молоко, хлеб, яйца») → one create with "checklist".
+create — a NEW task or reminder. «напомни мне …», «надо …», «нужно …», «купить …», «Азизу подготовить …» are new tasks, even when they start with «напомни». «передай Маше, что …» / «скажи Маше …» → a task for Маша (announcement=true when it is only information). Several independent things to do → several create actions. A list of items inside one errand («купить молоко, хлеб, яйца») → one create with "checklist".
   title: the essence in 2–6 Russian words, imperative infinitive («Подготовить отчёт», «Позвонить маме»); no names, dates, times, priority words, filler.
   description: other useful details in Russian (purpose, place, conditions) or null. Never repeat the title.
   assignees: refs from PEOPLE who must do it. [] or ["me"] = the user. «мне и Азизу» → ["me","p1"].
   announcement: true only for «ознакомиться / прочитать / довести до сведения».
   priority: urgent («срочно», «горит») / low («не срочно», «когда будет время») only when said about THIS task; otherwise none.
   when, repeat: see DATES.
-task — an operation on an EXISTING task from TASKS. Only when the message clearly points at one of them: by title words, by «её / эту / это / задачу», or a bare «готово / сделал» → the task marked LAST. ops:
+task — an operation on an EXISTING task from TASKS. When the message points at one of them: by title words in any form («с цветами» → «Мои цветы поливать через день»), or by «её / эту / это / задачу» / a bare «готово / сделал» → the task marked LAST (never clarify then). Check the user's role in TASKS: assignee ops only for tasks where the user is an assignee, author ops only where the user is the author. ops:
   done — the user finished a task assigned to them («готово», «сделал», «полил цветы» for «Полить цветы»).
   accept — agrees to take it. start — began working on it.
-  late — (assignee) cannot make it in time. decline — (assignee) refuses.
-  confirm — (author) accepts submitted work. return — (author) rejects submitted work; "when" = new deadline if said.
+  late — (assignee) cannot make it in time («не успеваю с цветами, завтра полью» → late, not a new task). decline — (assignee) refuses.
+  confirm — (author) accepts submitted work («принимаю работу …»). return — (author) rejects submitted work; "when" = new deadline if said.
   reschedule — (author) new deadline in "when". set_priority — (author) "priority". rename — (author) new "title".
   remind — (author) nudge the assignees now («напомни Азизу про отчёт», «поторопи Бека»).
   delete — (author) cancel the task completely. after — the task may start only after the task in "after" is done.
   A reminder for the user themself at a time («напомни мне завтра про отчёт») is a create, not remind.
 draft — DRAFTS are unconfirmed tasks waiting for the «Создать» button. op: delete (one draft, or "all"), create (press «Создать»), edit ("fix" = the correction as said).
-show — the user wants a list: my_tasks («мои задачи»), assigned («мои поручения», «что я поручил»), drafts («черновики»).
+show — the user wants a list: my_tasks («мои задачи»), assigned («мои поручения», «что я поручил»), drafts («черновики», «какие у меня черновики?»).
 ask — a question that needs an answer: how to use Hando, planning advice, status of tasks («что с отчётом?», «что горит?», «какие задачи у Азиза?»), anything else that is not a command. The assistant answers it; do not answer yourself.
 reply — small talk only (thanks, greetings, «ок»): a short friendly reply in Russian.
 clarify — a short question in Russian, with actions = []. Only when the message is a command but you cannot tell WHICH task / draft / person is meant, or nothing actionable is said (a bare name, a bare date). A missing deadline or assignee is never a reason to clarify. If your previous message was a clarifying question, the new message answers it: act on both together.
 
 DATES — never calculate dates. Describe what was said; code computes the calendar.
   when.kind: none | in (amount + unit: «через 2 дня», «через полчаса» = 30 minutes) | today | tomorrow | after_tomorrow | weekday (1=Mon … 7=Sun) | date (day + month) | day_of_month (day) | end_of_week | end_of_month.
-  when.time: an exact clock time "HH:MM", 24h («в 7 вечера» → "19:00", «полдесятого» → "09:30", «после 12» → "12:00"). A bare hour 1–6 without «утра / ночи» is afternoon: «в 3» → "15:00", «к 5» → "17:00". when.part: morning | noon («в обед», «к обеду») | afternoon («после обеда») | evening | end_of_day | none. Use time or part, not both.
+  when.time: an exact clock time "HH:MM", 24h («в 7 вечера» → "19:00", «полдесятого» → "09:30", «после 12» → "12:00", never a part of day). A bare hour 1–6 without «утра / ночи» is afternoon: «в 3» → "15:00", «к 5» → "17:00". when.part: morning | noon («в обед», «к обеду») | afternoon («после обеда») | evening | end_of_day | none. Use time or part, not both.
   «до», «к», «в течение» mark a deadline like «в»: «до пятницы» → weekday 5; «в течение недели» → end_of_week; «в течение месяца» → end_of_month. A time alone («в 5») with other content → kind today.
-  repeat.every: none | day | week (+ weekday) | month (+ day) | n_days (+ n: «через день» = 2, «каждые 3-4 дня» = 3) | n_weeks (+ n). repeat.time / part as in when. For a repeating task leave when.kind = none.
+  repeat.every: none | day | week (+ weekday) | month (+ day) | n_days (+ n: «через день» = 2, «каждые 3-4 дня» = 3) | n_weeks (+ n). «по выходным» → week, weekday 6. repeat.time / part as in when. For a repeating task leave when.kind = none.
 
 REFERENCES — use only the refs given (me, p1…, t1…, d1…). A person missing from PEOPLE cannot be an assignee: mention them in the description.
 
@@ -281,6 +283,16 @@ export function resolve(raw: Raw, ctx: BrainCtx): Plan | string {
         if (!TASK_OPS.includes(op)) return `${at}: unknown op`;
         const bad = badWhen(a.when as RawWhen);
         if (bad) return `${at}: ${bad}`;
+        // Роль -- частая ошибка модели: «принимаю работу» автора она читала как
+        // «принял задачу», а «отчёт готов» от автора -- как «сдал сам». Повтор
+        // с объяснением исправляет это до того, как runTaskOp откажет.
+        if (BY_ASSIGNEE.has(op) && !task.mine) {
+          return `${at}: the user is not an assignee of ${a.task}, so "${op}" is impossible. `
+            + (task.author ? 'As its author: confirm / return / remind / reschedule, or ask.' : 'Use ask.');
+        }
+        if (!BY_ASSIGNEE.has(op) && !task.author) {
+          return `${at}: the user is not the author of ${a.task}, so "${op}" is impossible. As an assignee: done / accept / start / late / decline.`;
+        }
         const deadline = resolveWhen(toWhen(a.when as RawWhen), ctx.now, ctx.sched);
         if (op === 'reschedule' && !deadline) return `${at}: reschedule needs "when"`;
         const priority = priorityOf(a.priority);

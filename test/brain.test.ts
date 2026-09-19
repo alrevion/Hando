@@ -4,6 +4,7 @@
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { botApp } from '../src/bot';
+import { resolve, type BrainCtx } from '../src/brain';
 import { envWith, ORG_A } from './fixture';
 import type { Env } from '../src/types';
 
@@ -160,5 +161,17 @@ describe('модель с действиями', () => {
     await say(env, 'Азизу купить бумагу');
     expect(m.calls).toHaveLength(0);
     expect(m.sent.some((s) => s.text.startsWith('Кого именно'))).toBe(true);
+  });
+
+  it('роль сверяется до исполнения: «сдал» по чужому поручению -- ошибка для повтора', () => {
+    const ctx = {
+      now: new Date(), sched: { timezone: 'Asia/Tashkent', always_on: 0, work_days: '1,2,3,4,5', work_end: '18:00', lunch_start: null, quiet_from: '22:00', quiet_to: '08:00' },
+      me: { id: 'me', name: 'Я' }, people: [], drafts: [], history: [],
+      tasks: [{ id: 'report', title: 'Отчёт', author: true, mine: null, status: 'not started', due: null, who: 'Азиз', last: false }],
+    } as BrainCtx;
+    expect(resolve({ actions: [onTask({ op: 'done' })], clarify: null }, ctx)).toContain('not an assignee');
+    expect(typeof resolve({ actions: [onTask({ op: 'remind' })], clarify: null }, ctx)).toBe('object');
+    ctx.tasks[0] = { ...ctx.tasks[0], author: false, mine: 'accepted' };
+    expect(resolve({ actions: [onTask({ op: 'reschedule', when: { ...W0, kind: 'tomorrow' } })], clarify: null }, ctx)).toContain('not the author');
   });
 });
