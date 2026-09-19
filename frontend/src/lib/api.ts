@@ -248,8 +248,10 @@ export interface MyOrg {
   always_on: number;
   digest_enabled: number;
   digest_time: string | null;
+  quiet_from: string;
+  quiet_to: string;
 }
-export type OrgSettingsPatch = Partial<Pick<MyOrg, 'work_days' | 'work_start' | 'work_end' | 'lunch_start' | 'lunch_end' | 'always_on' | 'digest_enabled' | 'digest_time'>>;
+export type OrgSettingsPatch = Partial<Pick<MyOrg, 'work_days' | 'work_start' | 'work_end' | 'lunch_start' | 'lunch_end' | 'always_on' | 'digest_enabled' | 'digest_time' | 'quiet_from' | 'quiet_to'>>;
 export const updateOrgSettings = (orgId: string, patchBody: OrgSettingsPatch) =>
   request<{ ok: true }>(`/orgs/${orgId}`, { method: 'PATCH', body: JSON.stringify(patchBody) });
 export const updateMe = (patchBody: { notify_mode?: 'all' | 'schedule'; remind_before_min?: number }) =>

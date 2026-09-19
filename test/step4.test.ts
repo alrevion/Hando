@@ -204,27 +204,44 @@ describe('шаг 4a: ADR-4 -- заголовок задачи не уходит 
 });
 
 describe('шаг 4d: тихие часы в поясе организации', () => {
-  it('в Ташкенте тихо с 20:00 до 08:00 местного, а не серверного', () => {
-    // 2026-09-04T16:00Z = 21:00 в Ташкенте (UTC+5) -- тихо, хотя по UTC день.
-    expect(isQuiet(new Date('2026-09-04T16:00:00Z'), 'Asia/Tashkent')).toBe(true);
-    // 2026-09-04T04:00Z = 09:00 местного -- рабочее время, хотя по UTC ночь.
-    expect(isQuiet(new Date('2026-09-04T04:00:00Z'), 'Asia/Tashkent')).toBe(false);
+  // По умолчанию 22:00-08:00, у каждого пространства своё окно.
+  const Q = { timezone: 'Asia/Tashkent', quiet_from: '22:00', quiet_to: '08:00', always_on: 0 };
+
+  it('тихо с 22:00 до 08:00 местного, а не серверного', () => {
+    // 17:30Z = 22:30 в Ташкенте (UTC+5) -- тихо, хотя по UTC день.
+    expect(isQuiet(new Date('2026-09-04T17:30:00Z'), Q)).toBe(true);
+    // 16:00Z = 21:00 -- ещё не тихо.
+    expect(isQuiet(new Date('2026-09-04T16:00:00Z'), Q)).toBe(false);
+    // 04:00Z = 09:00 местного -- день, хотя по UTC ночь.
+    expect(isQuiet(new Date('2026-09-04T04:00:00Z'), Q)).toBe(false);
     // Переход суток: 19:00Z = 00:00 следующего дня местного.
-    expect(isQuiet(new Date('2026-09-04T19:00:00Z'), 'Asia/Tashkent')).toBe(true);
-    expect(isQuiet(new Date('2026-09-04T03:30:00Z'), 'Asia/Tashkent')).toBe(false); // 08:30
-    // Воскресенье целиком: 2026-09-06 -- воскресенье.
-    expect(isQuiet(new Date('2026-09-06T09:00:00Z'), 'Asia/Tashkent')).toBe(true);
-    // Тот же момент в UTC-поясе -- 09:00 буднего дня, если бы пояс игнорировали.
-    expect(isQuiet(new Date('2026-09-04T16:00:00Z'), 'UTC')).toBe(false);
+    expect(isQuiet(new Date('2026-09-04T19:00:00Z'), Q)).toBe(true);
+    expect(isQuiet(new Date('2026-09-04T03:30:00Z'), Q)).toBe(false); // 08:30
+    // Тот же момент в UTC-поясе -- 17:30 буднего дня, если бы пояс игнорировали.
+    expect(isQuiet(new Date('2026-09-04T17:30:00Z'), { ...Q, timezone: 'UTC' })).toBe(false);
   });
 
-  it('срок пробивает тишину: предупреждение после провала бесполезно', () => {
-    expect(isQuiet(new Date('2026-09-04T16:00:00Z'), 'Asia/Tashkent', true)).toBe(false);
+  it('у 24/7 ночь тоже тихая, а воскресенье -- нет; у графика воскресенье тихое целиком', () => {
+    // Раньше у 24/7 тишины не было вовсе: «Просрочено» шло круглые сутки.
+    expect(isQuiet(new Date('2026-09-04T19:00:00Z'), { ...Q, always_on: 1 })).toBe(true);
+    // 2026-09-06 -- воскресенье, 14:00 местного.
+    expect(isQuiet(new Date('2026-09-06T09:00:00Z'), Q)).toBe(true);
+    expect(isQuiet(new Date('2026-09-06T09:00:00Z'), { ...Q, always_on: 1 })).toBe(false);
+  });
+
+  it('окно из настроек: своё, внутри суток, и «00:00-00:00» -- без тишины', () => {
+    expect(isQuiet(new Date('2026-09-04T09:00:00Z'), { ...Q, quiet_from: '13:00', quiet_to: '15:00' })).toBe(true); // 14:00
+    expect(isQuiet(new Date('2026-09-04T11:00:00Z'), { ...Q, quiet_from: '13:00', quiet_to: '15:00' })).toBe(false); // 16:00
+    expect(isQuiet(new Date('2026-09-04T19:00:00Z'), { ...Q, quiet_from: '00:00', quiet_to: '00:00', always_on: 1 })).toBe(false);
+  });
+
+  it('срок, назначенный на тихое время, пробивает тишину', () => {
+    expect(isQuiet(new Date('2026-09-04T17:30:00Z'), Q, true)).toBe(false);
   });
 
   it('в тихие часы outbox копит, а не теряет', async () => {
     const env = await world([{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss' }]);
-    await testEnv.DB.prepare('UPDATE orgs SET quiet_hours = 1 WHERE id = ?').bind(ORG_A).run();
+    await testEnv.DB.prepare("UPDATE orgs SET quiet_from = '20:00', quiet_to = '08:00' WHERE id = ?").bind(ORG_A).run();
     const spy = tg();
 
     // Момент фиксируем через подмену времени: набор не смеет зависеть от того,
@@ -275,7 +292,7 @@ describe('ревью: у cron нет своего пути отправки', ()
     expect(sends.some((x) => String(x.text).includes('Просрочено'))).toBe(true);
   });
 
-  it('напоминания cron подчиняются тихим часам, а срочность их пробивает', async () => {
+  it('напоминания cron подчиняются тихим часам; «Просрочено» ночью ждёт утра', async () => {
     // Время подменяется ДО постройки мира, а не после. Прежняя редакция считала
     // done_at от НАСТОЯЩЕГО «сейчас», а проверяла при подменённом -- и разошлась
     // сама собой, когда календарная дата сменилась: 3 дня назад от реального дня
@@ -288,7 +305,7 @@ describe('ревью: у cron нет своего пути отправки', ()
       { id: 'late', project_id: 'p1', status: 'todo', responsible_user_id: 'w1', author_id: 'boss', deadline: '2020-01-01T00:00:00.000Z' },
       { id: 'stale', project_id: 'p1', status: 'done', responsible_user_id: 'w1', author_id: 'boss', done_at: new Date(NIGHT.getTime() - 3 * 86400_000).toISOString() },
     ]);
-    await testEnv.DB.prepare('UPDATE orgs SET quiet_hours = 1 WHERE id = ?').bind(ORG_A).run();
+    await testEnv.DB.prepare("UPDATE orgs SET quiet_from = '20:00', quiet_to = '08:00' WHERE id = ?").bind(ORG_A).run();
     await testEnv.DB.prepare("UPDATE task_assignees SET due_at = '2020-01-01T00:00:00.000Z' WHERE task_id = 'late'").run();
     await testEnv.DB.prepare("UPDATE task_assignees SET state = 'done', done_at = (SELECT done_at FROM tasks WHERE id='stale') WHERE task_id = 'stale'").run();
 
@@ -296,13 +313,17 @@ describe('ревью: у cron нет своего пути отправки', ()
     await scheduled({} as ScheduledController, env, {} as ExecutionContext);
     const sent = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)));
 
-    // Просрочка пробивает тишину: предупреждение после провала бесполезно.
-    expect(sent.some((x) => String(x.text).includes('Просрочено'))).toBe(true);
-    // А «пора проверить» подождёт до утра.
+    // Просрочка ТИШИНУ НЕ пробивает: срок уже прошёл, до утра хуже не станет,
+    // а ночной звонок -- станет. Раньше пробивала, и у семьи шло всю ночь.
+    expect(sent.some((x) => String(x.text).includes('Просрочено'))).toBe(false);
     expect(sent.some((x) => String(x.text).includes('Пора проверить'))).toBe(false);
-    // И не потеряно: строка ждёт в очереди.
-    const pending = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM notifications WHERE sent_at IS NULL AND kind = 'stale_review'").first<{ n: number }>();
-    expect(pending!.n).toBe(1);
+    // И не потеряно: обе строки ждут в очереди и уходят утром.
+    const pending = await testEnv.DB.prepare("SELECT kind FROM notifications WHERE sent_at IS NULL AND kind IN ('overdue','stale_review') ORDER BY kind").all<{ kind: string }>();
+    expect(pending.results.map((r) => r.kind)).toEqual(['overdue', 'stale_review']);
+    vi.setSystemTime(new Date('2026-09-05T05:00:00Z')); // 10:00 субботы: у графика тихо только воскресенье
+    await drainOutbox(env);
+    const later = calls(spy).filter(([u]) => u.includes('/sendMessage')).map(([, i]) => JSON.parse(String(i.body)));
+    expect(later.some((x) => String(x.text).includes('Просрочено'))).toBe(true);
     vi.useRealTimers();
   });
 });

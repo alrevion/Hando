@@ -7,7 +7,7 @@ import { applyTransition, assigneeButtons, openButton } from './transition';
 import { drainOutbox } from './outbox';
 import { enqueueNudges } from './nudges';
 import { formatWhen } from './parse';
-import { digestAt, hm, inWorkHours, isWorkDay, localHm, sameLocalDay, scheduleCols, type OrgSchedule } from './schedule';
+import { digestAt, hm, inWorkHours, isWorkDay, localHm, morning, sameLocalDay, scheduleCols, type OrgSchedule } from './schedule';
 import { listDrafts, renderDraft } from './drafts';
 
 // Тот же домен, что в transition.ts: адрес воркера один.
@@ -119,27 +119,50 @@ const ROW_COLS = `a.id, a.due_at, a.state, a.user_id, t.id AS task_id, t.title, 
  * шлются, пока записи нет; повторяющиеся -- когда прошлая старше интервала.
  * Это единственное, что стоит между человеком и двенадцатью сообщениями в час.
  */
-async function sentLog(env: Env, rowIds: string[]): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
+type Log = Map<string, { at: number; n: number }>;
+
+async function sentLog(env: Env, rowIds: string[]): Promise<Log> {
+  const map: Log = new Map();
   // Кусками: предел D1 -- 100 параметров, а строки здесь со ВСЕХ арендаторов.
   for (const part of chunks(rowIds)) {
     const { results } = await env.DB.prepare(
-      `SELECT assignee_row_id, kind, sent_at FROM reminders WHERE assignee_row_id IN (${part.map(() => '?').join(',')})`,
-    ).bind(...part).all<{ assignee_row_id: string; kind: string; sent_at: string }>();
-    for (const r of results) map.set(`${r.assignee_row_id}:${r.kind}`, Date.parse(r.sent_at));
+      `SELECT assignee_row_id, kind, sent_at, n FROM reminders WHERE assignee_row_id IN (${part.map(() => '?').join(',')})`,
+    ).bind(...part).all<{ assignee_row_id: string; kind: string; sent_at: string; n: number }>();
+    for (const r of results) map.set(`${r.assignee_row_id}:${r.kind}`, { at: Date.parse(r.sent_at), n: r.n });
   }
   return map;
 }
 
-function dueNow(log: Map<string, number>, rowId: string, kind: string, gapMs: number, now: Date): boolean {
+function dueNow(log: Log, rowId: string, kind: string, gapMs: number, now: Date): boolean {
   const last = log.get(`${rowId}:${kind}`);
   if (last === undefined) return true;
-  return now.getTime() - last >= gapMs;
+  return now.getTime() - last.at >= gapMs;
 }
 
+/** Сколько раз подряд повторять раз в час, прежде чем перейти на «раз в день». */
+const HOURLY_REPEATS = 3;
+
+/**
+ * Повтор «Просрочено» и «Не принято»: три раза с интервалом в час, дальше раз
+ * в день утром. Раньше было каждый час без предела: по двум просроченным
+ * задачам у одного человека -- 276 сообщений за пять дней. Человек, который
+ * трижды не отозвался, увидит четвёртое сообщение не раньше, чем решит
+ * отозваться, -- а раз в день напоминание остаётся.
+ */
+function dueRepeat(log: Log, r: Row, kind: string, now: Date): boolean {
+  const e = log.get(`${r.id}:${kind}`);
+  if (!e) return true;
+  if (e.n < HOURLY_REPEATS) return now.getTime() - e.at >= HOURLY_MS;
+  const today = localHm(now, r.timezone);
+  return localHm(new Date(e.at), r.timezone).dayKey !== today.dayKey && today.minutes >= hm(morning(r));
+}
+
+/** Отметка в журнале: когда и в который раз. Счёт сбрасывается вместе с журналом (новый срок, «Напомнить»). */
 function mark(env: Env, rowId: string, kind: string, now: Date): D1PreparedStatement {
-  return env.DB.prepare('INSERT OR REPLACE INTO reminders (assignee_row_id, kind, sent_at) VALUES (?, ?, ?)')
-    .bind(rowId, kind, now.toISOString());
+  return env.DB.prepare(
+    `INSERT INTO reminders (assignee_row_id, kind, sent_at, n) VALUES (?, ?, ?, 1)
+     ON CONFLICT(assignee_row_id, kind) DO UPDATE SET sent_at = excluded.sent_at, n = reminders.n + 1`,
+  ).bind(rowId, kind, now.toISOString());
 }
 
 /** Рабочее ли сейчас время у организации строки. Повторы по графику ставятся
@@ -169,20 +192,22 @@ export async function remindNotAccepted(env: Env, now: Date): Promise<void> {
        -- Своя строка «не принято» не напоминается: принимать своё незачем.
        -- Новые такие строки не рождаются вовсе (initialState), это страховка
        -- от любой будущей двери, которая заведёт строку в обход неё.
-       AND (t.author_id IS NULL OR a.user_id <> t.author_id)`,
-  ).all<Row>();
+       AND (t.author_id IS NULL OR a.user_id <> t.author_id)
+       -- Срок прошёл -- говорит «Просрочено», а не «Не принято»: два
+       -- напоминания в час по одной строке -- это вдвое больше шума.
+       AND (a.due_at IS NULL OR datetime(a.due_at) > datetime(?))`,
+  ).bind(now.toISOString()).all<Row>();
   const log = await sentLog(env, results.map((r) => r.id));
   const writes: D1PreparedStatement[] = [];
   for (const r of results) {
     const age = now.getTime() - bornAt(r);
     if (age < HOUR_MS) continue;
-    // КАЖДЫЙ ЧАС, пока не принял, а не один раз. Одно напоминание теряется в
-    // ленте Telegram за ночь, и поручение висит непринятым до утра, хотя
-    // человек в телефоне. Тишина и график по-прежнему держат: working()
-    // проверяется тем же условием, поэтому ночью у конторы не звонит.
+    // Не один раз: одно напоминание теряется в ленте. Но и не каждый час без
+    // конца -- три раза раз в час, дальше раз в день утром (dueRepeat).
+    // Тихие часы и график держат: working() проверяется тем же условием.
     // Останавливает это сам человек -- «Принять», «Не успею» или «Отказать»:
     // любое из трёх уводит строку из pending, и выборка её больше не видит.
-    if (working(r, now) && dueNow(log, r.id, 'not_accepted', HOURLY_MS, now)) {
+    if (working(r, now) && dueRepeat(log, r, 'not_accepted', now)) {
       writes.push(queueReminder(env, r,
         `⏳ Не принято: «${r.title}»${r.due_at ? `\nСрок: ${formatWhen(r.due_at, r.timezone)}` : ''}\nПримите или откажитесь — автор ждёт.`,
         'not_accepted', { gated: true, buttons: assigneeButtons({ id: r.task_id, kind: r.kind, author_id: r.author_id }, r.user_id) }));
@@ -261,14 +286,15 @@ export async function remindOverdue(env: Env, now: Date): Promise<void> {
     const overdueMs = now.getTime() - Date.parse(r.due_at as string);
     // Первый час после срока закрывает «в срок»; просрочка начинается дальше.
     if (overdueMs < HOUR_MS) continue;
-    if (dueNow(log, r.id, 'overdue', HOURLY_MS, now)) {
-      // ПЕРВОЕ предупреждение пробивает и тишину, и график: после провала оно
-      // бесполезно. Повторы -- каждый час, но только в рабочее время.
+    if (dueRepeat(log, r, 'overdue', now)) {
+      // ПЕРВОЕ предупреждение идёт мимо графика, но НЕ сквозь тихие часы:
+      // срок уже прошёл, и до утра оно ничего не испортит, а ночной звонок
+      // испортит. Повторы -- в рабочее время, три раза, дальше раз в день.
       const first = !log.has(`${r.id}:overdue`);
       if (!first && !working(r, now)) continue;
       writes.push(queueReminder(env, r,
         `⚠️ Просрочено на ${formatOverdue(overdueMs)}: «${r.title}»`,
-        'overdue', first ? { urgent: true } : { gated: true }));
+        'overdue', first ? {} : { gated: true }));
       writes.push(mark(env, r.id, 'overdue', now));
     }
     if (working(r, now) && r.author_id && r.author_id !== r.user_id && dueNow(log, r.id, 'author_overdue', DAILY_MS, now)) {

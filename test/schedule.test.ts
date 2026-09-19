@@ -32,7 +32,7 @@ const plus = (d: Date, min: number) => new Date(d.getTime() + min * 60000);
 
 const SCHED: OrgSchedule = {
   id: 'x', timezone: TZ, work_days: '1,2,3,4,5', work_start: '09:00', work_end: '18:00',
-  lunch_start: '13:00', lunch_end: '14:00', always_on: 0, digest_enabled: 1, digest_time: null, quiet_hours: 1,
+  lunch_start: '13:00', lunch_end: '14:00', always_on: 0, digest_enabled: 1, digest_time: null, quiet_from: '20:00', quiet_to: '08:00',
 };
 
 describe('график', () => {
@@ -42,6 +42,16 @@ describe('график', () => {
     expect(inWorkHours(SCHED, at('18:00'))).toBe(false);
     expect(inWorkHours(SCHED, new Date('2026-09-12T05:00:00Z'))).toBe(false); // суббота
     expect(inWorkHours({ ...SCHED, always_on: 1 }, new Date('2026-09-12T20:00:00Z'))).toBe(true);
+  });
+
+  it('у 24/7 «сегодня» кончается с началом тихих часов, а не в 23:59', () => {
+    // Было 23:59, и «сделать сегодня» в семье давало «Через час срок» в 23:00.
+    expect(dayEnd({ ...SCHED, always_on: 1, quiet_from: '22:00', quiet_to: '08:00' })).toBe('22:00');
+    // Без тишины -- по-прежнему 23:59; тишина с полуночи -- тоже.
+    expect(dayEnd({ ...SCHED, always_on: 1, quiet_from: '00:00', quiet_to: '00:00' })).toBe('23:59');
+    expect(dayEnd({ ...SCHED, always_on: 1, quiet_from: '01:00', quiet_to: '08:00' })).toBe('23:59');
+    // У графика -- конец рабочего дня, как было.
+    expect(dayEnd(SCHED)).toBe('18:00');
   });
 
   it('«до завтра» -- конец СЕГОДНЯШНИХ суток, 23:59 при любом графике', () => {
@@ -161,20 +171,42 @@ describe('матрица напоминаний: дозировка', () => {
     expect(q[0].p.text).toContain('Срок наступил');
   });
 
-  it('просрочено: первое сразу, дальше раз в час в рабочее время; автору раз в день', async () => {
+  it('просрочено: первое сразу, дальше три раза раз в час, потом раз в день утром; автору раз в день', async () => {
     const env = await world(plus(NOW, -120).toISOString());
     await remindOverdue(env, NOW);
     await remindOverdue(env, plus(NOW, 10));
     let q = await queued();
     expect(q.map((n) => n.kind).sort()).toEqual(['author_overdue', 'overdue']);
-    // Первое -- срочное, сквозь тишину; повтор через час -- уже по графику.
-    expect(q.find((n) => n.kind === 'overdue')!.p).toMatchObject({ gated: false, urgent: true });
+    // Первое -- мимо графика, но НЕ сквозь тихие часы: срок уже прошёл.
+    expect(q.find((n) => n.kind === 'overdue')!.p).toMatchObject({ gated: false, urgent: false });
     expect(q.find((n) => n.kind === 'overdue')!.p.text).toContain('Просрочено на 2ч 0м');
     await remindOverdue(env, plus(NOW, 60));
     q = await queued();
     expect(q.filter((n) => n.kind === 'overdue')).toHaveLength(2);
     expect(q.filter((n) => n.kind === 'overdue')[1].p).toMatchObject({ gated: true, urgent: false });
     expect(q.filter((n) => n.kind === 'author_overdue')).toHaveLength(1);
+    // Третий -- и хватит на сегодня: раньше «каждый час без предела» дало
+    // 276 сообщений за пять дней по двум задачам одного человека.
+    await remindOverdue(env, plus(NOW, 120));
+    await remindOverdue(env, plus(NOW, 240));
+    await remindOverdue(env, plus(NOW, 300));
+    expect((await queued()).filter((n) => n.kind === 'overdue')).toHaveLength(3);
+    // Назавтра -- с начала рабочего дня, один раз.
+    const tomorrow = (hmStr: string) => new Date(at(hmStr).getTime() + 24 * 60 * 60 * 1000);
+    await remindOverdue(env, tomorrow('08:30'));
+    expect((await queued()).filter((n) => n.kind === 'overdue')).toHaveLength(3);
+    await remindOverdue(env, tomorrow('09:10'));
+    await remindOverdue(env, tomorrow('11:00'));
+    expect((await queued()).filter((n) => n.kind === 'overdue')).toHaveLength(4);
+  });
+
+  it('«Не принято» молчит, когда срок уже прошёл: говорит «Просрочено»', async () => {
+    const env = await world(plus(NOW, -120).toISOString());
+    await createdAgo(24 * 60);
+    await remindNotAccepted(env, NOW);
+    await remindOverdue(env, NOW);
+    const kinds = (await queued()).filter((n) => n.to === 'w1').map((n) => n.kind);
+    expect(kinds).toEqual(['overdue']);
   });
 
   it('«Напомнить» у автора стирает журнал -- следующий тик шлёт заново', async () => {
@@ -246,7 +278,7 @@ describe('очередь: ночной пол, график и режим чел
   it('gated ждёт рабочего времени; «сразу из всех» получает переходы вечером; «по расписанию» -- нет; срочное -- всегда', async () => {
     const env = await world(null);
     tg();
-    await testEnv.DB.prepare('UPDATE orgs SET quiet_hours = 1 WHERE id = ?').bind(ORG_A).run();
+    await testEnv.DB.prepare("UPDATE orgs SET quiet_from = '20:00', quiet_to = '08:00' WHERE id = ?").bind(ORG_A).run();
     await enqueue(env, 'w1', { gated: true });
     // 19:00 -- не ночь, но уже не рабочее время: напоминание ждёт.
     expect(await drainOutbox(env, at('19:00'))).toBe(0);
@@ -321,6 +353,12 @@ describe('API: те же настройки', () => {
     const o = await testEnv.DB.prepare('SELECT work_start, work_end, lunch_start, digest_time FROM orgs WHERE id = ?').bind(ORG_A).first();
     expect(o).toEqual({ work_start: '08:00', work_end: '17:00', lunch_start: null, digest_time: '08:15' });
     expect((await api(env, `/orgs/${ORG_A}`, 'PATCH', { work_start: '25:00' }, 'boss', 'creator')).status).toBe(403);
+    // Тихие часы: своё окно сохраняется, «00:00-00:00» -- без тишины, пустое и кривое -- нет.
+    expect((await api(env, `/orgs/${ORG_A}`, 'PATCH', { quiet_from: '23:00', quiet_to: '07:30' }, 'boss', 'creator')).status).toBe(200);
+    expect(await testEnv.DB.prepare('SELECT quiet_from, quiet_to FROM orgs WHERE id = ?').bind(ORG_A).first()).toEqual({ quiet_from: '23:00', quiet_to: '07:30' });
+    expect((await api(env, `/orgs/${ORG_A}`, 'PATCH', { quiet_from: '00:00', quiet_to: '00:00' }, 'boss', 'creator')).status).toBe(200);
+    expect((await api(env, `/orgs/${ORG_A}`, 'PATCH', { quiet_from: null }, 'boss', 'creator')).status).toBe(403);
+    expect((await api(env, `/orgs/${ORG_A}`, 'PATCH', { quiet_to: '24:00' }, 'boss', 'creator')).status).toBe(403);
     expect((await api(env, `/orgs/${ORG_A}`, 'PATCH', { work_start: '08:00' }, 'w1', 'admin')).status).toBe(403);
     // Дата без часа в быстрой правке -- теперь конец НОВОГО рабочего дня.
     await api(env, '/tasks/t1/quick', 'PATCH', { deadline: '2026-09-15' }, 'boss', 'creator');

@@ -46,10 +46,10 @@ export async function envWith(data: FakeData): Promise<Env> {
   // а лишняя пустая организация ничему не мешает. org-pilot уже создан
   // миграцией 0010 -- поэтому здесь только a и b.
   for (const org of [ORG_A, ORG_B]) {
-    // quiet_hours = 0: иначе набор зависел бы от того, в какое время суток его
-    // запустили -- прогон в 22:30 по Ташкенту не отправлял бы ничего. Саму
-    // тишину проверяет step4.test.ts на фиксированных моментах времени.
-    stmts.push(db.prepare('INSERT INTO orgs (id, name, quiet_hours) VALUES (?,?,0)').bind(org, org));
+    // Тишина выключена (00:00-00:00): иначе набор зависел бы от того, в какое
+    // время суток его запустили -- прогон в 22:30 по Ташкенту не отправлял бы
+    // ничего. Саму тишину проверяет step4.test.ts на фиксированных моментах.
+    stmts.push(db.prepare("INSERT INTO orgs (id, name, quiet_from, quiet_to) VALUES (?,?,'00:00','00:00')").bind(org, org));
   }
 
   for (const u of data.users) {

@@ -19,18 +19,21 @@ export type OrgSchedule = {
   digest_enabled: number;
   /** NULL -- в начало рабочего дня. */
   digest_time: string | null;
-  quiet_hours: number;
+  /** Тихие часы «с» и «до» в местном времени; одинаковые -- тишины нет. */
+  quiet_from: string;
+  quiet_to: string;
 };
 
 /** Колонки графика для SELECT с алиасом таблицы: одна строка на все запросы. */
 export function scheduleCols(t: string): string {
   return `COALESCE(${t}.timezone, 'Asia/Tashkent') AS timezone, ${t}.work_days, ${t}.work_start, ${t}.work_end, ` +
-    `${t}.lunch_start, ${t}.lunch_end, ${t}.always_on, ${t}.digest_enabled, ${t}.digest_time, COALESCE(${t}.quiet_hours, 1) AS quiet_hours`;
+    `${t}.lunch_start, ${t}.lunch_end, ${t}.always_on, ${t}.digest_enabled, ${t}.digest_time, ` +
+    `COALESCE(${t}.quiet_from, '22:00') AS quiet_from, COALESCE(${t}.quiet_to, '08:00') AS quiet_to`;
 }
 
 const DEFAULT: Omit<OrgSchedule, 'id'> = {
   timezone: 'Asia/Tashkent', work_days: '1,2,3,4,5', work_start: '09:00', work_end: '18:00',
-  lunch_start: '13:00', lunch_end: '14:00', always_on: 0, digest_enabled: 1, digest_time: null, quiet_hours: 1,
+  lunch_start: '13:00', lunch_end: '14:00', always_on: 0, digest_enabled: 1, digest_time: null, quiet_from: '22:00', quiet_to: '08:00',
 };
 
 export async function loadSchedule(env: Env, orgId: string): Promise<OrgSchedule> {
@@ -69,9 +72,21 @@ export function inWorkHours(s: OrgSchedule, at: Date): boolean {
   return true;
 }
 
-/** Конец дня для «до завтра» и кнопок срока: конец рабочего дня, у 24/7 -- 23:59. */
+/**
+ * Конец дня для «до завтра» и кнопок срока: конец рабочего дня, у 24/7 --
+ * начало тихих часов. Было 23:59, и «сделать сегодня» в семье давало
+ * «⏰ Через час срок» в 23:00 и «Срок наступил» в полночь. Тишина, начатая
+ * после полудня, и есть конец дня; без тишины или ночью -- 23:59.
+ */
 export function dayEnd(s: OrgSchedule): string {
-  return s.always_on ? '23:59' : s.work_end;
+  if (!s.always_on) return s.work_end;
+  return s.quiet_from !== s.quiet_to && hm(s.quiet_from) >= 12 * 60 ? s.quiet_from : '23:59';
+}
+
+/** Утро: с него идут напоминания «раз в день». У 24/7 -- конец тишины. */
+export function morning(s: Pick<OrgSchedule, 'always_on' | 'work_start' | 'quiet_from' | 'quiet_to'>): string {
+  if (!s.always_on) return s.work_start;
+  return s.quiet_from !== s.quiet_to ? s.quiet_to : '08:00';
 }
 
 /**

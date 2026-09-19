@@ -327,7 +327,7 @@ export async function isOrgOwner(env: Env, userId: string, orgId: string): Promi
   return Boolean(row);
 }
 
-export type OrgSettingsPatch = Partial<Pick<OrgSchedule, 'work_days' | 'work_start' | 'work_end' | 'lunch_start' | 'lunch_end' | 'always_on' | 'digest_enabled' | 'digest_time'>>;
+export type OrgSettingsPatch = Partial<Pick<OrgSchedule, 'work_days' | 'work_start' | 'work_end' | 'lunch_start' | 'lunch_end' | 'always_on' | 'digest_enabled' | 'digest_time' | 'quiet_from' | 'quiet_to'>>;
 
 const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -340,10 +340,11 @@ export async function updateOrgSettings(env: Env, userId: string, orgId: string,
     if (!/^[1-7](,[1-7])*$/.test(patch.work_days)) return false;
     put('work_days', patch.work_days);
   }
-  for (const col of ['work_start', 'work_end', 'digest_time', 'lunch_start', 'lunch_end'] as const) {
+  for (const col of ['work_start', 'work_end', 'digest_time', 'lunch_start', 'lunch_end', 'quiet_from', 'quiet_to'] as const) {
     const v = patch[col];
     if (v === undefined) continue;
-    if (v === null) { if (col === 'work_start' || col === 'work_end') return false; put(col, null); continue; }
+    // Тихие часы пустыми не бывают: «без тишины» -- это одинаковые «с» и «до».
+    if (v === null) { if (col === 'work_start' || col === 'work_end' || col === 'quiet_from' || col === 'quiet_to') return false; put(col, null); continue; }
     if (!HM.test(v)) return false;
     put(col, v);
   }

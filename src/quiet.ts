@@ -9,8 +9,7 @@
 // вызывающего: иначе «тихо» стало бы свойством конкретных сообщений, и любой
 // новый путь отправки обходил бы его молча.
 
-const QUIET_FROM_HOUR = 20;
-const QUIET_TO_HOUR = 8;
+import { hm, localHm, type OrgSchedule } from './schedule';
 
 /**
  * Час и день недели в поясе организации.
@@ -29,13 +28,23 @@ export function localParts(at: Date, timeZone: string): { hour: number; weekday:
   return { hour: hour === 24 ? 0 : hour, weekday };
 }
 
+/** Окно тишины задано: одинаковые «с» и «до» (00:00-00:00) значат «тишины нет». */
+export const quietOn = (s: Pick<OrgSchedule, 'quiet_from' | 'quiet_to'>) => s.quiet_from !== s.quiet_to;
+
 /**
- * Тихо ли сейчас. `urgent` пробивает тишину: срок, наступающий ночью, важнее
- * тишины -- иначе предупреждение придёт уже после провала.
+ * Тихо ли сейчас. Окно -- настройка пространства (по умолчанию 22:00-08:00) и
+ * действует и у 24/7: раньше у семьи тишины не было вовсе, и «Просрочено»
+ * шло круглые сутки. У пространства с графиком тихо ещё и всё воскресенье.
+ *
+ * `urgent` пробивает тишину: это напоминание к сроку, который сам назначен на
+ * это время («напомни в 23:30»), -- иначе оно пришло бы после срока.
  */
-export function isQuiet(at: Date, timeZone: string, urgent = false): boolean {
+export function isQuiet(at: Date, s: Pick<OrgSchedule, 'timezone' | 'quiet_from' | 'quiet_to' | 'always_on'>, urgent = false): boolean {
   if (urgent) return false;
-  const { hour, weekday } = localParts(at, timeZone);
-  if (weekday === 0) return true; // воскресенье целиком
-  return hour >= QUIET_FROM_HOUR || hour < QUIET_TO_HOUR;
+  if (!s.always_on && localParts(at, s.timezone).weekday === 0) return true;
+  if (!quietOn(s)) return false;
+  const m = localHm(at, s.timezone).minutes;
+  const from = hm(s.quiet_from), to = hm(s.quiet_to);
+  // Окно через полночь (22:00-08:00) и внутри суток (13:00-15:00) -- оба законны.
+  return from < to ? m >= from && m < to : m >= from || m < to;
 }

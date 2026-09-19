@@ -127,7 +127,7 @@ export function OrgView({ user }: { user: User }) {
               <input type="checkbox" checked={org.always_on === 1} disabled={busy} onChange={(e) => save({ always_on: e.target.checked ? 1 : 0 })} style={{ flex: '0 0 auto' }} />
               <span style={{ flex: '1 1 auto', minWidth: 0 }}>
                 <span className="t-title" style={{ whiteSpace: 'normal' }}>24/7</span>
-                <span className="hint" style={{ margin: '2px 0 0' }}>Без графика — «до завтра» значит до 23:59.</span>
+                <span className="hint" style={{ margin: '2px 0 0' }}>Без графика — «сегодня» значит до начала тихих часов.</span>
               </span>
             </label>
 
@@ -174,6 +174,23 @@ export function OrgView({ user }: { user: User }) {
                 <p className="hint">«До завтра» — до {org.work_end}. Вне графика — только срок и просрочка.</p>
               </>
             )}
+          </div>
+
+          {/* Тихие часы -- у всех, и у 24/7 тоже: без них «Просрочено» шло
+              всю ночь. Одинаковые «с» и «до» -- тишины нет. */}
+          <div className="card">
+            <div className="sec-title" style={{ marginTop: 0 }}>Тихие часы</div>
+            <div className="t-row" style={{ gap: 8 }}>
+              <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">С</span>
+                <input key={org.quiet_from} type="time" className="inp" defaultValue={org.quiet_from} disabled={busy} onBlur={(e) => { if (e.target.value && e.target.value !== org.quiet_from) void save({ quiet_from: e.target.value }); }} /></label>
+              <label className="field grow" style={{ marginBottom: 0 }}><span className="lbl">До</span>
+                <input key={org.quiet_to} type="time" className="inp" defaultValue={org.quiet_to} disabled={busy} onBlur={(e) => { if (e.target.value && e.target.value !== org.quiet_to) void save({ quiet_to: e.target.value }); }} /></label>
+            </div>
+            <p className="hint">
+              {org.quiet_from === org.quiet_to
+                ? 'Тишины нет: сообщения приходят в любое время.'
+                : `С ${org.quiet_from} до ${org.quiet_to} бот молчит — сообщения придут утром. Напоминание к сроку, назначенному на это время, придёт вовремя. Одинаковое время — без тишины.`}
+            </p>
           </div>
 
           <div className="card">

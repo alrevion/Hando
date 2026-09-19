@@ -368,8 +368,8 @@ describe('сессия без организации', () => {
     expect(created.status).toBe(201);
     const fresh = created.headers.get('set-cookie')!.split(';')[0];
     expect((await apiRoutes.request('/org/snapshot', { headers: { Cookie: fresh } }, env)).status).toBe(200);
-    // Семья -- 24/7.
-    const o = await testEnv.DB.prepare('SELECT always_on, quiet_hours FROM orgs WHERE name = ?').bind('Своя').first();
-    expect(o).toEqual({ always_on: 1, quiet_hours: 0 });
+    // Семья -- 24/7, но с тихими часами по умолчанию: без них «Просрочено» шло ночью.
+    const o = await testEnv.DB.prepare('SELECT always_on, quiet_from, quiet_to FROM orgs WHERE name = ?').bind('Своя').first();
+    expect(o).toEqual({ always_on: 1, quiet_from: '22:00', quiet_to: '08:00' });
   });
 });
