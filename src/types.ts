@@ -156,6 +156,8 @@ export interface Env {
   EMBED_TOKEN?: string;
   GROQ_STT_MODEL: string;
   GROQ_LLM_MODEL: string;
+  /** '1' -- фразы понимает модель действиями (brain.ts), иначе -- правила. */
+  BRAIN?: string;
 }
 
 export interface SessionPayload {

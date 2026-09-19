@@ -260,7 +260,7 @@ function pointsAtLast(phrase: string): boolean {
  * Полчаса: дальше «её» уже не о том сообщении. Сводка не в счёт -- в ней
  * задач много, и первая из них ничем не выделена.
  */
-async function lastMentioned(env: Env, orgId: string, userId: string, now: Date): Promise<Task | null> {
+export async function lastMentioned(env: Env, orgId: string, userId: string, now: Date): Promise<Task | null> {
   const since = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
   // Форматы времени разные (ISO у очереди, datetime('now') у задач) --
   // сравниваются через datetime(), иначе «T» и пробел путают порядок.
@@ -337,17 +337,175 @@ async function linkByPhrase(
   const waiter = await taskInPhrase(env, who.orgId, who.userId, parts.waiter, true);
   const pred = await taskInPhrase(env, who.orgId, who.userId, parts.pred, true);
   if (!waiter || !pred || waiter.id === pred.id) return null;
-  // Порядок работ -- решение того, кто поручил: исполнителю остаётся отказ и
-  // «не успеваю», а не перекладывание очереди.
-  if (waiter.author_id !== who.userId) return null;
-  // Круг из двух звеньев: обе задачи ждали бы друг друга и не начались никогда.
-  if (pred.depends_on_task_id === waiter.id) {
-    return { taskId: waiter.id, text: `⚠️ «${pred.title}» уже ждёт «${waiter.title}» — так они запрут друг друга.` };
+  const res = await runTaskOp(env, who, waiter, { op: 'after', pred }, '');
+  return typeof res === 'string' ? null : res;
+}
+
+/** Что сделать с задачей -- словами правил или ответом модели, одно и то же. */
+export type TaskOp =
+  | { op: 'done' | 'accept' | 'start' | 'confirm' | 'remind' }
+  | { op: 'late' | 'decline'; reason: string }
+  | { op: 'return'; reason: string; deadline: string | null }
+  | { op: 'edit'; deadline?: string | null; priority?: Task['priority'] | null; title?: string | null }
+  | { op: 'after'; pred: Task };
+
+/**
+ * Выполнить команду над задачей. Строка -- почему нельзя: для правил это
+ * «фраза не команда, пусть идёт дальше», для модели -- ответ человеку.
+ */
+export async function runTaskOp(
+  env: Env,
+  who: { userId: string; orgId: string },
+  task: Task,
+  cmd: TaskOp,
+  timeZone: string,
+  now: Date = new Date(),
+): Promise<{ taskId: string; text: string } | string> {
+  const mine = await myAssignee(env, task.id, who.userId, who.orgId);
+  const author = task.author_id === who.userId;
+  const done = (text: string) => ({ taskId: task.id, text });
+  // Срок, важность, приёмка и очередь -- решения того, кто поручил: исполнителю
+  // остаются отказ и «не успеваю».
+  if (['return', 'confirm', 'remind', 'edit', 'after'].includes(cmd.op) && !author) {
+    return `«${task.title}» поручили вам — это решает автор.`;
   }
-  await env.DB.prepare('UPDATE tasks SET depends_on_task_id = ?, updated_at = ? WHERE id = ? AND org_id = ?')
-    .bind(pred.id, nowIso(), waiter.id, who.orgId).run();
-  await logEvent(env.DB, { actorId: who.userId, orgId: who.orgId, targetType: 'task', targetId: waiter.id, action: 'linked', comment: pred.title });
-  return { taskId: waiter.id, text: `🔗 «${waiter.title}» — только после «${pred.title}».` };
+  if (['decline', 'late', 'start', 'accept', 'done'].includes(cmd.op) && !mine) {
+    return `«${task.title}» — не ваша задача: её делает кто-то другой.`;
+  }
+
+  switch (cmd.op) {
+    case 'return': {
+      if (task.status !== 'done') return `«${task.title}» ещё не сдана — возвращать нечего.`;
+      // Кому вернуть: всем, кто сдал. У рассылки сдавших может быть несколько.
+      const { results: submitted } = await env.DB.prepare(
+        "SELECT * FROM task_assignees WHERE task_id = ? AND org_id = ? AND state = 'done'",
+      ).bind(task.id, who.orgId).all<Assignee>();
+      if (submitted.length === 0) return `«${task.title}» ещё не сдана — возвращать нечего.`;
+      // Новый срок: названный, иначе завтрашний день. Молча оставлять прежний
+      // нельзя -- он уже прошёл, раз работу сдавали, и задача вернулась бы
+      // просроченной в ту же секунду.
+      const newDeadline = cmd.deadline ?? new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+      const comment = cmd.reason.trim().slice(0, 500);
+      for (const a of submitted) {
+        await transitionAssignee(env, {
+          task, assignee: a, to: 'rejected', actorId: who.userId, reason: comment, dueAt: newDeadline,
+          notify: { emoji: '❌', label: 'Отклонено, возвращено в работу', extraLine: `Причина: ${comment}` },
+        });
+      }
+      // Срок самой задачи тоже сдвигается: списки показывают его, а не персональные.
+      await applyTransition(env, {
+        task, to: 'in_progress', actorId: who.userId, action: 'rejected', comment,
+        set: { done_at: null, confirmed_at: null, deadline: newDeadline },
+      });
+      return done(`❌ «${task.title}» вернул в работу. Новый срок — ${formatWhen(newDeadline, timeZone)}.`);
+    }
+    case 'confirm':
+      if (task.status !== 'done' || task.confirmed_at) return `«${task.title}» ещё не сдана — принимать нечего.`;
+      await confirmWork(env, task, who.userId);
+      return done(`✅ «${task.title}» принята. Задача закрыта.`);
+    case 'decline': {
+      // Причина -- сама фраза, как и у «не успеваю». Автору уходит карточка с
+      // кнопками «Переназначить» и «Отменить задачу»: отказ по ошибке
+      // отыгрывается назад переназначением, а не правкой базы.
+      const res = await declineAssignee(env, task, mine!, who.userId, cmd.reason);
+      if (!res.ok) return `От «${task.title}» сейчас не отказаться.`;
+      return done(`🚫 Отказ передан автору: «${task.title}».`);
+    }
+    case 'late':
+      // Причина -- сама фраза: человек уже всё объяснил, второй раз спрашивать
+      // незачем. Автор получит её вместе с кнопками «перенести срок» и прочими.
+      if (!(await lateAssignee(env, task, mine!, who.userId, cmd.reason))) return `«${task.title}» уже не в работе.`;
+      return done(`⏳ Передал автору: не успеваете по «${task.title}».`);
+    case 'remind':
+      // Журнал напоминаний стирается -- ближайший проход cron напомнит заново,
+      // как кнопка «🔔 Напомнить». Отдельной рассылки в обход графика нет.
+      await env.DB.prepare(
+        `DELETE FROM reminders WHERE kind IN ('not_accepted','overdue')
+           AND assignee_row_id IN (SELECT id FROM task_assignees WHERE task_id = ? AND org_id = ?)`,
+      ).bind(task.id, who.orgId).run();
+      return done(`🔔 Напомню исполнителям «${task.title}».`);
+    case 'after': {
+      const pred = cmd.pred;
+      // Круг из двух звеньев: обе задачи ждали бы друг друга и не начались никогда.
+      if (pred.depends_on_task_id === task.id) {
+        return done(`⚠️ «${pred.title}» уже ждёт «${task.title}» — так они запрут друг друга.`);
+      }
+      await env.DB.prepare('UPDATE tasks SET depends_on_task_id = ?, updated_at = ? WHERE id = ? AND org_id = ?')
+        .bind(pred.id, nowIso(), task.id, who.orgId).run();
+      await logEvent(env.DB, { actorId: who.userId, orgId: who.orgId, targetType: 'task', targetId: task.id, action: 'linked', comment: pred.title });
+      return done(`🔗 «${task.title}» — только после «${pred.title}».`);
+    }
+    case 'edit': {
+      const said: string[] = [];
+      if (cmd.deadline) {
+        await setTaskDeadline(env, task.id, who.orgId, cmd.deadline, who.userId);
+        said.push(`срок — ${formatWhen(cmd.deadline, timeZone)}`);
+      }
+      if (cmd.priority && cmd.priority !== task.priority) {
+        await env.DB.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ? AND org_id = ?')
+          .bind(cmd.priority, nowIso(), task.id, who.orgId).run();
+        said.push(`важность — ${PRI_RU[cmd.priority]}`);
+      }
+      const title = cmd.title?.trim();
+      if (title && title.length >= 3 && title.toLowerCase() !== task.title.toLowerCase()) {
+        await env.DB.prepare('UPDATE tasks SET title = ?, updated_at = ? WHERE id = ? AND org_id = ?')
+          .bind(title[0].toUpperCase() + title.slice(1), nowIso(), task.id, who.orgId).run();
+        said.push(`тема — «${title}»`);
+      }
+      if (said.length === 0) return `В «${task.title}» менять нечего.`;
+      await logEvent(env.DB, { actorId: who.userId, orgId: who.orgId, targetType: 'task', targetId: task.id, action: 'edited' });
+      return done(`✏️ «${task.title}»: ${said.join(', ')}.`);
+    }
+  }
+
+  // ---- этапы исполнителя: принять, начать, готово.
+  const me = mine!;
+  // «Начал» по уже принятой задаче -- отметка времени, а не переход.
+  if (cmd.op === 'start' && me.state === 'accepted' && !me.started_at) {
+    const waits = await blockingPredecessor(env, task, who.orgId);
+    if (waits) return done(`⛔️ Сначала «${waits}» — «${task.title}» ждёт её.`);
+    await startWork(env, task, me, who.userId);
+    return done(`🚀 «${task.title}» — в работе.`);
+  }
+  const to = cmd.op === 'done' ? 'done' : 'accepted';
+  // «Готово» из «не принял» -- две ступени сразу: человек не обязан сперва
+  // нажимать «в работу», если он уже всё сделал.
+  const steps = to === 'done' && me.state === 'pending' ? (['accepted', 'done'] as const) : ([to] as const);
+  let row = me;
+  for (const step of steps) {
+    const res = await transitionAssignee(env, {
+      task, assignee: row, to: step, actorId: who.userId,
+      notify: step === to
+        ? (to === 'accepted' ? { emoji: '🚀', label: 'Принято', track: true } : { emoji: '✅', label: 'Готово', deletePrevious: true })
+        : undefined,
+    });
+    if (!res.ok) return `«${task.title}» уже ${me.state === 'done' ? 'сдана' : 'в другом состоянии'} — так нельзя.`;
+    row = { ...row, state: step, accepted_at: row.accepted_at ?? nowIso() };
+  }
+  // ЗАДАЧА СЕБЕ закрывается сразу: спрашивать у себя же «примите работу» не у кого.
+  const fresh = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>();
+  let closed = false;
+  if (to === 'done' && author && fresh && fresh.status === 'done' && !fresh.confirmed_at) {
+    const live = await loadAssignees(env, task.id, who.orgId);
+    if (live.filter((a) => a.state !== 'declined').every((a) => a.user_id === who.userId)) {
+      await confirmWork(env, fresh, who.userId, false);
+      closed = true;
+    }
+  }
+  // «Взял в работу» на непринятой задаче делает оба шага сразу: согласие и
+  // начало. Отдельного «примите сначала» человек не поймёт -- он уже сказал,
+  // что делает.
+  if (cmd.op === 'start') {
+    // Принять успели выше -- это правильно: согласие зависимость не держит.
+    // А вот начать нельзя, и человеку говорится чего ждать.
+    const waits = await blockingPredecessor(env, task, who.orgId);
+    if (waits) return done(`👌 «${task.title}» принята. Начать можно после «${waits}».`);
+    const accepted = await myAssignee(env, task.id, who.userId, who.orgId);
+    if (accepted) await startWork(env, task, accepted, who.userId);
+    return done(`🚀 «${task.title}» — в работе.`);
+  }
+  // Свою задачу проверять некому -- она закрыта, и «сдана на проверку» было бы неправдой.
+  return done(to === 'accepted' ? `👌 «${task.title}» принята.` : closed ? `✅ «${task.title}» выполнена.` : `✅ «${task.title}» сдана на проверку.`);
 }
 
 /**
@@ -379,136 +537,34 @@ export async function commandTaskByPhrase(
 
   const mine = await myAssignee(env, task.id, who.userId, who.orgId);
   const author = task.author_id === who.userId;
+  const done = V_DONE.test(phrase) && !NOT_DONE.test(phrase);
 
-  // ---- этапы. ПОРЯДОК ВЕТОК -- часть смысла, а не стиль: длинная формулировка
-  // содержит короткую, и первой обязана идти длинная.
+  // ПОРЯДОК ВЕТОК -- часть смысла, а не стиль: длинная формулировка содержит
+  // короткую, и первой обязана идти длинная.
   //   «не принимаю работу» содержит «принимаю работу» -> возврат перед приёмкой;
   //   «не возьму»          содержит «возьму»          -> отказ перед началом;
   //   «принял работу»      содержит «принял»          -> приёмка перед началом.
+  let cmd: TaskOp | null = null;
   if (V_RETURN.test(phrase) && author) {
-    if (task.status !== 'done') return null;
-    // Кому вернуть: всем, кто сдал. У рассылки сдавших может быть несколько.
-    const { results: submitted } = await env.DB.prepare(
-      "SELECT * FROM task_assignees WHERE task_id = ? AND org_id = ? AND state = 'done'",
-    ).bind(task.id, who.orgId).all<Assignee>();
-    if (submitted.length === 0) return null;
-    // Новый срок: названный во фразе, иначе завтрашний день. Молча оставлять
-    // прежний нельзя -- он уже прошёл, раз работу сдавали, и задача вернулась бы
-    // просроченной в ту же секунду.
-    const when = matchDeadline(phrase, now, timeZone, dayEndHm, weekEnd);
-    const newDeadline = when.iso ?? new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
-    const comment = phrase.trim().slice(0, 500);
-    for (const a of submitted) {
-      await transitionAssignee(env, {
-        task, assignee: a, to: 'rejected', actorId: who.userId, reason: comment, dueAt: newDeadline,
-        notify: { emoji: '❌', label: 'Отклонено, возвращено в работу', extraLine: `Причина: ${comment}` },
-      });
-    }
-    // Срок самой задачи тоже сдвигается: списки показывают его, а не персональные.
-    await applyTransition(env, {
-      task, to: 'in_progress', actorId: who.userId, action: 'rejected', comment,
-      set: { done_at: null, confirmed_at: null, deadline: newDeadline },
-    });
-    return { taskId: task.id, text: `❌ «${task.title}» вернул в работу. Новый срок — ${formatWhen(newDeadline, timeZone)}.` };
-  }
-  if (V_CONFIRM.test(phrase) && author) {
-    if (task.status !== 'done' || task.confirmed_at) return null;
-    await confirmWork(env, task, who.userId);
-    return { taskId: task.id, text: `✅ «${task.title}» принята. Задача закрыта.` };
-  }
-  if (mine && V_DECLINE.test(phrase)) {
-    // Причина -- сама фраза, как и у «не успеваю». Автору уходит карточка с
-    // кнопками «Переназначить» и «Отменить задачу»: отказ по ошибке
-    // отыгрывается назад переназначением, а не правкой базы.
-    const res = await declineAssignee(env, task, mine, who.userId, phrase);
-    if (!res.ok) return null;
-    return { taskId: task.id, text: `🚫 Отказ передан автору: «${task.title}».` };
-  }
-  if (mine && V_LATE.test(phrase)) {
-    // Причина -- сама фраза: человек уже всё объяснил, второй раз спрашивать
-    // незачем. Автор получит её вместе с кнопками «перенести срок» и прочими.
-    if (!(await lateAssignee(env, task, mine, who.userId, phrase))) return null;
-    return { taskId: task.id, text: `⏳ Передал автору: не успеваете по «${task.title}».` };
-  }
-  // «Начал» по уже принятой задаче -- отметка времени, а не переход.
-  const done = V_DONE.test(phrase) && !NOT_DONE.test(phrase);
-  if (mine && V_START.test(phrase) && !done && mine.state === 'accepted' && !mine.started_at) {
-    const waits = await blockingPredecessor(env, task, who.orgId);
-    if (waits) return { taskId: task.id, text: `⛔️ Сначала «${waits}» — «${task.title}» ждёт её.` };
-    await startWork(env, task, mine, who.userId);
-    return { taskId: task.id, text: `🚀 «${task.title}» — в работе.` };
-  }
-  if (mine && (V_ACCEPT.test(phrase) || V_START.test(phrase) || done)) {
-    const to = done ? 'done' : 'accepted';
-    // «Готово» из «не принял» -- две ступени сразу: человек не обязан сперва
-    // нажимать «в работу», если он уже всё сделал.
-    const steps = to === 'done' && mine.state === 'pending' ? (['accepted', 'done'] as const) : ([to] as const);
-    let row = mine;
-    for (const step of steps) {
-      const res = await transitionAssignee(env, {
-        task, assignee: row, to: step, actorId: who.userId,
-        notify: step === to
-          ? (to === 'accepted' ? { emoji: '🚀', label: 'Принято', track: true } : { emoji: '✅', label: 'Готово', deletePrevious: true })
-          : undefined,
-      });
-      if (!res.ok) return null; // переход не разрешён -- значит это была не команда
-      row = { ...row, state: step, accepted_at: row.accepted_at ?? nowIso() };
-    }
-    // ЗАДАЧА СЕБЕ закрывается сразу: спрашивать у себя же «примите работу» не у кого.
-    const fresh = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>();
-    let closed = false;
-    if (to === 'done' && author && fresh && fresh.status === 'done' && !fresh.confirmed_at) {
-      const live = await loadAssignees(env, task.id, who.orgId);
-      if (live.filter((a) => a.state !== 'declined').every((a) => a.user_id === who.userId)) {
-        await confirmWork(env, fresh, who.userId, false);
-        closed = true;
-      }
-    }
-    // «Взял в работу» на непринятой задаче делает оба шага сразу: согласие и
-    // начало. Отдельного «примите сначала» человек не поймёт -- он уже сказал,
-    // что делает.
-    if (to === 'accepted' && V_START.test(phrase)) {
-      // Принять успели выше -- это правильно: согласие зависимость не держит.
-      // А вот начать нельзя, и человеку говорится чего ждать.
-      const waits = await blockingPredecessor(env, task, who.orgId);
-      if (waits) return { taskId: task.id, text: `👌 «${task.title}» принята. Начать можно после «${waits}».` };
-      const fresh = await myAssignee(env, task.id, who.userId, who.orgId);
-      if (fresh) await startWork(env, task, fresh, who.userId);
-      return { taskId: task.id, text: `🚀 «${task.title}» — в работе.` };
-    }
-    return {
-      taskId: task.id,
-      // Свою задачу проверять некому -- она закрыта, и «сдана на проверку» было бы неправдой.
-      text: to === 'accepted' ? `👌 «${task.title}» принята.` : closed ? `✅ «${task.title}» выполнена.` : `✅ «${task.title}» сдана на проверку.`,
+    cmd = { op: 'return', reason: phrase, deadline: matchDeadline(phrase, now, timeZone, dayEndHm, weekEnd).iso };
+  } else if (V_CONFIRM.test(phrase) && author) cmd = { op: 'confirm' };
+  else if (mine && V_DECLINE.test(phrase)) cmd = { op: 'decline', reason: phrase };
+  else if (mine && V_LATE.test(phrase)) cmd = { op: 'late', reason: phrase };
+  else if (mine && (V_ACCEPT.test(phrase) || V_START.test(phrase) || done)) {
+    cmd = { op: done ? 'done' : V_START.test(phrase) ? 'start' : 'accept' };
+  } else if (author && EDIT_VERB.test(phrase)) {
+    // ---- правка полей. Только АВТОР: срок и важность -- его решения, а
+    // исполнителю для «не успеваю» есть ветка выше.
+    const pri = matchPriority(phrase, packId);
+    const rename = RENAME.reduce<RegExpMatchArray | null>((hit, re) => hit ?? phrase.match(re), null);
+    cmd = {
+      op: 'edit',
+      deadline: matchDeadline(phrase, now, timeZone, dayEndHm, weekEnd).iso,
+      priority: pri.usedWords.size > 0 ? pri.priority : null,
+      title: rename ? rename[1].trim().replace(/^[«"']|[»"'.]$/g, '') : null,
     };
   }
-
-  // ---- правка полей. Только АВТОР: срок и важность -- его решения, а
-  // исполнителю для «не успеваю» есть ветка выше.
-  if (!author || !EDIT_VERB.test(phrase)) return null;
-  const when = matchDeadline(phrase, now, timeZone, dayEndHm, weekEnd);
-  const pri = matchPriority(phrase, packId);
-  const rename = RENAME.reduce<RegExpMatchArray | null>((hit, re) => hit ?? phrase.match(re), null);
-  const newTitle = rename ? rename[1].trim().replace(/^[«"']|[»"'.]$/g, '') : null;
-
-  const said: string[] = [];
-  if (when.iso) {
-    await setTaskDeadline(env, task.id, who.orgId, when.iso, who.userId);
-    said.push(`срок — ${formatWhen(when.iso, timeZone)}`);
-  }
-  if (pri.usedWords.size > 0 && pri.priority !== task.priority) {
-    await env.DB.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ? AND org_id = ?')
-      .bind(pri.priority, nowIso(), task.id, who.orgId).run();
-    said.push(`важность — ${PRI_RU[pri.priority]}`);
-  }
-  if (newTitle && newTitle.length >= 3 && newTitle.toLowerCase() !== task.title.toLowerCase()) {
-    await env.DB.prepare('UPDATE tasks SET title = ?, updated_at = ? WHERE id = ? AND org_id = ?')
-      .bind(newTitle[0].toUpperCase() + newTitle.slice(1), nowIso(), task.id, who.orgId).run();
-    said.push(`тема — «${newTitle}»`);
-  }
-  // Условие (3): глагол был, задача нашлась, а менять нечего -- не команда.
-  if (said.length === 0) return null;
-
-  await logEvent(env.DB, { actorId: who.userId, orgId: who.orgId, targetType: 'task', targetId: task.id, action: 'edited' });
-  return { taskId: task.id, text: `✏️ «${task.title}»: ${said.join(', ')}.` };
+  if (!cmd) return null;
+  const res = await runTaskOp(env, who, task, cmd, timeZone, now);
+  return typeof res === 'string' ? null : res;
 }

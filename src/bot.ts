@@ -37,6 +37,7 @@ import { askAssistant, asksOwnDrafts, classifyIntent } from './assistant';
 import { assignableMembers } from './hierarchy';
 import { APP_URL } from './transition';
 import { show as showChecklist, toggleItem } from './checklist';
+import { brainTurn } from './act';
 import { loginPending, membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
 
@@ -1480,18 +1481,48 @@ botApp.post('/webhook', async (c) => {
   const lastSaid = history.at(-1);
   const answering = !named && lastSaid?.role === 'assistant' && /\?\s*$/.test(lastSaid.text.trim());
 
-  if (answering || await classifyIntent(c.env, phrase, named) === 'ask') {
+  const answer = async () => {
     if (asksOwnDrafts(phrase)) {
       await showDrafts(c.env, chat, userId, who.orgId);
-      return c.json({ ok: true });
+      return;
     }
     const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
-    const answer = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
-    await sendMessage(c.env, chat, answer, { inline_keyboard: [[{ text: '📌 Это поручение', callback_data: 'as_task' }]] });
+    const reply = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
+    await sendMessage(c.env, chat, reply, { inline_keyboard: [[{ text: '📌 Это поручение', callback_data: 'as_task' }]] });
     await setState(c.env, userId, {
       ...st, said: phrase, askAt: nowIso(),
-      ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: answer }].slice(-6),
+      ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: reply }].slice(-6),
     });
+  };
+
+  // МОДЕЛЬ С ДЕЙСТВИЯМИ (brain.ts): видит людей, задачи, черновики и разговор
+  // и сама выбирает, что сделать. Не ответила внятно -- ниже прежний путь
+  // правил. Пропускается, пока висит «кого именно?»: ответ на него дополняет
+  // запомненную фразу, и это умеет только старый путь.
+  const whomPending = !!st.whom && !!st.whomAt && Date.now() - Date.parse(st.whomAt) < 20 * 60 * 1000;
+  const turn = whomPending ? null
+    : await brainTurn(c.env, who, phrase, chat, media ?? null, history, roster, sched, org?.industry_pack);
+  if (turn) {
+    for (const what of turn.show) {
+      if (what === 'drafts') await showDrafts(c.env, chat, userId, who.orgId);
+      else {
+        const page = await taskPage(c.env, userId, who.orgId, what === 'my_tasks' ? 'm' : 'a', 0);
+        await sendMessage(c.env, chat, page.text, page.kb);
+      }
+    }
+    if (turn.ask) await answer();
+    else if (turn.asked) {
+      // Уточняющий вопрос -- в историю разговора: следующая фраза его ответ.
+      await setState(c.env, userId, {
+        ...st, askAt: nowIso(),
+        ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: turn.asked }].slice(-6),
+      });
+    }
+    return c.json({ ok: true });
+  }
+
+  if (answering || await classifyIntent(c.env, phrase, named) === 'ask') {
+    await answer();
     return c.json({ ok: true });
   }
 
