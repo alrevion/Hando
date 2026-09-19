@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { botApp } from '../src/bot';
 import { assigneeButtons } from '../src/transition';
 import { initialState } from '../src/assignees';
+import { remindOverdue } from '../src/scheduled';
 import { cookie, envWith, ORG_A, stubTelegram } from './fixture';
 import { apiRoutes } from '../src/routes';
 import type { Env } from '../src/types';
@@ -644,5 +645,59 @@ describe('задача из контекста: «заверши её» посл
     await notified('t2', 'boss', 2);
     await say(env, 'tg-boss', 'сделай это срочно');
     expect(await task('t2')).toMatchObject({ priority: 'medium' });
+  });
+});
+
+// Жалоба: «Задачи ставила себе — много раз приходит «просрочено», но я не могу
+// сделать «выполнено»». В напоминании была одна «Открыть», в приложении --
+// безымянная стрелка «взять в работу», потом «сдать на проверку».
+describe('своя задача закрывается одним нажатием', () => {
+  const selfWorld = async (state: 'accepted' | 'pending' = 'accepted') => {
+    const env = await envWith({
+      users: [{ id: 'boss', name: 'Лариса', role: 'creator' }, { id: 'w1', name: 'Азиз Каримов', role: 'admin' }],
+      memberships: [{ project_id: 'p1', user_id: 'boss' }, { project_id: 'p1', user_id: 'w1' }],
+      projects: [{ id: 'p1', telegram_chat_id: '-100999', created_by: 'boss' }],
+      tasks: [
+        { id: 'own', project_id: 'p1', title: 'Написать письмо', status: 'in_progress', responsible_user_id: 'boss', author_id: 'boss', deadline: '2026-09-13T18:59:00.000Z' },
+        { id: 't1', project_id: 'p1', title: 'Подготовить отчёт', status: 'todo', responsible_user_id: 'w1', author_id: 'boss', deadline: '2026-09-13T18:59:00.000Z' },
+      ],
+    });
+    await testEnv.DB.prepare("UPDATE task_assignees SET state = ?, due_at = '2026-09-13T18:59:00.000Z' WHERE task_id = 'own'").bind(state).run();
+    await testEnv.DB.prepare("UPDATE task_assignees SET due_at = '2026-09-13T18:59:00.000Z' WHERE task_id = 't1'").run();
+    return env;
+  };
+  const own = async () => (await testEnv.DB.prepare("SELECT status, confirmed_at FROM tasks WHERE id = 'own'").first<{ status: string; confirmed_at: string | null }>())!;
+
+  it('в «Просрочено» по своей задаче есть «✅ Выполнено», по чужой -- нет', async () => {
+    const env = await selfWorld();
+    tg();
+    await remindOverdue(env, new Date());
+    const q = (await testEnv.DB.prepare("SELECT task_id, payload FROM notifications WHERE kind = 'overdue'").all<{ task_id: string; payload: string }>()).results;
+    const kb = (id: string) => (JSON.parse(q.find((r) => r.task_id === id)!.payload) as { keyboard: { text: string }[][] }).keyboard.flat().map((b) => b.text);
+    expect(kb('own')).toEqual(['✅ Выполнено', '📱 Открыть']);
+    expect(kb('t1')).toEqual(['📱 Открыть']);
+  });
+
+  it('«✅ Выполнено» закрывает свою задачу, а чужую -- не трогает', async () => {
+    const env = await selfWorld();
+    const spy = tg();
+    await press(env, 'tg-boss', 'done:own');
+    expect(await own()).toMatchObject({ status: 'done' });
+    expect((await own()).confirmed_at).toBeTruthy();
+    // И никаких отчётов самой себе.
+    expect(sent(spy).filter((m) => m.chat_id === 'tg-boss')).toHaveLength(0);
+    await press(env, 'tg-w1', 'done:t1');
+    expect((await testEnv.DB.prepare("SELECT status FROM tasks WHERE id = 't1'").first<{ status: string }>())!.status).toBe('todo');
+  });
+
+  it('в приложении «Выполнено» своей задачи -- одно нажатие, даже из «не принято»', async () => {
+    const env = await selfWorld('pending');
+    tg();
+    const res = await apiRoutes.request('/tasks/own/move', {
+      method: 'POST', headers: { Cookie: await cookie('boss', 'creator', ORG_A), 'Content-Type': 'application/json' }, body: JSON.stringify({ to: 'done' }),
+    }, env);
+    expect(res.status).toBe(200);
+    expect(await own()).toMatchObject({ status: 'done' });
+    expect((await own()).confirmed_at).toBeTruthy();
   });
 });

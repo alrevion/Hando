@@ -1647,8 +1647,10 @@ apiRoutes.post('/tasks/:id/move', requireProjectAccess('task'), async (c) => {
     ? { emoji: '🚀', label: 'Принято', track: true }
     : { emoji: '✅', label: 'Готово', deletePrevious: true };
   for (const row of rows) {
-    // Цепочка -- только за исполнителя: сам он идёт по этапам, как и в боте.
-    const steps: AssigneeState[] = !mine && target === 'done' && row.state === 'pending' ? ['accepted', 'done'] : [target];
+    // Цепочка -- за исполнителя и по своей задаче (её «Выполнено» -- одно
+    // нажатие, даже если строку сбросила правка); сам исполнитель чужой
+    // задачи идёт по этапам, как и в боте.
+    const steps: AssigneeState[] = (!mine || selfTask) && target === 'done' && row.state === 'pending' ? ['accepted', 'done'] : [target];
     let assignee = row;
     for (const step of steps) {
       const res = await transitionAssignee(c.env, { task, assignee, to: step, actorId: userId, notify: step === target ? notify : undefined });

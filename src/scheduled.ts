@@ -169,6 +169,10 @@ function mark(env: Env, rowId: string, kind: string, now: Date): D1PreparedState
  *  только в него: иначе они копились бы у головы очереди до утра. */
 const working = (r: Row, now: Date) => inWorkHours({ ...r, id: r.org_id }, now);
 
+/** Своя задача закрывается прямо из напоминания: проверять её некому. */
+const selfDone = (r: Row): { buttons?: InlineButton[][] } =>
+  (r.author_id === r.user_id && r.kind !== 'ack' ? { buttons: [[{ text: '✅ Выполнено', callback_data: `done:${r.task_id}` }]] } : {});
+
 /** Кнопка автору под напоминанием: переназначить, если это не рассылка. */
 function authorButtons(r: Row): InlineButton[][] {
   return r.kind === 'each' ? [] : [[{ text: '👤 Переназначить', callback_data: `ra:${r.task_id}:` }]];
@@ -242,7 +246,7 @@ export async function remindDueSoon(env: Env, now: Date): Promise<void> {
   for (const r of results) {
     const left = Date.parse(r.due_at as string) - now.getTime();
     const shoot = (kind: string, text: string) => {
-      writes.push(queueReminder(env, r, text, kind, { urgent: true }));
+      writes.push(queueReminder(env, r, text, kind, { urgent: true, ...selfDone(r) }));
       writes.push(mark(env, r.id, kind, now));
     };
     // Повтор чаще суток -- дело минутное: «каждые два часа» с напоминанием за
@@ -294,7 +298,7 @@ export async function remindOverdue(env: Env, now: Date): Promise<void> {
       if (!first && !working(r, now)) continue;
       writes.push(queueReminder(env, r,
         `⚠️ Просрочено на ${formatOverdue(overdueMs)}: «${r.title}»`,
-        'overdue', first ? {} : { gated: true }));
+        'overdue', first ? selfDone(r) : { gated: true, ...selfDone(r) }));
       writes.push(mark(env, r.id, 'overdue', now));
     }
     if (working(r, now) && r.author_id && r.author_id !== r.user_id && dueNow(log, r.id, 'author_overdue', DAILY_MS, now)) {

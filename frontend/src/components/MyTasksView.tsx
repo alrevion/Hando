@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ArrowRight, Clock, Lock, XCircle } from 'lucide-react';
+import { ArrowRight, Check, Clock, Lock, XCircle } from 'lucide-react';
 import type { Priority, Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
 import { PRIORITIES } from '../lib/priority';
@@ -120,13 +120,18 @@ export function MyTasksView({ user }: { user: User }) {
               // здесь тот же человек -- отпрашиваться не у кого. И принимать
               // её не нужно: она рождается принятой.
               const selfTask = task.author_id === user.id;
-              // Стрелка ведёт по цепочке: принять -> начал -> сдать. У задачи
-              // себе шага «принять» нет: из «К выполнению» -- сразу в работу.
-              const next = stage === 'pending' && !selfTask
-                ? { to: 'in_progress' as const, label: 'Принять', done: 'Принято' }
-                : stage === 'accepted' || stage === 'pending'
-                  ? { to: 'started' as const, label: 'Взять в работу', done: 'В работе' }
-                  : { to: 'done' as const, label: 'Сдать на проверку', done: 'Сдано' };
+              // Стрелка ведёт по цепочке: принять -> начал -> сдать. Задачу
+              // себе проверять некому, поэтому у неё одна кнопка -- галочка
+              // «Выполнено», сразу закрывает. Раньше и там была стрелка «взять в
+              // работу», потом «сдать на проверку», и человек не находил, как
+              // закрыть своё же дело.
+              const next = selfTask
+                ? { to: 'done' as const, label: 'Выполнено', done: 'Выполнено' }
+                : stage === 'pending'
+                  ? { to: 'in_progress' as const, label: 'Принять', done: 'Принято' }
+                  : stage === 'accepted'
+                    ? { to: 'started' as const, label: 'Взять в работу', done: 'В работе' }
+                    : { to: 'done' as const, label: 'Сдать на проверку', done: 'Сдано' };
               const isBusy = busy.has(task.id);
               return (
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
@@ -141,10 +146,10 @@ export function MyTasksView({ user }: { user: User }) {
                         каждой карточке, и повторять его словами в каждой строке
                         -- шум. Смысл читается из этапа, на котором стоит задача. */}
                     {current.key !== 'review' ? (
-                      <button type="button" className="btn-icon is-accent" disabled={isBusy || (next.to === 'started' && !!blockedBy)}
+                      <button type="button" className="btn-icon is-accent" disabled={isBusy || ((next.to === 'started' || selfTask) && !!blockedBy)}
                         aria-label={next.label} title={next.label}
                         onClick={() => act(task, () => moveTask(task.id, next.to), next.done)}>
-                        <ArrowRight aria-hidden="true" />
+                        {selfTask ? <Check aria-hidden="true" /> : <ArrowRight aria-hidden="true" />}
                       </button>
                     ) : null}
                   </div>

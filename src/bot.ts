@@ -878,11 +878,37 @@ botApp.post('/webhook', async (c) => {
       await drainOutbox(c.env);
       return c.json({ ok: true });
     }
+    // «✅ Выполнено» -- только у СВОЕЙ задачи: проверять её некому, и сдают её
+    // одним нажатием прямо из напоминания. Раньше в «⚠️ Просрочено» была одна
+    // «Открыть», а в приложении -- безымянная стрелка «взять в работу», и
+    // закрыть своё дело человек не находил как.
+    if (action === 'done') {
+      const self = task.author_id === who.userId;
+      const open = task.status !== 'done' && task.status !== 'archived' && (mine.state === 'accepted' || mine.state === 'pending' || mine.state === 'rejected');
+      if (!self || !open) {
+        await answerCallbackQuery(c.env, cq.id, self ? 'Уже закрыта' : 'Сдают в приложении');
+        if (self && chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
+        return c.json({ ok: true });
+      }
+      let row = mine;
+      for (const step of row.state === 'pending' ? (['accepted', 'done'] as const) : (['done'] as const)) {
+        const res = await transitionAssignee(c.env, { task, assignee: row, to: step, actorId: who.userId });
+        if (!res.ok) break;
+        row = { ...row, state: step };
+      }
+      const fresh = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(task.id).first<Task>();
+      if (fresh && fresh.status === 'done' && !fresh.confirmed_at) await confirmWork(c.env, fresh, who.userId, false);
+      await answerCallbackQuery(c.env, cq.id, 'Выполнено');
+      if (chat && msgId) await editMessageReplyMarkup(c.env, chat, msgId, { inline_keyboard: [[openButton(task.id)]] });
+      await drainOutbox(c.env);
+      return c.json({ ok: true });
+    }
     if (action !== 'accept' && action !== 'ack') {
       await answerCallbackQuery(c.env, cq.id);
       return c.json({ ok: true });
     }
-    // «Готово» из бота нет: сдают в приложении (решение владельца). Здесь --
+    // «Готово» из бота нет: сдают в приложении (решение владельца) -- кроме
+    // своей задачи, её закрывают кнопкой выше. Здесь --
     // принять и «ознакомился»; для рассылки «прочитать» accepted и есть закрытие.
     const res = await transitionAssignee(c.env, {
       task, assignee: mine, to: 'accepted', actorId: who.userId,

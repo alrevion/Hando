@@ -403,10 +403,11 @@ describe('access control', () => {
   });
 
   it('invalid transition (todo -> done, skipping in_progress) is rejected (409)', async () => {
+    // Поручение ОТ ДРУГОГО: своя задача, наоборот, закрывается одним нажатием.
     const env = await envWith({
-      users: [{ id: 's1', name: 'S', role: 'super_admin' }],
-      memberships: [{ project_id: 'p1', user_id: 's1' }],
-      tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 's1', deadline: null }],
+      users: [{ id: 's1', name: 'S', role: 'super_admin' }, { id: 'boss', name: 'Автор', role: 'creator' }],
+      memberships: [{ project_id: 'p1', user_id: 's1' }, { project_id: 'p1', user_id: 'boss' }],
+      tasks: [{ id: 't1', project_id: 'p1', status: 'todo', responsible_user_id: 's1', author_id: 'boss', deadline: null }],
     });
     const res = await apiRoutes.request(
       '/tasks/t1/move',
