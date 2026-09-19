@@ -358,6 +358,16 @@ export async function askAssistant(env: Env, who: AskWho, question: string, hist
   if (drafts) return drafts;
 
   const tasks = await myTasks(env, who);
+  const pending = await listDrafts(env, who.userId, who.orgId);
+  const { timezone } = await loadSchedule(env, who.orgId);
+  // Свои черновики -- по данным, без модели и без памяти ответов: модель их
+  // не видела и говорила «нет», а память могла подсунуть общую справку
+  // «черновики лежат в разделе…» вместо самого списка.
+  if (asksOwnDrafts(question)) {
+    if (pending.length === 0) return 'Черновиков нет.';
+    return ['Черновики — ещё не задачи: пока не нажато «Создать», напоминаний по ним нет.',
+      ...pending.slice(0, 10).map((d) => `• «${d.title.trim() || 'без темы'}»${d.deadline ? ` — ${formatWhen(d.deadline, timezone)}` : ''}`)].join('\n');
+  }
 
   // ПАМЯТЬ ПО СМЫСЛУ. Вопрос про устройство Hando один и тот же у всех, сколько
   // бы разными словами его ни задавали: «как отметить выполненную» и «где
@@ -366,7 +376,9 @@ export async function askAssistant(env: Env, who: AskWho, question: string, hist
   //
   // Продолжение диалога тоже мимо: «а если он откажется?» без предыдущей
   // реплики значит другое.
-  const reusable = history.length === 0 && !ACTION_ASK.test(question);
+  // И вопрос о СВОЁМ («мои задачи», «мои черновики») -- тоже мимо: ответ на
+  // него у каждого свой, общая справка тут подменила бы список.
+  const reusable = history.length === 0 && !ACTION_ASK.test(question) && !isOwnList(question);
   if (reusable) {
     const known = await recallAnswer(env, question);
     if (known) return known;
@@ -384,6 +396,10 @@ export async function askAssistant(env: Env, who: AskWho, question: string, hist
     `Человек: ${who.name}, роль: ${roleRu}.`,
     'РУКОВОДСТВО:\n' + MANUAL,
     'ЗАДАЧИ ЧЕЛОВЕКА (его и те, что он поручил):\n' + context,
+    // Черновики -- не задачи: без них модель на «какие у меня черновики»
+    // отвечала «нет» при трёх висящих.
+    'ЧЕРНОВИКИ ЧЕЛОВЕКА (ещё НЕ задачи: ждут «Создать», напоминаний по ним нет; ответ про них -- всегда general=false):\n'
+      + (pending.length ? pending.map((d) => `- «${d.title.trim() || 'без темы'}» · срок: ${d.deadline ? formatWhen(d.deadline, timezone) : 'нет'}`).join('\n') : '(черновиков нет)'),
   ].join('\n\n');
   const messages = [
     { role: 'system', content: system },
@@ -518,6 +534,15 @@ function isOwnList(text: string): boolean {
   if (!OWN_NOUN.test(t)) return false;
   // Либо сказано про себя, либо фраза и есть одно голое существительное.
   return MINE.test(t) || words <= 3;
+}
+
+/**
+ * «Какие у меня черновики?» -- показать СВОИ черновики, как кнопка
+ * «📝 Черновики». Черновиков модель не видела и отвечала «у вас их нет» при
+ * трёх висящих. «Удали черновики» сюда не относится: это действие.
+ */
+export function asksOwnDrafts(text: string): boolean {
+  return /черновик/i.test(text) && !ACTION_ASK.test(text) && isOwnList(text);
 }
 /**
  * Отпечаток фразы: по нему ищется прежний разбор. Хранить сам текст нельзя --

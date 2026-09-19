@@ -510,3 +510,55 @@ describe('намерение фразы: что бот считает прось
     expect(wrong).toEqual([]);
   });
 });
+
+// Живой случай: «Какие у меня сейчас есть черновики?» -- «Сейчас у вас нет
+// черновиков», а кнопка «📝 Черновики» следом показала три. Модель видела
+// задачи, но не черновики.
+describe('черновики словами', () => {
+  const withDraft = async () => {
+    const env = await world();
+    await testEnv.DB.prepare(
+      `INSERT INTO drafts (id, org_id, author_id, title, assignee_ids, deadline, priority, priority_explicit, kind, heard, media, source, created_at, updated_at)
+       VALUES ('d1', ?, 'boss', 'Съездить на Джами и забрать сетки', '["boss"]', NULL, 'medium', 0, 'single', 'сетки', '[]', 'pattern', ?, ?)`,
+    ).bind(ORG_A, new Date().toISOString(), new Date().toISOString()).run();
+    return env;
+  };
+
+  it('бот на «какие у меня черновики?» присылает карточки, как кнопка', async () => {
+    const env = await withDraft();
+    const spy = tg();
+    await say(env, 'tg-boss', 'Какие у меня сейчас есть черновики?');
+    const texts = sent(spy).filter((m) => m.chat_id === 'tg-boss').map((m) => m.text);
+    expect(texts.some((t) => t.includes('Черновик') && t.includes('Съездить на Джами и забрать сетки'))).toBe(true);
+    expect(texts.some((t) => /нет черновиков/i.test(t))).toBe(false);
+  });
+
+  it('помощник (экран «Вопрос») отвечает списком по данным, модели не спрашивая', async () => {
+    const env = { ...(await withDraft()), GROQ_API_KEY: 'k' };
+    const spy = vi.spyOn(globalThis, 'fetch');
+    const a = await askAssistant(env, { userId: 'boss', orgId: ORG_A, role: 'creator', name: 'Директор' }, 'какие у меня черновики?');
+    expect(a).toContain('«Съездить на Джами и забрать сетки»');
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('на любой другой вопрос модель видит черновики в сведениях', async () => {
+    const env = { ...(await withDraft()), GROQ_API_KEY: 'k' };
+    let system = '';
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      system = (JSON.parse(String(init?.body)) as { messages: { content: string }[] }).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"reply":"ок","general":false}' } }] }));
+    });
+    await askAssistant(env, { userId: 'boss', orgId: ORG_A, role: 'creator', name: 'Директор' }, 'с чего начать завтра?');
+    spy.mockRestore();
+    expect(system).toContain('ЧЕРНОВИКИ ЧЕЛОВЕКА');
+    expect(system).toContain('«Съездить на Джами и забрать сетки»');
+  });
+
+  it('«удали все черновики» -- по-прежнему удаление, а не показ', async () => {
+    const env = await withDraft();
+    tg();
+    await say(env, 'tg-boss', 'удали все черновики');
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
+  });
+});

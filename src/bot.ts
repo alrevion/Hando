@@ -33,7 +33,7 @@ import {
 import { download, extractMedia } from './media';
 import { formatWhen, learnAlias, parseTask, refineDraft, swapWords, transcribe, localIso, localToday, matchPeople } from './parse';
 import { dayEnd, hm, loadSchedule, localHm, weekEndDay, type OrgSchedule } from './schedule';
-import { askAssistant, classifyIntent } from './assistant';
+import { askAssistant, asksOwnDrafts, classifyIntent } from './assistant';
 import { assignableMembers } from './hierarchy';
 import { APP_URL } from './transition';
 import { show as showChecklist, toggleItem } from './checklist';
@@ -57,6 +57,22 @@ type Update = {
 };
 
 /** Кто это. null -- неизвестный, и тогда мы молчим. */
+/**
+ * Черновики карточками -- и по кнопке «📝 Черновики», и на «какие у меня
+ * черновики?» словами. Словами вопрос уходил модели, а она черновиков не
+ * видела и отвечала «у вас их нет».
+ */
+async function showDrafts(env: Env, chatId: string, userId: string, orgId: string): Promise<void> {
+  const rows = await listDrafts(env, userId, orgId);
+  if (rows.length === 0) {
+    await sendMessage(env, chatId, 'Черновиков нет. Напишите или наговорите поручение — оно появится здесь до подтверждения.');
+    return;
+  }
+  const orgRow = await env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(orgId).first<{ timezone: string }>();
+  // Каждый черновик -- свежей карточкой: старая могла уехать далеко вверх.
+  for (const row of rows.slice(0, 10)) await renderDraft(env, row, chatId, orgRow?.timezone ?? 'Asia/Tashkent', true);
+}
+
 async function whoIs(env: Env, tg: TgUser): Promise<{ userId: string; orgId: string; role: Role } | null> {
   const row = await env.DB.prepare('SELECT id FROM users WHERE telegram_user_id = ?')
     .bind(String(tg.id))
@@ -1161,14 +1177,7 @@ botApp.post('/webhook', async (c) => {
     case BTN.drafts: {
       const who2 = await whoIs(c.env, msg.from);
       if (!who2) return c.json({ ok: true });
-      const rows = await listDrafts(c.env, who2.userId, who2.orgId);
-      if (rows.length === 0) {
-        await sendMessage(c.env, chatId, 'Черновиков нет. Напишите или наговорите поручение — оно появится здесь до подтверждения.');
-        return c.json({ ok: true });
-      }
-      const orgRow = await c.env.DB.prepare('SELECT timezone FROM orgs WHERE id = ?').bind(who2.orgId).first<{ timezone: string }>();
-      // Каждый черновик -- свежей карточкой: старая могла уехать далеко вверх.
-      for (const row of rows.slice(0, 10)) await renderDraft(c.env, row, chatId, orgRow?.timezone ?? 'Asia/Tashkent', true);
+      await showDrafts(c.env, chatId, who2.userId, who2.orgId);
       return c.json({ ok: true });
     }
     case BTN.settings:
@@ -1434,6 +1443,10 @@ botApp.post('/webhook', async (c) => {
   const answering = !named && lastSaid?.role === 'assistant' && /\?\s*$/.test(lastSaid.text.trim());
 
   if (answering || await classifyIntent(c.env, phrase, named) === 'ask') {
+    if (asksOwnDrafts(phrase)) {
+      await showDrafts(c.env, chat, userId, who.orgId);
+      return c.json({ ok: true });
+    }
     const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
     const answer = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
     await sendMessage(c.env, chat, answer, { inline_keyboard: [[{ text: '📌 Это поручение', callback_data: 'as_task' }]] });
