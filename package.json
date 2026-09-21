@@ -10,7 +10,8 @@
     "pretest": "mkdir -p frontend/dist",
     "test": "vitest run",
     "db:migrate": "wrangler d1 migrations apply hando-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply hando-db --remote"
+    "db:migrate:remote": "wrangler d1 migrations apply hando-db --remote",
+    "eval:brain": "vitest run --config eval/vitest.config.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.6.4",
