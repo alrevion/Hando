@@ -121,7 +121,8 @@ const CORPUS: [string, 'yakov' | 'lara', string, Check][] = [
   ['real', 'lara', 'Написать письмо тёте Вале.', C({ t: /письм/i, to: ['lara'], at: null })],
   ['real', 'lara', 'Дай поручение Алексею завтра до вечера решить вопрос с капающей водой крана.', C({ t: /кран|вод/i, to: ['alex'], at: ['20.09 19:00', '20.09 22:00', '20.09 18:00'] })],
   ['real', 'lara', 'Дай задание Якову собрать все мои вещи и вещи Маши и отправить через бабушку в течение недели.', C({ t: /вещ|собра/i, to: Y, at: ['20.09', '26.09'] })],
-  ['real', 'lara', 'Яков мои цветы нужно поливать через день', OR(C({ t: /цвет/i, to: Y, rep: 2880 }), CLAR, REPLY)],
+  // Такое поручение у неё уже есть -- «напомнить Якову» тоже верное прочтение.
+  ['real', 'lara', 'Яков мои цветы нужно поливать через день', OR(C({ t: /цвет/i, to: Y, rep: 2880 }), T('flowers', 'remind'), CLAR, REPLY)],
   ['real', 'yakov', 'За USEL нужно платить каждое 18 число.', C({ rep: MONTH, at: '18.10' })],
   ['real', 'yakov', 'Напомню мне через 2 минуты посмотреть оформление.', OR(C({ t: /оформлен/i, at: '19.09 16:02' }), T('design', 'reschedule', { at: '19.09 16:02' }))],
   ['real', 'yakov', 'Напомню, через 2 минуты проверить оформление.', OR(C({ t: /оформлен/i, at: '19.09 16:02' }), T('design', 'reschedule', { at: '19.09 16:02' }))],
@@ -254,6 +255,8 @@ const CORPUS: [string, 'yakov' | 'lara', string, Check][] = [
 // лимит ключа. EFFORT и MODEL подменяют параметры запроса без правки кода.
 const real = globalThis.fetch;
 let waited = 0;
+/** Суточный лимит ключа: дальше мерить нечего, сделанное сохранено. */
+let exhausted = '';
 let tokens = { prompt: 0, completion: 0, cached: 0 };
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const body = JSON.parse(String(init?.body ?? '{}'));
@@ -271,6 +274,12 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       return res;
     }
     const wait = (Number(res.headers.get('retry-after') ?? 10) + 1) * 1000;
+    // Минутный лимит ждём, суточный -- нет: он просит часы, и прогон молча
+    // спал бы до вечера. Сделанное сохранено, запуск завтра продолжит.
+    if (wait > 60_000 || (await res.clone().text()).includes('tokens per day')) {
+      exhausted = `суточный лимит Groq: ждать ${Math.round(wait / 60_000)} мин`;
+      return res;
+    }
     waited += wait;
     await new Promise((r) => setTimeout(r, wait));
   }
@@ -290,6 +299,8 @@ it(`корпус через модель: ${LABEL}`, async () => {
     tokens = { prompt: 0, completion: 0, cached: 0 };
     const t0 = Date.now();
     const plan = await understand(env, ctx(speaker), phrase);
+    // Отказ по лимиту -- не ответ модели: такую фразу не записываем.
+    if (exhausted) { console.log(exhausted); break; }
     const ms = Date.now() - t0 - waited;
     const fail = plan ? check(plan) : 'no plan (fallback)';
     appendFileSync(OUT, JSON.stringify({ cls, phrase, ok: !fail, fail, got: plan ? describe(plan) : null, ms, tokens }) + '\n');

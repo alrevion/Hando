@@ -162,7 +162,7 @@ clarify — a short question in Russian, with actions = []. Only when the messag
 
 DATES — never calculate dates. Describe what was said; code computes the calendar.
   when.kind: none | in (amount + unit: «через 2 дня», «через полчаса» = 30 minutes) | today | tomorrow | after_tomorrow | weekday (1=Mon … 7=Sun) | date (day + month) | day_of_month (day) | end_of_week | end_of_month.
-  when.time: an exact clock time "HH:MM", 24h («в 7 вечера» → "19:00", «полдесятого» → "09:30", «после 12» → "12:00", never a part of day). A bare hour 1–6 without «утра / ночи» is afternoon: «в 3» → "15:00", «к 5» → "17:00". when.part: morning | noon («в обед», «к обеду») | afternoon («после обеда») | evening | end_of_day | none. Use time or part, not both.
+  when.time: an exact clock time "HH:MM", 24h («в 7 вечера» → "19:00", «полдесятого» → "09:30", «после 12» → "12:00", never a part of day). A bare hour 1–6 without «утра / ночи» is afternoon: «в 3» → "15:00", «к 5» → "17:00". when.part: morning | noon («в обед», «к обеду») | afternoon («после обеда») | evening | end_of_day | none. Use time or part, not both: a named hour always goes to time («в 8 утра» → "08:00", «после 12» → "12:00"); part only when no hour is said («утром», «вечером»).
   «до», «к», «в течение» mark a deadline like «в»: «до пятницы» → weekday 5; «в течение недели» → end_of_week; «в течение месяца» → end_of_month. A time alone («в 5») with other content → kind today.
   repeat.every: none | day | week (+ weekday) | month (+ day) | n_days (+ n: «через день» = 2, «каждые 3-4 дня» = 3) | n_weeks (+ n). «по выходным» → week, weekday 6. repeat.time / part as in when. For a repeating task leave when.kind = none.
 
