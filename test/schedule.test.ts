@@ -141,19 +141,34 @@ describe('матрица напоминаний: дозировка', () => {
     expect((await queued()).filter((n) => n.kind === 'not_accepted')).toHaveLength(3);
   });
 
-  it('за час, за N минут (настройка человека) и в срок -- по разу и всегда (urgent)', async () => {
+  it('поручение: ОДНО предупреждение -- по настройке человека -- и «в срок»', async () => {
     const env = await world(plus(NOW, 20).toISOString());
     await createdAgo(24 * 60);
     await testEnv.DB.prepare("UPDATE users SET remind_before_min = 25 WHERE id = 'w1'").run();
     await remindDueSoon(env, NOW);
     await remindDueSoon(env, plus(NOW, 5));
+    // Раньше их было два -- зашитое «через час» и настроенное: предупреждение
+    // об одном и том же дважды, а с «в срок» -- трижды.
     let kinds = (await queued()).map((n) => n.kind).sort();
-    expect(kinds).toEqual(['before_1h', 'before_n']);
+    expect(kinds).toEqual(['before_n']);
     expect((await queued()).every((n) => n.p.urgent)).toBe(true);
     expect((await queued()).find((n) => n.kind === 'before_n')!.p.text).toContain('Через 25 мин');
     await remindDueSoon(env, plus(NOW, 22));
     kinds = (await queued()).map((n) => n.kind).sort();
-    expect(kinds).toEqual(['at_due', 'before_1h', 'before_n']);
+    expect(kinds).toEqual(['at_due', 'before_n']);
+  });
+
+  it('напоминание СЕБЕ -- ровно в срок, без предупреждений', async () => {
+    // «Напомни мне в два позвонить»: человек назвал время, когда хочет услышать
+    // бота. Предупреждать его заранее не о чем -- он и просил про два часа.
+    const env = await world(plus(NOW, 40).toISOString());
+    await createdAgo(24 * 60);
+    await testEnv.DB.prepare("UPDATE tasks SET author_id = 'w1' WHERE id = 't1'").run();
+    await testEnv.DB.prepare("UPDATE users SET remind_before_min = 30 WHERE id = 'w1'").run();
+    await remindDueSoon(env, plus(NOW, 15));
+    expect(await queued()).toEqual([]);
+    await remindDueSoon(env, plus(NOW, 41));
+    expect((await queued()).map((n) => n.kind)).toEqual(['at_due']);
   });
 
   it('«через 2 минуты»: ни «через час», ни «через N мин» -- только «срок наступил»', async () => {

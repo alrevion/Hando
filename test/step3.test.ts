@@ -176,7 +176,9 @@ describe('шаг 3: рассылка на четырнадцать челове�
     await scheduled({} as ScheduledController, env, {} as ExecutionContext);
     // Это и есть причина переезда таймеров: с по-задачным флагом первая же
     // отправка гасила его, и тринадцать человек не узнавали ничего никогда.
-    const overdue = sends(spy).filter(([, init]) => String(init.body).includes('Просрочено'));
+    // «Просрочено НА» -- именно напоминание: в сводке слово то же, и в будни
+    // тест считал её письма вместе с напоминаниями, а в выходные -- нет.
+    const overdue = sends(spy).filter(([, init]) => String(init.body).includes('Просрочено на'));
     expect(overdue).toHaveLength(14);
 
     // Журнал напоминаний -- по СТРОКЕ адресата: четырнадцать записей, не одна.
