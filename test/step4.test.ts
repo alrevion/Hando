@@ -233,6 +233,13 @@ describe('шаг 4d: тихие часы в поясе организации', 
     expect(isQuiet(new Date('2026-09-04T09:00:00Z'), { ...Q, quiet_from: '13:00', quiet_to: '15:00' })).toBe(true); // 14:00
     expect(isQuiet(new Date('2026-09-04T11:00:00Z'), { ...Q, quiet_from: '13:00', quiet_to: '15:00' })).toBe(false); // 16:00
     expect(isQuiet(new Date('2026-09-04T19:00:00Z'), { ...Q, quiet_from: '00:00', quiet_to: '00:00', always_on: 1 })).toBe(false);
+    // «Тишины нет» -- и в воскресенье: приложение так и обещает, «в любое время».
+    // Раньше воскресенье у графика молчало и при выключенной тишине, и весь
+    // набор тестов (тишина в нём выключена) падал по воскресеньям.
+    expect(isQuiet(new Date('2026-09-06T09:00:00Z'), { ...Q, quiet_from: '00:00', quiet_to: '00:00' })).toBe(false);
+    // Весть о просрочке («только ночь») воскресенье не держит, ночь -- держит.
+    expect(isQuiet(new Date('2026-09-06T09:00:00Z'), Q, false, true)).toBe(false);
+    expect(isQuiet(new Date('2026-09-06T17:30:00Z'), Q, false, true)).toBe(true);
   });
 
   it('срок, назначенный на тихое время, пробивает тишину', () => {

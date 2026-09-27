@@ -34,15 +34,21 @@ export const quietOn = (s: Pick<OrgSchedule, 'quiet_from' | 'quiet_to'>) => s.qu
 /**
  * Тихо ли сейчас. Окно -- настройка пространства (по умолчанию 22:00-08:00) и
  * действует и у 24/7: раньше у семьи тишины не было вовсе, и «Просрочено»
- * шло круглые сутки. У пространства с графиком тихо ещё и всё воскресенье.
+ * шло круглые сутки. У пространства с графиком тихо ещё и всё воскресенье --
+ * пока тишина вообще включена: «00:00-00:00» приложение описывает как
+ * «сообщения приходят в любое время», и воскресенье тоже должно им верить.
  *
  * `urgent` пробивает тишину: это напоминание к сроку, который сам назначен на
  * это время («напомни в 23:30»), -- иначе оно пришло бы после срока.
  */
-export function isQuiet(at: Date, s: Pick<OrgSchedule, 'timezone' | 'quiet_from' | 'quiet_to' | 'always_on'>, urgent = false): boolean {
+export function isQuiet(
+  at: Date, s: Pick<OrgSchedule, 'timezone' | 'quiet_from' | 'quiet_to' | 'always_on'>, urgent = false,
+  /** Только ночь: воскресенье не держит. См. `night` в outbox. */
+  nightOnly = false,
+): boolean {
   if (urgent) return false;
-  if (!s.always_on && localParts(at, s.timezone).weekday === 0) return true;
   if (!quietOn(s)) return false;
+  if (!nightOnly && !s.always_on && localParts(at, s.timezone).weekday === 0) return true;
   const m = localHm(at, s.timezone).minutes;
   const from = hm(s.quiet_from), to = hm(s.quiet_to);
   // Окно через полночь (22:00-08:00) и внутри суток (13:00-15:00) -- оба законны.

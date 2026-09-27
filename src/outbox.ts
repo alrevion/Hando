@@ -21,6 +21,10 @@ type Payload = {
   urgent?: boolean;
   // Рабочее напоминание: только в рабочее время организации (раздел 21).
   gated?: boolean;
+  // Весть о том, что срок только что прошёл: ждёт лишь конца ночи, а не
+  // понедельника. Срок на воскресенье назначили сами -- значит, в воскресенье
+  // и работают, и узнать о провале надо тогда же.
+  night?: boolean;
   keyboard?: InlineButton[][] | null;
 };
 
@@ -105,7 +109,7 @@ export async function drainOutbox(env: Env, now: Date = new Date()): Promise<num
     // бесполезно.
     const s: OrgSchedule = { ...row, id: row.org_id ?? '' };
     if (p.urgent !== true) {
-      if (isQuiet(now, s)) continue;
+      if (isQuiet(now, s, false, p.night === true)) continue;
       // График -- независимо от пола: для напоминаний и для режима «по расписанию».
       if ((p.gated === true || to.notify_mode === 'schedule') && !inWorkHours(s, now)) continue;
     }

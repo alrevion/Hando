@@ -88,7 +88,7 @@ function queueReminder(
   row: { task_id: string; org_id: string; user_id: string },
   text: string,
   kind: string,
-  opts: { urgent?: boolean; gated?: boolean; buttons?: InlineButton[][] },
+  opts: { urgent?: boolean; gated?: boolean; night?: boolean; buttons?: InlineButton[][] },
 ): D1PreparedStatement {
   return env.DB.prepare(
     `INSERT INTO notifications (id, task_id, assignee_id, org_id, kind, payload, scheduled_at)
@@ -100,6 +100,7 @@ function queueReminder(
     track: false,
     urgent: opts.urgent === true,
     gated: opts.gated === true,
+    night: opts.night === true,
     keyboard: [...(opts.buttons ?? []), [openButton(row.task_id)]],
   }), nowIso());
 }
@@ -297,20 +298,28 @@ export async function remindOverdue(env: Env, now: Date): Promise<void> {
     // Первый час после срока закрывает «в срок»; просрочка начинается дальше.
     if (overdueMs < HOUR_MS) continue;
     if (dueRepeat(log, r, 'overdue', now)) {
-      // ПЕРВОЕ предупреждение идёт мимо графика, но НЕ сквозь тихие часы:
-      // срок уже прошёл, и до утра оно ничего не испортит, а ночной звонок
-      // испортит. Повторы -- в рабочее время, три раза, дальше раз в день.
+      // ПЕРВОЕ предупреждение идёт мимо графика и выходного, но НЕ сквозь
+      // ночь: срок уже прошёл, и до утра оно ничего не испортит, а ночной
+      // звонок испортит. Повторы -- в рабочее время, три раза, дальше раз в день.
       const first = !log.has(`${r.id}:overdue`);
-      if (!first && !working(r, now)) continue;
-      writes.push(queueReminder(env, r,
-        `⚠️ Просрочено на ${formatOverdue(overdueMs)}: «${r.title}»`,
-        'overdue', first ? selfDone(r) : { gated: true, ...selfDone(r) }));
-      writes.push(mark(env, r.id, 'overdue', now));
+      if (first || working(r, now)) {
+        writes.push(queueReminder(env, r,
+          `⚠️ Просрочено на ${formatOverdue(overdueMs)}: «${r.title}»`,
+          'overdue', first ? { night: true, ...selfDone(r) } : { gated: true, ...selfDone(r) }));
+        writes.push(mark(env, r.id, 'overdue', now));
+      }
     }
-    if (working(r, now) && r.author_id && r.author_id !== r.user_id && dueNow(log, r.id, 'author_overdue', DAILY_MS, now)) {
+    // АВТОРУ -- так же: первое сразу, дальше раз в день в рабочее время.
+    //
+    // Первое ждало рабочих часов, и срок «до конца дня» (18:00, по умолчанию)
+    // давал весть автору только наутро, а срок на воскресенье -- в понедельник:
+    // владелец поручил работу на воскресенье и узнал о провале через сутки.
+    const authorFirst = !log.has(`${r.id}:author_overdue`);
+    if (r.author_id && r.author_id !== r.user_id && (authorFirst || working(r, now))
+      && dueNow(log, r.id, 'author_overdue', DAILY_MS, now)) {
       writes.push(queueReminder(env, { task_id: r.task_id, org_id: r.org_id, user_id: r.author_id },
         `⚠️ ${r.responsible_name} просрочил «${r.title}» на ${formatOverdue(overdueMs)}.`,
-        'author_overdue', { gated: true, buttons: authorButtons(r) }));
+        'author_overdue', authorFirst ? { night: true, buttons: authorButtons(r) } : { gated: true, buttons: authorButtons(r) }));
       writes.push(mark(env, r.id, 'author_overdue', now));
     }
   }

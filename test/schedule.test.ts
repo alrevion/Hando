@@ -186,6 +186,34 @@ describe('матрица напоминаний: дозировка', () => {
     expect(q[0].p.text).toContain('Срок наступил');
   });
 
+  it('срок на воскресенье: о провале узнают в тот же вечер -- и исполнитель, и автор', async () => {
+    // Живой случай: поручение с концом в вс 18:00. Исполнителю «Просрочено»
+    // легло в очередь и ждало понедельника (воскресенье у графика тихое),
+    // а автору не было даже поставлено: его весть ждала рабочих часов.
+    const env = await world('2026-09-13T13:00:00.000Z'); // вс 18:00 Ташкента
+    await testEnv.DB.prepare("UPDATE orgs SET quiet_from = '22:00', quiet_to = '08:00' WHERE id = ?").bind(ORG_A).run();
+    const sunEvening = new Date('2026-09-13T14:05:00Z'); // вс 19:05
+    await remindOverdue(env, sunEvening);
+    expect((await queued()).map((n) => n.kind).sort()).toEqual(['author_overdue', 'overdue']);
+    const spy = tg();
+    await drainOutbox(env, sunEvening);
+    const got = sentTexts(spy);
+    expect(got.map((m) => m.chat_id).sort()).toEqual(['tg-boss', 'tg-w1']);
+    expect(got.find((m) => m.chat_id === 'tg-boss')!.text).toContain('просрочил «Подготовить отчёт»');
+  });
+
+  it('первая весть о просрочке ночью ждёт конца тихих часов, а не будит', async () => {
+    const env = await world('2026-09-13T13:00:00.000Z'); // вс 18:00
+    await testEnv.DB.prepare("UPDATE orgs SET quiet_from = '22:00', quiet_to = '08:00' WHERE id = ?").bind(ORG_A).run();
+    const sunNight = new Date('2026-09-13T17:30:00Z'); // вс 22:30
+    await remindOverdue(env, sunNight);
+    const spy = tg();
+    await drainOutbox(env, sunNight);
+    expect(sentTexts(spy)).toHaveLength(0);
+    await drainOutbox(env, new Date('2026-09-14T03:05:00Z')); // пн 08:05
+    expect(sentTexts(spy).map((m) => m.chat_id).sort()).toEqual(['tg-boss', 'tg-w1']);
+  });
+
   it('просрочено: первое сразу, дальше три раза раз в час, потом раз в день утром; автору раз в день', async () => {
     const env = await world(plus(NOW, -120).toISOString());
     await remindOverdue(env, NOW);
@@ -193,7 +221,7 @@ describe('матрица напоминаний: дозировка', () => {
     let q = await queued();
     expect(q.map((n) => n.kind).sort()).toEqual(['author_overdue', 'overdue']);
     // Первое -- мимо графика, но НЕ сквозь тихие часы: срок уже прошёл.
-    expect(q.find((n) => n.kind === 'overdue')!.p).toMatchObject({ gated: false, urgent: false });
+    expect(q.find((n) => n.kind === 'overdue')!.p).toMatchObject({ gated: false, urgent: false, night: true });
     expect(q.find((n) => n.kind === 'overdue')!.p.text).toContain('Просрочено на 2ч 0м');
     await remindOverdue(env, plus(NOW, 60));
     q = await queued();
