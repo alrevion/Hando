@@ -58,7 +58,10 @@ type Update = {
      */
     reply_to_message?: { message_id: number; text?: string; reply_markup?: unknown };
   };
-  callback_query?: { id: string; from: TgUser; data?: string; message?: { chat: { id: number }; message_id: number } };
+  callback_query?: {
+    id: string; from: TgUser; data?: string;
+    message?: { chat: { id: number }; message_id: number; reply_markup?: { inline_keyboard?: InlineButton[][] } };
+  };
 };
 
 /** Кто это. null -- неизвестный, и тогда мы молчим. */
@@ -682,7 +685,14 @@ botApp.post('/webhook', async (c) => {
           "DELETE FROM reminders WHERE kind IN ('not_accepted','overdue') AND assignee_row_id IN (SELECT id FROM task_assignees WHERE task_id = ? AND org_id = ?)",
         ).bind(task.id, orgId).run();
       }
-      if (cq.message) await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id));
+      // Уходит только нажатая кнопка: под «просрочил» остаются «Переназначить»
+      // и «Открыть» -- после напоминания они могут понадобиться.
+      if (cq.message) {
+        const rest = (cq.message.reply_markup?.inline_keyboard ?? [])
+          .map((r) => r.filter((b) => !('callback_data' in b && String(b.callback_data).startsWith('nudge_'))))
+          .filter((r) => r.length > 0);
+        await editMessageReplyMarkup(c.env, String(cq.message.chat.id), String(cq.message.message_id), rest.length ? { inline_keyboard: rest } : undefined);
+      }
       await drainOutbox(c.env);
       return c.json({ ok: true });
     }

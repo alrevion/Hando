@@ -114,7 +114,8 @@ describe('матрица напоминаний: дозировка', () => {
     q = await queued();
     expect(q.filter((n) => n.kind === 'not_accepted')).toHaveLength(2);
     expect(q.filter((n) => n.kind === 'author_not_accepted').map((n) => n.to)).toEqual(['boss']);
-    expect(q.find((n) => n.kind === 'author_not_accepted')!.p.keyboard.flat().map((b) => b.text)).toEqual(['👤 Переназначить', '📱 Открыть']);
+    // «Напомнить» -- и здесь: не принял так же, как «никто не взял» у повода.
+    expect(q.find((n) => n.kind === 'author_not_accepted')!.p.keyboard.flat().map((b) => b.text)).toEqual(['🔔 Напомнить', '👤 Переназначить', '📱 Открыть']);
   });
 
   it('«не принято» по задаче СЕБЕ не напоминается вовсе: принимать своё незачем', async () => {

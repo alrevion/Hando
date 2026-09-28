@@ -176,7 +176,11 @@ const selfDone = (r: Row): { buttons?: InlineButton[][] } =>
 
 /** Кнопка автору под напоминанием: переназначить, если это не рассылка. */
 function authorButtons(r: Row): InlineButton[][] {
-  return r.kind === 'each' ? [] : [[{ text: '👤 Переназначить', callback_data: `ra:${r.task_id}:` }]];
+  // «Напомнить» -- первое, что хочется сделать, узнав о просрочке; раньше её
+  // не было, и автор писал боту словами. Та же кнопка, что под «никто не взял».
+  const row: InlineButton[] = [{ text: '🔔 Напомнить', callback_data: `nudge_remind:${r.task_id}` }];
+  if (r.kind !== 'each') row.push({ text: '👤 Переназначить', callback_data: `ra:${r.task_id}:` });
+  return [row];
 }
 
 /** Когда поставлена задача: created_at бывает и ISO, и SQLite-строкой без пояса. */

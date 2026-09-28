@@ -284,6 +284,25 @@ describe('ответ на сообщение бота о задаче', () => {
     expect(await overdueLogged()).toBe(1);
   });
 
+  it('под «просрочил» -- кнопка «🔔 Напомнить»; нажатие толкает исполнителя, остальные кнопки остаются', async () => {
+    const env = await world();
+    // Срок прошёл вчера: автору уходит «просрочил» с кнопками.
+    await testEnv.DB.prepare("UPDATE tasks SET deadline = datetime('now','-1 day') WHERE id='t1'").run();
+    await testEnv.DB.prepare("UPDATE task_assignees SET due_at = datetime('now','-1 day') WHERE task_id='t1'").run();
+    const spy = tg();
+    await remindOverdue(env, new Date());
+    const { results } = await testEnv.DB.prepare("SELECT payload FROM notifications WHERE kind = 'author_overdue'").all<{ payload: string }>();
+    const kb = (JSON.parse(results[0].payload) as { keyboard: Btn[][] }).keyboard;
+    expect(kb.flat().map((b) => b.text)).toEqual(['🔔 Напомнить', '👤 Переназначить', '📱 Открыть']);
+    expect(await overdueLogged()).toBe(1);
+
+    await hook(env, { callback_query: { id: 'cb', from: { id: 'tg-boss', first_name: 'Ч' }, data: 'nudge_remind:t1',
+      message: { chat: { id: 'tg-boss' }, message_id: 7, reply_markup: { inline_keyboard: kb } } } });
+    expect(await overdueLogged()).toBe(0);
+    const left = edits(spy).at(-1)!.reply_markup!.inline_keyboard!.flat().map((b) => b.text);
+    expect(left).toEqual(['👤 Переназначить', '📱 Открыть']);
+  });
+
   it('кнопка задачи ЧУЖОЙ организации -- не указатель', async () => {
     const env = await world();
     await seedOverdue();
