@@ -236,6 +236,63 @@ describe('этапы голосом и текстом', () => {
   });
 });
 
+describe('ответ на сообщение бота о задаче', () => {
+  // Кнопки исходного сообщения Telegram присылает вместе с ответом; в
+  // «📱 Открыть» зашит id задачи -- по нему бот и понимает, о чём речь.
+  const replyTo = (env: Env, tgId: string, text: string, taskId = 't1') => hook(env, { message: {
+    chat: { id: tgId, type: 'private' }, from: { id: tgId, first_name: 'Ч' }, text,
+    reply_to_message: {
+      message_id: 99, text: '⚠️ Азиз Каримов просрочил «Подготовить отчёт» на 15ч 0м.',
+      reply_markup: { inline_keyboard: [[{ text: '👤 Переназначить', callback_data: `ra:${taskId}:` }], [{ text: '📱 Открыть', web_app: { url: `https://hando.alrevion.com/?task=${taskId}` } }]] },
+    },
+  } });
+  const seedOverdue = () => testEnv.DB.prepare(
+    "INSERT INTO reminders (assignee_row_id, kind, sent_at, n) SELECT id, 'overdue', datetime('now'), 3 FROM task_assignees WHERE task_id = 't1'",
+  ).run();
+  const overdueLogged = async () =>
+    (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM reminders WHERE kind = 'overdue'").first<{ n: number }>())!.n;
+
+  it('«напомни ещё раз ему» в ответ на «просрочил» -- напоминание по ЭТОЙ задаче, без вопроса «какой?»', async () => {
+    const env = await world();
+    await seedOverdue();
+    const spy = tg();
+    await replyTo(env, 'tg-boss', 'Напомни ещё раз ему');
+    // Журнал просрочки сброшен -- ближайший проход напомнит заново, как кнопка «🔔 Напомнить».
+    expect(await overdueLogged()).toBe(0);
+    const reply = sent(spy).filter((m) => m.chat_id === 'tg-boss').at(-1)!;
+    expect(reply.text).toBe('🔔 Напомню исполнителям «Подготовить отчёт».');
+    expect(labels(reply)).toEqual(['📱 Открыть']);
+    expect((await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM drafts').first<{ n: number }>())!.n).toBe(0);
+  });
+
+  it('исполнитель толкнуть себя не может -- ответ прямо, а не «о какой задаче речь?»', async () => {
+    const env = await world();
+    await seedOverdue();
+    const spy = tg();
+    await replyTo(env, 'tg-w1', 'напомни ему');
+    expect(await overdueLogged()).toBe(1);
+    expect(sent(spy).filter((m) => m.chat_id === 'tg-w1').at(-1)!.text).toContain('это решает автор');
+  });
+
+  it('без ответа на сообщение «напомни …» по-прежнему не трогает исполнителя', async () => {
+    // Иначе «напомни мне подготовить отчёт» при такой задаче толкнуло бы Азиза
+    // вместо того, чтобы стать напоминанием себе.
+    const env = await world();
+    await seedOverdue();
+    tg();
+    await say(env, 'tg-boss', 'напомни ему подготовить отчёт');
+    expect(await overdueLogged()).toBe(1);
+  });
+
+  it('кнопка задачи ЧУЖОЙ организации -- не указатель', async () => {
+    const env = await world();
+    await seedOverdue();
+    tg();
+    await replyTo(env, 'tg-boss', 'Напомни ещё раз ему', 'чужая');
+    expect(await overdueLogged()).toBe(1);
+  });
+});
+
 describe('правка действующей задачи словами', () => {
   it('«перенеси срок» по названной теме двигает срок уже созданной задачи', async () => {
     const env = await world();

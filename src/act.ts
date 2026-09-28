@@ -28,11 +28,13 @@ export type Turn = {
 
 type Who = { userId: string; orgId: string; role: Role };
 
-async function buildCtx(env: Env, who: Who, sched: OrgSchedule, history: BrainCtx['history'], now: Date): Promise<BrainCtx> {
+async function buildCtx(env: Env, who: Who, sched: OrgSchedule, history: BrainCtx['history'], now: Date, pointedId?: string): Promise<BrainCtx> {
   const tz = sched.timezone;
   const members = await assignableMembers(env, who.orgId, who.userId, who.role);
   const meRow = await env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(who.userId).first<{ name: string }>();
-  const last = await lastMentioned(env, who.orgId, who.userId, now);
+  // Ответили на сообщение о задаче -- она и есть «та самая», сколько бы
+  // времени ни прошло; иначе -- последняя, о которой бот писал.
+  const last = pointedId ? { id: pointedId } : await lastMentioned(env, who.orgId, who.userId, now);
   // Задачи, о которых человек может говорить: его и им поручённые, ещё живые.
   // Последняя упомянутая -- всегда первой: на неё указывает голое «готово».
   const { results } = await env.DB.prepare(
@@ -85,6 +87,8 @@ function taskOp(a: Extract<Act, { type: 'task' }>, reason: string, pred: Task | 
 export async function brainTurn(
   env: Env, who: Who, phrase: string, chat: string, media: Media | null,
   history: BrainCtx['history'], roster: Person[], sched: OrgSchedule, packId?: string | null,
+  /** Задача сообщения, на которое ответили. */
+  pointedId?: string,
 ): Promise<Turn | null> {
   if (env.BRAIN !== '1' || !env.GROQ_API_KEY) return null;
   // Тёзки -- переспрос «кого именно?», а не выбор модели: поручение, ушедшее
@@ -93,7 +97,7 @@ export async function brainTurn(
   const now = new Date();
   let plan;
   try {
-    plan = await understand(env, await buildCtx(env, who, sched, history, now), phrase);
+    plan = await understand(env, await buildCtx(env, who, sched, history, now, pointedId), phrase);
   } catch (e) {
     console.error('brain ctx', String(e));
     return null;

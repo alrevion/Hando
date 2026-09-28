@@ -182,6 +182,12 @@ const V_RETURN = startOfWord(String.raw`верн[уи]|возвраща|на\s+�
  * «не возьму» содержит «возьму».
  */
 const V_DECLINE = startOfWord(String.raw`отказ|откаж|не\s+буду|не\s+возьму|не\s+мо[её]|снима[ею]\s+с\s+себя`);
+/**
+ * Напомнить исполнителю -- автор. Только по задаче из ОТВЕТА на сообщение бота:
+ * без него «напомни мне завтра подготовить отчёт» при такой задаче толкнуло бы
+ * исполнителя вместо того, чтобы стать напоминанием себе.
+ */
+const V_REMIND = startOfWord(String.raw`напомн|поторопи|подтолкни|пни`);
 /** Не успеваю: причина -- сама фраза. */
 const V_LATE = startOfWord(String.raw`не\s+успева[ею]|не\s+успе[юл]|опазд|задержива[ею]сь`);
 /**
@@ -522,16 +528,23 @@ export async function commandTaskByPhrase(
   /** Последний рабочий день недели организации (1=пн..7=вс). */
   weekEnd?: number,
   now: Date = new Date(),
+  /**
+   * Задача сообщения, на которое человек ОТВЕТИЛ. На него и указывают «ему»,
+   * «её», «перенеси на завтра»: бот сам только что о ней писал.
+   */
+  pointed: Task | null = null,
 ): Promise<{ taskId: string; text: string } | null> {
   // СВЯЗЬ -- раньше глаголов этапа: «после» ни одним из них не является, и
   // проверка на глагол отсекла бы фразу целиком.
   const linked = await linkByPhrase(env, who, phrase);
   if (linked) return linked;
 
+  const remind = !!pointed && V_REMIND.test(phrase);
   const anyVerb = V_ACCEPT.test(phrase) || V_START.test(phrase) || V_DONE.test(phrase) || V_CONFIRM.test(phrase)
-    || V_RETURN.test(phrase) || V_DECLINE.test(phrase) || V_LATE.test(phrase) || EDIT_VERB.test(phrase);
+    || V_RETURN.test(phrase) || V_DECLINE.test(phrase) || V_LATE.test(phrase) || EDIT_VERB.test(phrase) || remind;
   if (!anyVerb) return null;
-  const task = await taskInPhrase(env, who.orgId, who.userId, phrase)
+  const named = await taskInPhrase(env, who.orgId, who.userId, phrase);
+  const task = named ?? pointed
     ?? (pointsAtLast(phrase) ? await lastMentioned(env, who.orgId, who.userId, now) : null);
   if (!task) return null;
 
@@ -552,6 +565,8 @@ export async function commandTaskByPhrase(
   else if (mine && V_LATE.test(phrase)) cmd = { op: 'late', reason: phrase };
   else if (mine && (V_ACCEPT.test(phrase) || V_START.test(phrase) || done)) {
     cmd = { op: done ? 'done' : V_START.test(phrase) ? 'start' : 'accept' };
+  } else if (remind && task === pointed) {
+    cmd = { op: 'remind' };
   } else if (author && EDIT_VERB.test(phrase)) {
     // ---- правка полей. Только АВТОР: срок и важность -- его решения, а
     // исполнителю для «не успеваю» есть ветка выше.
@@ -566,5 +581,10 @@ export async function commandTaskByPhrase(
   }
   if (!cmd) return null;
   const res = await runTaskOp(env, who, task, cmd, timeZone, now);
-  return typeof res === 'string' ? null : res;
+  // По ответу на сообщение задача известна точно -- отказ и есть ответ
+  // («это решает автор»), а не повод спрашивать «о какой задаче речь?».
+  // Кроме пустой правки: «сделай Беку новую задачу» в ответ на сообщение --
+  // это новое поручение, и ему место в черновике, а не «менять нечего».
+  if (typeof res === 'string') return task === pointed && cmd.op !== 'edit' ? { taskId: task.id, text: res } : null;
+  return res;
 }

@@ -51,8 +51,12 @@ type Update = {
   // туда через extractMedia -- дублировать их формы в двух местах незачем.
   message?: {
     chat: { id: number; type?: string }; from?: TgUser; text?: string; caption?: string;
-    /** На что отвечают. Ответ на карточку черновика -- это поправка к нему. */
-    reply_to_message?: { message_id: number };
+    /**
+     * На что отвечают. Ответ на карточку черновика -- поправка к нему; ответ
+     * на сообщение о задаче -- команда по ней. Telegram присылает исходное
+     * сообщение целиком: текст и кнопки, а в «📱 Открыть» зашит id задачи.
+     */
+    reply_to_message?: { message_id: number; text?: string; reply_markup?: unknown };
   };
   callback_query?: { id: string; from: TgUser; data?: string; message?: { chat: { id: number }; message_id: number } };
 };
@@ -1454,7 +1458,18 @@ botApp.post('/webhook', async (c) => {
   // и классификатор развёл бы их в одно из двух неверных русел. Срабатывает
   // только при глаголе команды И дословно названной теме -- см.
   // commandTaskByPhrase; иначе фраза идёт дальше и становится черновиком.
-  const edited = await commandTaskByPhrase(c.env, who, phrase, tz, org?.industry_pack, dayEnd(sched), weekEndDay(sched));
+  //
+  // ОТВЕТ НА СООБЩЕНИЕ О ЗАДАЧЕ -- о ней и речь. «Напомни ещё раз ему» в ответ
+  // на «⚠️ Артур просрочил «Подготовь IT-CV»» кончалось вопросом «какое именно
+  // поручение?»: бот не связывал ответ с собственным сообщением. Задачу даёт
+  // кнопка «📱 Открыть» исходного сообщения -- она есть под каждым сообщением о
+  // задаче, а подделать её в личке с ботом нельзя. И только своей организации.
+  const quoted = msg.reply_to_message;
+  const pointedId = /[?&]task=([\w-]+)/.exec(JSON.stringify(quoted?.reply_markup ?? {}))?.[1];
+  const pointed = pointedId
+    ? await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').bind(pointedId, who.orgId).first<Task>()
+    : null;
+  const edited = await commandTaskByPhrase(c.env, who, phrase, tz, org?.industry_pack, dayEnd(sched), weekEndDay(sched), new Date(), pointed);
   if (edited) {
     await sendMessage(c.env, chat, edited.text, { inline_keyboard: [[openButton(edited.taskId)]] });
     await drainOutbox(c.env);
@@ -1468,6 +1483,9 @@ botApp.post('/webhook', async (c) => {
   // потому что продолжение диалога из общей памяти брать нельзя.
   const fresh = st.askAt ? Date.now() - Date.parse(st.askAt) < 20 * 60 * 1000 : false;
   const history = fresh ? (st.ask ?? []) : [];
+  // Помощнику и модели -- и само сообщение, на которое ответили: «а когда
+  // срок?» в ответ на карточку понятно только вместе с ней.
+  const said = pointed && quoted?.text ? [...history, { role: 'assistant' as const, text: quoted.text }] : history;
 
   // ОТВЕТ НА ВОПРОС БОТА -- продолжение разговора, а не новая фраза.
   //
@@ -1487,11 +1505,11 @@ botApp.post('/webhook', async (c) => {
       return;
     }
     const meRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(userId).first<{ name: string }>();
-    const reply = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, history);
+    const reply = await askAssistant(c.env, { userId, orgId: who.orgId, role: who.role, name: meRow?.name ?? '' }, phrase, said);
     await sendMessage(c.env, chat, reply, { inline_keyboard: [[{ text: '📌 Это поручение', callback_data: 'as_task' }]] });
     await setState(c.env, userId, {
       ...st, said: phrase, askAt: nowIso(),
-      ask: [...history, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: reply }].slice(-6),
+      ask: [...said, { role: 'user' as const, text: phrase }, { role: 'assistant' as const, text: reply }].slice(-6),
     });
   };
 
@@ -1501,7 +1519,7 @@ botApp.post('/webhook', async (c) => {
   // запомненную фразу, и это умеет только старый путь.
   const whomPending = !!st.whom && !!st.whomAt && Date.now() - Date.parse(st.whomAt) < 20 * 60 * 1000;
   const turn = whomPending ? null
-    : await brainTurn(c.env, who, phrase, chat, media ?? null, history, roster, sched, org?.industry_pack);
+    : await brainTurn(c.env, who, phrase, chat, media ?? null, said, roster, sched, org?.industry_pack, pointed?.id);
   if (turn) {
     for (const what of turn.show) {
       if (what === 'drafts') await showDrafts(c.env, chat, userId, who.orgId);
