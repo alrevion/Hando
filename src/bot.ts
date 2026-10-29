@@ -40,7 +40,7 @@ import { show as showChecklist, toggleItem } from './checklist';
 import { brainTurn } from './act';
 import { loginPending, membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
-import { aiEnv } from './ai';
+import { allowed, CLOSED_TEXT } from './access';
 
 const enc = new TextEncoder();
 
@@ -399,10 +399,13 @@ botApp.post('/webhook', async (c) => {
   }
 
   const update = await c.req.json<Update>().catch(() => ({}) as Update);
-  // Нейросети -- только тем, кому включены (src/ai.ts): дальше по запросу
-  // все ходят через c.env, поэтому подмены здесь достаточно.
+  // Hando закрыт (src/access.ts): чужому -- одна строка в личке и ничего больше,
+  // до регистрации и разбора. В группах молчим.
   const sender = update.message?.from?.id ?? update.callback_query?.from.id;
-  c.env = await aiEnv(c.env, 'telegram_user_id', sender == null ? null : String(sender));
+  if (!(await allowed(c.env, 'telegram_user_id', sender == null ? null : String(sender)))) {
+    if (update.message?.chat.type === 'private') await sendMessage(c.env, String(update.message.chat.id), CLOSED_TEXT);
+    return c.json({ ok: true });
+  }
 
   // ------------------------------------------------------------ нажатие кнопки
   if (update.callback_query) {

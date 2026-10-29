@@ -1,7 +1,8 @@
 # Hando
 
 A Telegram assistant for tasks in small teams and families: say or type a request, and Hando turns it into tasks,
-deadlines and reminders. Live at [hando.alrevion.com](https://hando.alrevion.com).
+deadlines and reminders. Live at [hando.alrevion.com](https://hando.alrevion.com) — invite-only: the hosted instance
+serves only allowlisted users (`HANDO_CLOSED`, `users.allowed`).
 
 > "remind me tomorrow to call the bank" → a task for me
 > "Artur, send the report by Friday" → a task for Artur; he taps **Accept**

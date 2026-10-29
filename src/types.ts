@@ -158,6 +158,8 @@ export interface Env {
   GROQ_LLM_MODEL: string;
   /** '1' -- фразы понимает модель действиями (brain.ts), иначе -- правила. */
   BRAIN?: string;
+  /** '1' -- Hando закрыт для всех, кроме users.allowed = 1 (src/access.ts). */
+  HANDO_CLOSED?: string;
 }
 
 export interface SessionPayload {
