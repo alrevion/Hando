@@ -40,6 +40,7 @@ import { show as showChecklist, toggleItem } from './checklist';
 import { brainTurn } from './act';
 import { loginPending, membershipRole, resolveOrgId } from './auth';
 import { safeEqual } from './auth';
+import { aiEnv } from './ai';
 
 const enc = new TextEncoder();
 
@@ -398,6 +399,10 @@ botApp.post('/webhook', async (c) => {
   }
 
   const update = await c.req.json<Update>().catch(() => ({}) as Update);
+  // Нейросети -- только тем, кому включены (src/ai.ts): дальше по запросу
+  // все ходят через c.env, поэтому подмены здесь достаточно.
+  const sender = update.message?.from?.id ?? update.callback_query?.from.id;
+  c.env = await aiEnv(c.env, 'telegram_user_id', sender == null ? null : String(sender));
 
   // ------------------------------------------------------------ нажатие кнопки
   if (update.callback_query) {

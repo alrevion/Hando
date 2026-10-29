@@ -22,6 +22,7 @@ import { approveJoin, BOT_USERNAME, canCreateOrg, createOrg, inviteCodeFor, invi
 import { assignableMembers, canAssign, canManageMember, returnOpenTasks, setFrozen, subtreeOf, visibleMembers, visibleTasks, visibleUserIds } from './hierarchy';
 import { deleteOrg, leaveOrg, myOrgs, renameOrg, setDisplayName, setNotifyPrefs, switchOrg, updateOrgSettings, type OrgSettingsPatch } from './menu';
 import { askAssistant, type AskTurn } from './assistant';
+import { aiEnv } from './ai';
 import { dayEnd, hm, loadSchedule, weekEndDay } from './schedule';
 
 // Telegram's Bot API can only download files up to 20MB back out (uploads may be
@@ -158,6 +159,11 @@ apiRoutes.post('/auth/logout', (c) => {
 // ------------------------------------------------------ everything below: authed
 
 apiRoutes.use('*', requireAuth);
+// Нейросети -- только тем, кому включены (src/ai.ts).
+apiRoutes.use('*', async (c, next) => {
+  c.env = await aiEnv(c.env, 'id', c.get('userId'));
+  return next();
+});
 
 apiRoutes.get('/me', async (c) => {
   if (!c.get('orgId')) {
