@@ -18,12 +18,12 @@ const PRIORITY_RANK: Record<Priority, number> = Object.fromEntries(
 
 const PAGE = 10;
 
-type Section = { key: 'todo' | 'accepted' | 'started' | 'review'; title: string; rows: ReturnType<typeof useOrgTasks>['tasks'] };
+type Section = { key: 'todo' | 'started' | 'review'; title: string; rows: ReturnType<typeof useOrgTasks>['tasks'] };
 
 /**
  * «Задачи»: что поручили мне -- этапы прямо в списке (раздел 22). Здесь и
- * нажимают «Взять в работу», «Готово», «Не успею», «Отказать» -- те же
- * действия, что кнопки под карточкой в боте, кроме «Готово»: сдают только тут.
+ * нажимают «В работе», «Готово», «Не успею», «Отказать» -- те же действия,
+ * что кнопки под карточкой в боте, кроме «Готово»: сдают только тут.
  */
 export function MyTasksView({ user }: { user: User }) {
   const { tasks, loading, loadError } = useOrgTasks();
@@ -43,15 +43,19 @@ export function MyTasksView({ user }: { user: User }) {
   });
 
   const mine = tasks.filter(({ task }) => isMine(task, user.id));
-  // ЧЕТЫРЕ этапа, а не три: «принял» -- это согласие, «в работе» -- что человек
-  // за неё сел. Разные вещи, и владелец попросил их развести, согласившись на
-  // лишнее нажатие.
+  // Три этапа: к выполнению → в работе → выполнено. «Принято» убрали -- это
+  // был промежуточный шаг, который на своей задаче не читался, а стрелка
+  // сразу закрывала карточку галочкой.
   const at = (stage: string) => sort(mine.filter(({ task }) => stageOf(myRow(task, user.id), task.author_id) === stage));
+  const doneNewest = [...at('done')].sort((a, b) => {
+    const ad = a.task.done_at ? Date.parse(a.task.done_at) : 0;
+    const bd = b.task.done_at ? Date.parse(b.task.done_at) : 0;
+    return bd - ad;
+  });
   const sections: Section[] = [
-    { key: 'todo', title: 'К выполнению', rows: at('pending') },
-    { key: 'accepted', title: 'Принято', rows: at('accepted') },
+    { key: 'todo', title: 'К выполнению', rows: sort([...at('pending'), ...at('accepted')]) },
     { key: 'started', title: 'В работе', rows: at('started') },
-    { key: 'review', title: 'Сдано', rows: sort(mine.filter(({ task }) => myRow(task, user.id)?.state === 'done' && !task.confirmed_at)) },
+    { key: 'review', title: 'Выполнено', rows: doneNewest },
   ];
   const total = sections.reduce((n, s) => n + s.rows.length, 0);
   // Этапы сегментами -- те же колонки доски, только внутри «Задач»: один этап
@@ -92,12 +96,7 @@ export function MyTasksView({ user }: { user: User }) {
       ) : (
         <>
           {/* Кнопки, а не сегментный переключатель: это фильтр списка, и он
-              должен выглядеть как остальные фильтры на экранах.
-
-              В ДВЕ СТРОКИ, а не лентой с прокруткой. Четыре этапа шире экрана
-              на полсотни пикселей, и последний («Сдано · 1») край экрана резал
-              пополам -- это читается как поломка вёрстки, а не как «листай
-              дальше». Заодно все счётчики видно сразу: ради них фильтр и нужен. */}
+              должен выглядеть как остальные фильтры на экранах. */}
           {/* Отступ до списка -- как у заголовка раздела: кнопки этапа не должны
               липнуть к первой карточке. */}
           <div className="chips" style={{ paddingBottom: 16, flexWrap: 'wrap', overflowX: 'visible' }} aria-label="Этап">
@@ -115,24 +114,26 @@ export function MyTasksView({ user }: { user: User }) {
             {visible.map(({ task, projectName }) => {
               const dep = task.depends_on_task_id ? byId.get(task.depends_on_task_id) : undefined;
               const blockedBy = dep && dep.status !== 'done' && dep.status !== 'archived' ? dep.title : undefined;
-              const stage = stageOf(myRow(task, user.id), task.author_id);
+              const rowStage = stageOf(myRow(task, user.id), task.author_id);
               // Задача себе: «не успею» и «отказать» адресованы автору, а он
               // здесь тот же человек -- отпрашиваться не у кого. И принимать
               // её не нужно: она рождается принятой.
               const selfTask = task.author_id === user.id;
-              // Стрелка ведёт по цепочке: принять -> начал -> сдать. Задачу
-              // себе проверять некому, поэтому у неё одна кнопка -- галочка
-              // «Выполнено», сразу закрывает. Раньше и там была стрелка «взять в
-              // работу», потом «сдать на проверку», и человек не находил, как
-              // закрыть своё же дело.
-              const next = selfTask
-                ? { to: 'done' as const, label: 'Выполнено', done: 'Выполнено' }
-                : stage === 'pending'
-                  ? { to: 'in_progress' as const, label: 'Принять', done: 'Принято' }
-                  : stage === 'accepted'
-                    ? { to: 'started' as const, label: 'Взять в работу', done: 'В работе' }
-                    : { to: 'done' as const, label: 'Сдать на проверку', done: 'Сдано' };
+              // Своя задача: стрелка «в работе», затем галочка «выполнено».
+              // Чужая: те же два шага -- принять+начать одним нажатием, потом сдать.
+              const next = rowStage === 'started'
+                ? { to: 'done' as const, label: selfTask ? 'Выполнено' : 'Сдать на проверку', done: selfTask ? 'Выполнено' : 'Сдано' }
+                : { to: 'started' as const, label: 'В работе', done: 'В работе' };
               const isBusy = busy.has(task.id);
+              const goNext = async () => {
+                if (next.to === 'done') {
+                  await moveTask(task.id, 'done');
+                  return;
+                }
+                const row = myRow(task, user.id);
+                if (row?.state === 'pending') await moveTask(task.id, 'in_progress');
+                await moveTask(task.id, 'started');
+              };
               return (
                 <li key={task.id} className={`card${isTaskOverdue(task) ? ' is-overdue' : ''}`}>
                   <div className="card-head">
@@ -146,10 +147,16 @@ export function MyTasksView({ user }: { user: User }) {
                         каждой карточке, и повторять его словами в каждой строке
                         -- шум. Смысл читается из этапа, на котором стоит задача. */}
                     {current.key !== 'review' ? (
-                      <button type="button" className="btn-icon is-accent" disabled={isBusy || ((next.to === 'started' || selfTask) && !!blockedBy)}
+                      <button type="button" className="btn-icon is-accent" disabled={isBusy || (next.to === 'started' && !!blockedBy)}
                         aria-label={next.label} title={next.label}
-                        onClick={() => act(task, () => moveTask(task.id, next.to), next.done)}>
-                        {selfTask ? <Check aria-hidden="true" /> : <ArrowRight aria-hidden="true" />}
+                        onClick={() => {
+                          void act(task, goNext, next.done).then((ok) => {
+                            if (!ok) return;
+                            if (next.to === 'started') { setStage(1); setShown(PAGE); }
+                            else { setStage(2); setShown(PAGE); }
+                          });
+                        }}>
+                        {next.to === 'done' ? <Check aria-hidden="true" /> : <ArrowRight aria-hidden="true" />}
                       </button>
                     ) : null}
                   </div>

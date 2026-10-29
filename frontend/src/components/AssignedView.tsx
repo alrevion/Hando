@@ -4,7 +4,6 @@ import type { Task, User } from '../types';
 import { useOrgTasks } from '../hooks/useOrgTasks';
 import { useData } from '../context/DataContext';
 import { isTaskOverdue } from '../lib/overdue';
-import { anyStarted } from '../lib/tasks';
 import { ApiError, confirmTask, deleteTask, rejectTask, updateTask } from '../lib/api';
 import { toast } from '../lib/toast';
 import { TaskDetailModal } from './TaskDetailModal';
@@ -41,14 +40,17 @@ export function AssignedView({ user }: { user: User }) {
   // Этапы -- сегментами, как были колонки доски: один этап на экране, а не три
   // списка подряд. Доску убрали, а её главное свойство («вижу, что где стоит»)
   // осталось здесь.
-  // Четыре этапа, как у исполнителя: «принято» и «в работе» -- разные вещи, и
-  // автору эта разница нужнее всех. Взглядом автора этап считается по строкам
-  // адресатов: хоть кто-то сел за работу -- значит в работе.
+  const doneNewest = mine
+    .filter(({ task }) => task.status === 'done')
+    .sort((a, b) => {
+      const ad = a.task.done_at ? Date.parse(a.task.done_at) : 0;
+      const bd = b.task.done_at ? Date.parse(b.task.done_at) : 0;
+      return bd - ad;
+    });
   const sections = [
     { key: 'todo', title: 'К выполнению', rows: mine.filter(({ task }) => task.status === 'todo') },
-    { key: 'accepted', title: 'Принято', rows: mine.filter(({ task }) => task.status === 'in_progress' && !anyStarted(task)) },
-    { key: 'started', title: 'В работе', rows: mine.filter(({ task }) => task.status === 'in_progress' && anyStarted(task)) },
-    { key: 'done', title: 'Сдано', rows: mine.filter(({ task }) => task.status === 'done') },
+    { key: 'started', title: 'В работе', rows: mine.filter(({ task }) => task.status === 'in_progress') },
+    { key: 'done', title: 'Выполнено', rows: doneNewest },
   ];
   const [stage, setStage] = useState(0);
   // Длинные списки грузятся порциями: на сотне поручений экран иначе думает

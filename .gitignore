@@ -7,3 +7,6 @@ frontend/dist/
 .claude-flow/
 .omc/state/
 eval/results/
+
+# repowise owner-digest key (local)
+.repowise/events.key

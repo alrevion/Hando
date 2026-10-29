@@ -45,7 +45,7 @@ export function stageOf(a: Assignee | undefined, authorId?: string | null): Stag
     // стоит там же, где любое несделанное, в «К выполнению».
     return a.state === 'accepted' && authorId && a.user_id === authorId ? 'pending' : 'accepted';
   }
-  if (a.state === 'done') return 'done';
+  if (a.state === 'done' || a.state === 'confirmed') return 'done';
   return 'other';
 }
 

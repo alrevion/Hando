@@ -16,7 +16,7 @@ import { isMine } from '../lib/tasks';
 
 const STAGE_LABEL: Record<'todo' | 'in_progress' | 'done', string> = {
   todo: 'Не начато',
-  in_progress: 'Принято',
+  in_progress: 'В работе',
   done: 'На проверке',
 };
 

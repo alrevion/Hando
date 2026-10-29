@@ -7,7 +7,7 @@ import { TaskMeta } from './TaskMeta';
 import { TaskDetailModal } from './TaskDetailModal';
 import { isTaskOverdue } from '../lib/overdue';
 
-const STAGE: Record<string, string> = { todo: 'К выполнению', in_progress: 'В работе', done: 'Сдано' };
+const STAGE: Record<string, string> = { todo: 'К выполнению', in_progress: 'В работе', done: 'Выполнено' };
 
 /** «Все задания»: обзор поддерева -- что делается ниже по дереву, а не вся организация. */
 export function AllTasksView() {
